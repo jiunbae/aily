@@ -51,10 +51,6 @@ HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
 PROJECT=$(basename "${PWD:-unknown}")
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-escape_json() {
-  python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" <<< "$1"
-}
-
 THREAD_NAME="[agent] ${TMUX_SESSION}"
 AUTH="Authorization: Bot ${DISCORD_BOT_TOKEN}"
 
@@ -143,21 +139,20 @@ if [[ -n "$THREAD_ID" ]]; then
     # Raw mode: post pre-formatted message as-is
     DISCORD_MSG="$RAW_MESSAGE"
   else
-    # Standard mode: wrap in Task Complete format
+    # Standard mode: wrap in Task Complete format (use printf for real newlines)
     if [[ -n "$MESSAGE_TEXT" && ${#MESSAGE_TEXT} -gt 1000 ]]; then
       MESSAGE_TEXT="${MESSAGE_TEXT:0:1000}..."
     fi
 
-    SUMMARY_BLOCK=""
-    if [[ -n "$MESSAGE_TEXT" ]]; then
-      ESCAPED=$(escape_json "$MESSAGE_TEXT")
-      ESCAPED="${ESCAPED:1:${#ESCAPED}-2}"
-      SUMMARY_BLOCK="\\n\\n**Response:**\\n${ESCAPED}"
-    fi
+    DISCORD_MSG=$(printf '🔔 **Task Complete** (%s)\n\n🖥 Host: `%s`\n📁 Project: `%s`\n⏰ Time: %s' \
+      "$AGENT_NAME" "$HOSTNAME_SHORT" "$PROJECT" "$TIMESTAMP")
 
-    DISCORD_MSG="🔔 **Task Complete** (${AGENT_NAME})\\n\\n🖥 Host: \`${HOSTNAME_SHORT}\`\\n📁 Project: \`${PROJECT}\`\\n⏰ Time: ${TIMESTAMP}${SUMMARY_BLOCK}"
+    if [[ -n "$MESSAGE_TEXT" ]]; then
+      DISCORD_MSG="${DISCORD_MSG}"$'\n\n'"**Response:**"$'\n'"${MESSAGE_TEXT}"
+    fi
   fi
 
+  # Use python json.dumps for safe JSON encoding (handles newlines, quotes, etc.)
   PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$DISCORD_MSG")
   if [[ ${#PAYLOAD} -gt 1990 ]]; then
     SHORT="${DISCORD_MSG:0:1800}..."
