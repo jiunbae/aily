@@ -1,6 +1,6 @@
-# claude-hooks
+# aily
 
-Notification hooks for Claude Code, Codex CLI, and Gemini CLI that post task completions to Discord, with one thread per tmux session.
+AI agent notification relay for Claude Code, Codex CLI, and Gemini CLI that posts task completions to Discord, with one thread per tmux session.
 
 ## What it does
 
@@ -34,8 +34,8 @@ Each tmux session gets its own thread, so notifications stay organized.
 ## Installation
 
 ```bash
-git clone https://github.com/jiunbae/claude-hooks.git
-cd claude-hooks
+git clone https://github.com/jiunbae/aily.git
+cd aily
 ./install.sh
 ```
 
@@ -143,7 +143,8 @@ Reads the Claude Code session JSONL file backwards to find the last meaningful a
 - Locates the project JSONL at `~/.claude/projects/<sanitized-cwd>/*.jsonl`
 - Strips English Coach header blocks (`--- > ... ---`) if present
 - Converts markdown tables to code blocks for Discord compatibility
-- Skips responses shorter than 20 characters
+- Uses hash-based dedup to prevent re-sending the same message
+- Suppresses notifications when interactive prompts (AskUserQuestion) are active
 - Truncates at 1000 characters
 
 ## Multi-machine setup
@@ -154,8 +155,8 @@ Each machine needs its own clone and `.notify-env`. The install script handles s
 
 ```bash
 # 1. Clone
-git clone https://github.com/jiunbae/claude-hooks.git ~/workspace-ext/claude-hooks
-cd ~/workspace-ext/claude-hooks
+git clone https://github.com/jiunbae/aily.git ~/workspace-ext/aily
+cd ~/workspace-ext/aily
 
 # 2. Install (symlinks + agent configs)
 ./install.sh
@@ -180,8 +181,8 @@ tmux -V             # tmux must be installed
 #### 1. Clone and install
 
 ```bash
-git clone https://github.com/jiunbae/claude-hooks.git ~/workspace-ext/claude-hooks
-cd ~/workspace-ext/claude-hooks
+git clone https://github.com/jiunbae/aily.git ~/workspace-ext/aily
+cd ~/workspace-ext/aily
 ./install.sh
 ```
 
@@ -253,7 +254,7 @@ The wrapper (`notify-codex-wrapper.sh`) calls both oh-my-prompt's `notify.js` an
 
 ```bash
 # On each machine
-cd ~/workspace-ext/claude-hooks
+cd ~/workspace-ext/aily
 git pull
 ./install.sh   # re-run to pick up any new hooks
 ```
