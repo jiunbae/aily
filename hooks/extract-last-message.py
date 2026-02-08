@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Extract the last meaningful assistant text message from Claude Code session JSONL."""
-import json, os, sys, glob, re
+import hashlib, json, os, sys, glob, re
+
+STATE_FILE = os.path.expanduser("~/.claude/hooks/.last-notified")
 
 def get_project_dir(cwd):
     sanitized = cwd.replace("/", "-")
@@ -48,8 +50,8 @@ def tables_to_codeblocks(text):
         result.append("```")
     return "\n".join(result)
 
-def extract_last_assistant_text(jsonl_path, max_chars=1000, min_chars=20):
-    """Read backwards to find last meaningful assistant text."""
+def extract_last_assistant_text(jsonl_path, max_chars=1000):
+    """Read backwards to find last assistant text. Never falls back to older messages."""
     with open(jsonl_path) as f:
         lines = f.readlines()
 
@@ -66,18 +68,38 @@ def extract_last_assistant_text(jsonl_path, max_chars=1000, min_chars=20):
                     if t:
                         texts.append(t)
             if not texts:
+                # Tool-only turn (no text) — skip to find the text turn
                 continue
             full_text = "\n".join(texts)
             full_text = strip_english_coach(full_text)
             full_text = tables_to_codeblocks(full_text)
-            if len(full_text) < min_chars:
-                continue
+            if not full_text:
+                # Text was entirely English Coach block — return nothing
+                return None
             if len(full_text) > max_chars:
                 full_text = full_text[:max_chars] + "..."
             return full_text
         except:
             continue
     return None
+
+
+def was_already_sent(text):
+    """Check if this exact message was already sent (dedup)."""
+    msg_hash = hashlib.md5(text.encode()).hexdigest()
+    try:
+        with open(STATE_FILE) as f:
+            return f.read().strip() == msg_hash
+    except FileNotFoundError:
+        return False
+
+
+def mark_as_sent(text):
+    """Record this message hash to prevent re-sends."""
+    msg_hash = hashlib.md5(text.encode()).hexdigest()
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        f.write(msg_hash)
 
 def main():
     cwd = os.environ.get("PWD", os.getcwd())
@@ -86,8 +108,12 @@ def main():
     if not jsonl:
         sys.exit(0)
     text = extract_last_assistant_text(jsonl)
-    if text:
-        print(text)
+    if not text:
+        sys.exit(0)
+    if was_already_sent(text):
+        sys.exit(0)
+    mark_as_sent(text)
+    print(text)
 
 if __name__ == "__main__":
     main()
