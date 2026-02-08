@@ -43,7 +43,34 @@ There are two independent data flows:
 - Thread search checks: active threads → archived threads → channel messages (thread metadata)
 - Markdown tables in responses are auto-wrapped in code blocks (Discord doesn't render markdown tables natively)
 
-### 2. Message Extractor (`extract-last-message.py`)
+### 2. Question Notifier (`ask-question-notify.sh` + `format-question.py`)
+
+**Trigger:** Claude Code's `PreToolUse` event with `AskUserQuestion` matcher (fires before the interactive choice UI appears)
+
+**What it does:**
+- Reads the tool input JSON from stdin (contains questions, options, headers)
+- Detects tmux session via `TMUX_PANE`
+- Forks to background and exits immediately (allowing AskUserQuestion to proceed)
+- `format-question.py` formats the choices as a numbered emoji list
+- Posts to the same `[agent] <session>` Discord thread
+
+**Discord message format:**
+```
+❓ **Waiting for Input**
+
+📋 **Runner token**
+**How should we get the Gitea runner registration token?**
+
+1️⃣ **Reuse existing token**
+   Use the registration token from the current Proxmox runner...
+
+2️⃣ **I'll grab a new one**
+   You go to Gitea Admin -> Actions -> Runners...
+
+💬 Reply with option number (1, 2) or type a custom answer
+```
+
+### 3. Message Extractor (`extract-last-message.py`)
 
 **Purpose:** Read Claude Code's session JSONL backwards to find the last meaningful assistant text response.
 
@@ -194,8 +221,10 @@ macOS ships with Bash 3.x which doesn't support negative indices in substring ex
 
 claude-hooks/              # GitHub repo
 ├── hooks/
-│   ├── notify-clawdia.sh
-│   └── extract-last-message.py
+│   ├── notify-clawdia.sh         # Notification hook (task complete)
+│   ├── extract-last-message.py   # JSONL response extractor
+│   ├── ask-question-notify.sh    # PreToolUse hook (AskUserQuestion)
+│   └── format-question.py        # Question formatter for Discord
 ├── agent-bridge.py        # Deterministic Discord ↔ tmux forwarder
 ├── docs/
 │   └── architecture.md    # This document
