@@ -5,10 +5,10 @@ A system that connects Discord to Claude Code sessions running in tmux, enabling
 ## Overview
 
 ```
-┌──────────┐     ┌──────────────┐     ┌─────────┐     ┌──────────────────┐
-│  User on  │────▶│  Clawdia Bot  │────▶│  SSH    │────▶│ tmux sessions    │
-│  Discord  │◀────│  (K8s Pod)    │◀────│         │◀────│ (Claude Code)    │
-└──────────┘     └──────────────┘     └─────────┘     └──────────────────┘
+┌──────────┐     ┌───────────────┐     ┌─────────┐     ┌──────────────────┐
+│  User on  │────▶│ agent-bridge  │────▶│  SSH    │────▶│ tmux sessions    │
+│  Discord  │◀────│ (Python/WS)   │◀────│         │◀────│ (Claude Code)    │
+└──────────┘     └───────────────┘     └─────────┘     └──────────────────┘
                                                         │
                                                         │ Notification Hook
                                                         ▼
@@ -20,7 +20,7 @@ A system that connects Discord to Claude Code sessions running in tmux, enabling
 
 There are two independent data flows:
 
-1. **User → Claude Code** (via bot): User sends a message in a Discord `[agent]` thread → Clawdia bot forwards it to the corresponding tmux session's Claude Code via SSH + `tmux send-keys`
+1. **User → Claude Code** (via agent-bridge): User sends a message in a Discord `[agent]` thread → `agent-bridge.py` deterministically forwards it to the corresponding tmux session's Claude Code via SSH + `tmux send-keys`
 2. **Claude Code → User** (via hook): Claude Code finishes a task → notification hook posts the response summary to the Discord `[agent]` thread
 
 ## Components
@@ -31,7 +31,7 @@ There are two independent data flows:
 
 **What it does:**
 - Runs entirely in a background subshell to avoid Claude Code's hook timeout
-- Extracts the current tmux session name
+- Detects the current tmux session via `TMUX_PANE` env var (not `tmux display-message -p '#S'` which returns the attached client's session, not the hook's session)
 - Waits 5 seconds for Claude Code to flush its response to the session JSONL
 - Extracts Claude's last response via `extract-last-message.py`
 - Finds or creates a Discord thread named `[agent] <tmux-session>` in the configured channel
@@ -56,26 +56,38 @@ There are two independent data flows:
 - Skips responses shorter than 20 characters
 - Truncates at 1000 characters
 
-### 3. Clawdia Bot (OpenClaw on K8s)
+### 3. Agent Bridge (`agent-bridge.py`)
 
-**Role:** Receives Discord messages in `[agent]` threads and forwards them to the corresponding tmux session.
+**Role:** Deterministic forwarder — no AI involved. Connects to Discord gateway via WebSocket and forwards ALL messages in `[agent]` threads to the corresponding tmux session.
 
-**Configuration:**
-- AGENTS.md contains the `[agent] Threads: tmux Session Bridge` rule
-- TOOLS.md contains SSH host details and tmux command patterns
-- Bot has SSH access to `jiun-mini` (via `host.internal`) and `jiun-mbp` (via Tailscale `100.88.17.8`)
+**Why deterministic?** Previously, the Clawdia bot (AI) was responsible for forwarding but it was unreliable — sometimes it would forward correctly, other times it would respond as a chatbot. Replacing with a deterministic script eliminated this inconsistency.
+
+**How it works:**
+- Connects to Discord gateway WebSocket with guild + message + message-content intents
+- Listens for `MESSAGE_CREATE` events
+- Checks if the message is in a thread with the `[agent]` prefix
+- Extracts the tmux session name from the thread name
+- Forwards via SSH + tmux send-keys (two-step — see Critical Implementation Notes)
+- Posts captured terminal output back to the Discord thread
 
 **Forwarding flow:**
-1. Bot receives a message in a thread starting with `[agent]`
-2. Extracts tmux session name from the thread name
-3. Checks which host has the session: `ssh <host> 'tmux has-session -t <name>'`
-4. Sends the message as keystrokes (two separate commands — critical for Claude Code):
+1. Receives Discord message in an `[agent] <session>` thread
+2. Finds which SSH host has the session: `ssh <host> 'tmux has-session -t <name>'`
+3. Sends the message as keystrokes (two separate commands — critical for Claude Code):
    ```bash
    ssh <host> 'tmux send-keys -t <session> "<message>"'
-   ssh <host> 'sleep 0.3 && tmux send-keys -t <session> Enter'
+   sleep 0.3
+   ssh <host> 'tmux send-keys -t <session> Enter'
    ```
-5. Waits, captures output: `ssh <host> 'tmux capture-pane -t <session> -p | tail -40'`
-6. Posts captured output back to the Discord thread
+4. Waits 8 seconds, captures output: `ssh <host> 'tmux capture-pane -t <session> -p | tail -40'`
+5. Posts captured output back to the Discord thread
+
+**Runtime:** Runs as a persistent process (typically in a tmux session `agent-bridge` on jiun-mini). Uses aiohttp (not urllib, which gets 403 from Discord API).
+
+**Configuration:**
+- `#workspace` channel is set to `allow: false` in Clawdia bot's Discord config so the bot ignores it
+- Agent bridge exclusively handles `[agent]` threads in that channel
+- SSH hosts: `jiun-mini`, `jiun-mbp`
 
 ### 4. SSH Infrastructure
 
@@ -106,6 +118,21 @@ The `[agent]` prefix serves two purposes:
 2. Users can visually distinguish agent threads from regular bot conversations
 
 ## Critical Implementation Notes
+
+### tmux Session Detection (TMUX_PANE)
+
+`tmux display-message -p '#S'` returns the session name of the **attached client**, not the session the hook is running in. If you have sessions `clawdbot` and `iac` and your terminal is attached to `clawdbot`, a hook running in `iac` would incorrectly report `clawdbot`.
+
+**Fix:** Use the `TMUX_PANE` environment variable (set by tmux for every pane) to target the correct session:
+
+```bash
+# Correct: uses TMUX_PANE to find the session this pane belongs to
+if [[ -n "${TMUX_PANE:-}" ]]; then
+  TMUX_SESSION=$(tmux display-message -t "${TMUX_PANE}" -p '#{session_name}')
+fi
+```
+
+The `-t "${TMUX_PANE}"` flag tells tmux to query the specific pane's session, not the attached client's session. Falls back to `display-message -p '#S'` when `TMUX_PANE` is not set.
 
 ### tmux send-keys and Claude Code
 
@@ -169,20 +196,28 @@ claude-hooks/              # GitHub repo
 ├── hooks/
 │   ├── notify-clawdia.sh
 │   └── extract-last-message.py
+├── agent-bridge.py        # Deterministic Discord ↔ tmux forwarder
 ├── docs/
 │   └── architecture.md    # This document
 ├── .env.example
 ├── .gitignore
+├── .venv/                 # Python venv (aiohttp dep for agent-bridge)
 ├── install.sh
 └── README.md
 ```
 
 ## Setup Checklist
 
+### Notification Hook (Claude Code → Discord)
 - [ ] Clone repo: `git clone https://github.com/jiunbae/claude-hooks.git`
 - [ ] Run `./install.sh` to symlink hooks
 - [ ] Create `~/.claude/hooks/.notify-env` with Discord bot token and channel ID
 - [ ] Add `Notification` hook to `~/.claude/settings.json`
 - [ ] Ensure tmux is running (hook only fires inside tmux sessions)
-- [ ] For bidirectional flow: configure bot's AGENTS.md with `[agent]` thread bridge rules
-- [ ] For bidirectional flow: ensure SSH access from bot to tmux hosts
+
+### Agent Bridge (Discord → Claude Code)
+- [ ] Set up Python venv: `python3 -m venv .venv && .venv/bin/pip install aiohttp`
+- [ ] Configure `.notify-env` with `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`
+- [ ] Ensure SSH access from bridge host to tmux hosts (`jiun-mini`, `jiun-mbp`)
+- [ ] Run: `.venv/bin/python agent-bridge.py` (typically in a dedicated tmux session)
+- [ ] Disable the `#workspace` channel in the Clawdia bot's Discord config (`allow: false`) to avoid conflicts
