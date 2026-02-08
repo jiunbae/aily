@@ -148,16 +148,126 @@ Reads the Claude Code session JSONL file backwards to find the last meaningful a
 
 ## Multi-machine setup
 
-To sync across machines, clone the repo on each machine and run `./install.sh`. The `.notify-env` file must be created separately on each machine (it contains secrets and is gitignored).
+Each machine needs its own clone and `.notify-env`. The install script handles symlinking and agent config automatically.
+
+### Quick setup (new machine)
 
 ```bash
-# On remote machine
-git clone https://github.com/jiunbae/claude-hooks.git
-cd claude-hooks
+# 1. Clone
+git clone https://github.com/jiunbae/claude-hooks.git ~/workspace-ext/claude-hooks
+cd ~/workspace-ext/claude-hooks
+
+# 2. Install (symlinks + agent configs)
 ./install.sh
+
+# 3. Create secrets
 cp .env.example ~/.claude/hooks/.notify-env
-# Edit .notify-env with your tokens
+chmod 600 ~/.claude/hooks/.notify-env
+nano ~/.claude/hooks/.notify-env   # fill in DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID
 ```
+
+### Step-by-step walkthrough
+
+#### Prerequisites
+
+```bash
+# Verify these are available
+python3 --version   # Python 3.x
+curl --version
+tmux -V             # tmux must be installed
+```
+
+#### 1. Clone and install
+
+```bash
+git clone https://github.com/jiunbae/claude-hooks.git ~/workspace-ext/claude-hooks
+cd ~/workspace-ext/claude-hooks
+./install.sh
+```
+
+The install script will:
+- Symlink all hooks to `~/.claude/hooks/`
+- Add `notify` to `~/.codex/config.toml` (creates if needed)
+- Add `AfterAgent` hook to `~/.gemini/settings.json` (creates if needed)
+- Check if Claude Code `Notification` hook is configured
+
+#### 2. Configure secrets
+
+```bash
+cp .env.example ~/.claude/hooks/.notify-env
+chmod 600 ~/.claude/hooks/.notify-env
+```
+
+Edit `.notify-env`:
+
+```
+DISCORD_BOT_TOKEN="your-raw-bot-token"
+DISCORD_CHANNEL_ID="your-channel-id"
+```
+
+#### 3. Configure Claude Code (if not already done)
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/notify-claude.sh",
+            "statusMessage": "Notifying..."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+#### 4. Verify installation
+
+```bash
+# Check symlinks
+ls -la ~/.claude/hooks/notify-*.sh ~/.claude/hooks/notify-*.py ~/.claude/hooks/discord-post.sh
+
+# Check agent configs
+grep notify ~/.codex/config.toml
+python3 -c "import json; print(json.dumps(json.load(open('$HOME/.gemini/settings.json')).get('hooks',{}), indent=2))"
+```
+
+### Codex + oh-my-prompt chaining
+
+If the machine already has an oh-my-prompt Codex notify hook, use the wrapper to chain both:
+
+```bash
+# Edit ~/.codex/config.toml
+notify = "bash /path/to/.claude/hooks/notify-codex-wrapper.sh"
+```
+
+The wrapper (`notify-codex-wrapper.sh`) calls both oh-my-prompt's `notify.js` and `notify-codex.py` in parallel.
+
+### Updating on all machines
+
+```bash
+# On each machine
+cd ~/workspace-ext/claude-hooks
+git pull
+./install.sh   # re-run to pick up any new hooks
+```
+
+### Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| No Discord notification | Check `~/.claude/hooks/.notify-env` exists with valid tokens |
+| Thread not found | Verify `DISCORD_CHANNEL_ID` matches your #workspace channel |
+| tmux session not detected | Ensure you're running inside `tmux` (check `echo $TMUX`) |
+| Codex hook not firing | Check `~/.codex/config.toml` has the `notify` line |
+| Gemini hook not firing | Check `~/.gemini/settings.json` has `AfterAgent` hook |
+| macOS tmux path issue | Script tries `/opt/homebrew/bin/tmux` first, falls back to `tmux` |
 
 ## Thread naming
 
