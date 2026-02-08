@@ -50,6 +50,15 @@ def tables_to_codeblocks(text):
         result.append("```")
     return "\n".join(result)
 
+def has_interactive_tool(content):
+    """Check if content has AskUserQuestion or similar interactive tool calls."""
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "tool_use":
+            if block.get("name") in ("AskUserQuestion", "EnterPlanMode"):
+                return True
+    return False
+
+
 def extract_last_assistant_text(jsonl_path, max_chars=1000):
     """Read backwards to find last assistant text. Never falls back to older messages."""
     with open(jsonl_path) as f:
@@ -61,6 +70,12 @@ def extract_last_assistant_text(jsonl_path, max_chars=1000):
             if obj.get("type") != "assistant":
                 continue
             content = obj.get("message", {}).get("content", [])
+
+            # If this turn has an interactive prompt, suppress notification
+            # (the PreToolUse hook handles these separately)
+            if has_interactive_tool(content):
+                return None
+
             texts = []
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "text":
