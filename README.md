@@ -1,23 +1,23 @@
 # claude-hooks
 
-Claude Code notification hooks that post task completions to Discord, with one thread per tmux session.
+Notification hooks for Claude Code, Codex CLI, and Gemini CLI that post task completions to Discord, with one thread per tmux session.
 
 ## What it does
 
-When Claude Code finishes a task (triggers a Notification event), this hook:
+When an agent finishes a task (Claude Code Notification hook, Codex notify hook, or Gemini AfterAgent hook), it:
 
-1. Extracts Claude's last response from the session JSONL
+1. Extracts the agent's last response
 2. Finds or creates a Discord thread named `[agent] <tmux-session>` in your channel
-3. Posts a summary with host, project, timestamp, and Claude's response
+3. Posts a summary with host, project, timestamp, and the response
 
 ```
-🔔 Task Complete
+🔔 **Task Complete** (claude)
 
 🖥 Host: jiun-mini
 📁 Project: my-project
 ⏰ Time: 2026-02-07 22:01:38
 
-Response:
+**Response:**
 Fixed the bug in auth.ts by updating the token validation logic...
 ```
 
@@ -28,7 +28,7 @@ Each tmux session gets its own thread, so notifications stay organized.
 - macOS or Linux
 - Python 3
 - `curl`
-- `tmux` (notifications only fire inside tmux sessions)
+- `tmux` (thread naming is based on the tmux session)
 - A Discord bot token with message permissions
 
 ## Installation
@@ -39,7 +39,11 @@ cd claude-hooks
 ./install.sh
 ```
 
-The install script symlinks hook files into `~/.claude/hooks/`.
+The install script:
+
+- Symlinks hook files into `~/.claude/hooks/`
+- Updates `~/.codex/config.toml` for Codex CLI
+- Updates `~/.gemini/settings.json` for Gemini CLI
 
 ### Configure secrets
 
@@ -55,7 +59,9 @@ DISCORD_BOT_TOKEN="your-bot-token"
 DISCORD_CHANNEL_ID="your-channel-id"
 ```
 
-### Configure Claude Code
+## Agent Configuration
+
+### Claude Code (Notification hook)
 
 Add the notification hook to `~/.claude/settings.json`:
 
@@ -67,8 +73,41 @@ Add the notification hook to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/notify-clawdia.sh",
+            "command": "bash ~/.claude/hooks/notify-claude.sh",
             "statusMessage": "Notifying..."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Backward compatibility: `notify-clawdia.sh` still exists as a wrapper and can be used if you already have it configured.
+
+### Codex CLI (`notify` hook)
+
+Add (or ensure) this in `~/.codex/config.toml`:
+
+```toml
+notify = ["python3", "/Users/<you>/.claude/hooks/notify-codex.py"]
+```
+
+### Gemini CLI (`AfterAgent` hook)
+
+Merge this into `~/.gemini/settings.json`:
+
+```json
+{
+  "hooks": {
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/<you>/.claude/hooks/notify-gemini.sh",
+            "name": "discord-notify",
+            "timeout": 10000
           }
         ]
       }
@@ -79,23 +118,23 @@ Add the notification hook to `~/.claude/settings.json`:
 
 ## How it works
 
-### notify-clawdia.sh
+### Unified flow
 
-The main hook script. Runs in a background subshell (`( ... ) & disown`) to avoid Claude Code's hook timeout.
+Each agent-specific hook extracts the last assistant response, then calls the shared Discord poster:
 
-**Flow:**
-1. Detects current tmux session name
-2. Waits 5s for Claude Code to flush the response to its JSONL log
-3. Extracts Claude's last response via `extract-last-message.py`
-4. Looks up the guild's active threads, archived threads, and channel messages to find an existing `[agent] <session>` thread
-5. Creates a new thread if none found; unarchives if archived
-6. Posts the notification to the thread
+- `hooks/notify-claude.sh` (Claude Code)
+- `hooks/notify-codex.py` (Codex CLI)
+- `hooks/notify-gemini.sh` (Gemini CLI)
+- `hooks/discord-post.sh` (shared Discord thread discovery + posting)
 
-**Key design decisions:**
-- Background fork avoids hook timeout — the hook returns `exit 0` immediately
-- Thread names use `[agent]` prefix for easy identification by bots
-- Uses guild-based active threads endpoint (`/guilds/{id}/threads/active`), not the channel-based one (which returns 404)
-- Markdown tables in Claude's response are auto-wrapped in code blocks (Discord doesn't render markdown tables)
+`discord-post.sh`:
+
+- Detects current tmux session name
+- Looks up the guild's active threads (via `/guilds/{id}/threads/active`) and matches threads where `parent_id == DISCORD_CHANNEL_ID`
+- Creates a thread if none found; unarchives if archived
+- Posts a formatted message to the thread
+
+All hooks are designed to return quickly and do network work in the background (to avoid hook timeouts).
 
 ### extract-last-message.py
 
