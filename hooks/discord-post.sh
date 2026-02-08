@@ -42,19 +42,8 @@ HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
 PROJECT=$(basename "${PWD:-unknown}")
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-json_payload_content() {
-  python3 - <<'PY'
-import json, sys
-content = sys.stdin.read()
-print(json.dumps({"content": content}))
-PY
-}
-
-json_payload_thread_name() {
-  python3 - "$1" <<'PY'
-import json, sys
-print(json.dumps({"name": sys.argv[1]}))
-PY
+escape_json() {
+  python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" <<< "$1"
 }
 
 THREAD_NAME="[agent] ${TMUX_SESSION}"
@@ -63,107 +52,72 @@ AUTH="Authorization: Bot ${DISCORD_BOT_TOKEN}"
 # Get guild ID from channel
 GUILD_ID=$(curl -sf -H "$AUTH" \
   "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}" 2>/dev/null \
-  | python3 - <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    print(json.load(sys.stdin).get("guild_id", ""))
-except Exception:
-    pass
-PY
-)
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('guild_id',''))" 2>/dev/null || echo "")
 
 # Find existing thread (active) - must use guild endpoint
 THREAD_ID=""
 if [[ -n "$GUILD_ID" ]]; then
   THREAD_ID=$(curl -sf -H "$AUTH" \
     "https://discord.com/api/v10/guilds/${GUILD_ID}/threads/active" 2>/dev/null \
-    | python3 - "$THREAD_NAME" "$DISCORD_CHANNEL_ID" <<'PY' 2>/dev/null || true
-import json, sys
-name = sys.argv[1]
-parent = sys.argv[2]
+    | python3 -c "
+import sys, json
 try:
     data = json.load(sys.stdin)
-    for t in data.get("threads", []):
-        if t.get("name") == name and t.get("parent_id") == parent:
-            print(t.get("id", ""))
+    for t in data.get('threads', []):
+        if t.get('name') == '${THREAD_NAME}' and t.get('parent_id') == '${DISCORD_CHANNEL_ID}':
+            print(t['id'])
             break
-except Exception:
-    pass
-PY
-  )
+except: pass
+" 2>/dev/null || echo "")
 fi
 
 # Check archived
 if [[ -z "$THREAD_ID" ]]; then
   THREAD_ID=$(curl -sf -H "$AUTH" \
     "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/threads/archived/public" 2>/dev/null \
-    | python3 - "$THREAD_NAME" <<'PY' 2>/dev/null || true
-import json, sys
-name = sys.argv[1]
+    | python3 -c "
+import sys, json
 try:
     data = json.load(sys.stdin)
-    for t in data.get("threads", []):
-        if t.get("name") == name:
-            print(t.get("id", ""))
+    for t in data.get('threads', []):
+        if t.get('name') == '${THREAD_NAME}':
+            print(t['id'])
             break
-except Exception:
-    pass
-PY
-  )
+except: pass
+" 2>/dev/null || echo "")
 fi
 
 # Check channel messages for thread metadata
 if [[ -z "$THREAD_ID" ]]; then
   THREAD_ID=$(curl -sf -H "$AUTH" \
     "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages?limit=50" 2>/dev/null \
-    | python3 - "$THREAD_NAME" <<'PY' 2>/dev/null || true
-import json, sys
-name = sys.argv[1]
+    | python3 -c "
+import sys, json
 try:
     msgs = json.load(sys.stdin)
     for m in msgs:
-        t = (m or {}).get("thread") or {}
-        if t.get("name") == name:
-            print(t.get("id", ""))
+        t = m.get('thread', {})
+        if t.get('name') == '${THREAD_NAME}':
+            print(t['id'])
             break
-except Exception:
-    pass
-PY
-  )
+except: pass
+" 2>/dev/null || echo "")
 fi
 
 # Create thread if not found
 if [[ -z "$THREAD_ID" ]]; then
-  STARTER_CONTENT=$(printf '🖥 **tmux session: %s** (%s)' "$THREAD_NAME" "$HOSTNAME_SHORT")
-  STARTER_PAYLOAD=$(json_payload_content <<< "$STARTER_CONTENT")
-
   STARTER_MSG_ID=$(curl -sf -X POST \
     -H "$AUTH" -H "Content-Type: application/json" \
-    -d "$STARTER_PAYLOAD" \
+    -d "{\"content\": \"🖥 **tmux session: ${THREAD_NAME}** (${HOSTNAME_SHORT})\"}" \
     "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages" 2>/dev/null \
-    | python3 - <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    print(json.load(sys.stdin).get("id", ""))
-except Exception:
-    pass
-PY
-  )
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
 
   if [[ -n "$STARTER_MSG_ID" ]]; then
-    THREAD_PAYLOAD=$(json_payload_thread_name "$THREAD_NAME")
     THREAD_ID=$(curl -sf -X POST \
       -H "$AUTH" -H "Content-Type: application/json" \
-      -d "$THREAD_PAYLOAD" \
+      -d "{\"name\": \"${THREAD_NAME}\"}" \
       "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages/${STARTER_MSG_ID}/threads" 2>/dev/null \
-      | python3 - <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    print(json.load(sys.stdin).get("id", ""))
-except Exception:
-    pass
-PY
-    )
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
   fi
 fi
 
@@ -180,22 +134,22 @@ if [[ -n "$THREAD_ID" ]]; then
     MESSAGE_TEXT="${MESSAGE_TEXT:0:1000}..."
   fi
 
-  DISCORD_MSG=$(printf '🔔 **Task Complete** (%s)\n\n🖥 Host: `%s`\n📁 Project: `%s`\n⏰ Time: %s' \
-    "$AGENT_NAME" "$HOSTNAME_SHORT" "$PROJECT" "$TIMESTAMP")
-
+  SUMMARY_BLOCK=""
   if [[ -n "$MESSAGE_TEXT" ]]; then
-    DISCORD_MSG="${DISCORD_MSG}"$'\n\n'"**Response:**"$'\n'"${MESSAGE_TEXT}"
+    ESCAPED=$(escape_json "$MESSAGE_TEXT")
+    ESCAPED="${ESCAPED:1:${#ESCAPED}-2}"
+    SUMMARY_BLOCK="\\n\\n**Response:**\\n${ESCAPED}"
   fi
 
-  PAYLOAD=$(json_payload_content <<< "$DISCORD_MSG")
-  if [[ ${#PAYLOAD} -gt 1990 && -n "$MESSAGE_TEXT" ]]; then
-    SHORT="${MESSAGE_TEXT:0:400}"
-    if [[ ${#MESSAGE_TEXT} -gt 400 ]]; then
-      SHORT="${SHORT}..."
-    fi
-    DISCORD_MSG=$(printf '🔔 **Task Complete** (%s)\n\n🖥 Host: `%s`\n📁 Project: `%s`\n⏰ Time: %s\n\n**(truncated) Response:**\n%s' \
-      "$AGENT_NAME" "$HOSTNAME_SHORT" "$PROJECT" "$TIMESTAMP" "$SHORT")
-    PAYLOAD=$(json_payload_content <<< "$DISCORD_MSG")
+  DISCORD_MSG="🔔 **Task Complete** (${AGENT_NAME})\\n\\n🖥 Host: \`${HOSTNAME_SHORT}\`\\n📁 Project: \`${PROJECT}\`\\n⏰ Time: ${TIMESTAMP}${SUMMARY_BLOCK}"
+
+  PAYLOAD="{\"content\": \"${DISCORD_MSG}\"}"
+  if [[ ${#PAYLOAD} -gt 1990 ]]; then
+    SHORT="${MESSAGE_TEXT:0:400}..."
+    SHORT_ESC=$(escape_json "$SHORT")
+    SHORT_ESC="${SHORT_ESC:1:${#SHORT_ESC}-2}"
+    DISCORD_MSG="🔔 **Task Complete** (${AGENT_NAME})\\n\\n🖥 Host: \`${HOSTNAME_SHORT}\`\\n📁 Project: \`${PROJECT}\`\\n⏰ Time: ${TIMESTAMP}\\n\\n**(truncated) Response:**\\n${SHORT_ESC}"
+    PAYLOAD="{\"content\": \"${DISCORD_MSG}\"}"
   fi
 
   curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
