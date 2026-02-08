@@ -11,7 +11,9 @@ fi
 
 HOOK_DIR="$(dirname "$0")"
 TMUX_SESSION=""
-if [[ -n "${TMUX:-}" ]]; then
+if [[ -n "${TMUX_PANE:-}" ]]; then
+  TMUX_SESSION=$(/opt/homebrew/bin/tmux display-message -t "${TMUX_PANE}" -p '#{session_name}' 2>/dev/null || echo "")
+elif [[ -n "${TMUX:-}" ]]; then
   TMUX_SESSION=$(/opt/homebrew/bin/tmux display-message -p '#S' 2>/dev/null || echo "")
 fi
 
