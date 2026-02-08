@@ -80,7 +80,8 @@ There are two independent data flows:
 - Finds `type: "assistant"` entries with text content blocks
 - Strips English Coach header blocks (`--- > ... ---`)
 - Converts markdown tables to code blocks for Discord
-- Skips responses shorter than 20 characters
+- Uses hash-based dedup to prevent re-sending the same message
+- Suppresses notifications when interactive prompts (AskUserQuestion) are active
 - Truncates at 1000 characters
 
 ### 3. Agent Bridge (`agent-bridge.py`)
@@ -215,11 +216,11 @@ macOS ships with Bash 3.x which doesn't support negative indices in substring ex
 ~/.claude/
 ├── settings.json          # Hook configuration (Notification event)
 └── hooks/
-    ├── notify-clawdia.sh  # Symlink → claude-hooks repo
-    ├── extract-last-message.py  # Symlink → claude-hooks repo
+    ├── notify-clawdia.sh  # Symlink → aily repo
+    ├── extract-last-message.py  # Symlink → aily repo
     └── .notify-env        # Secrets (not in repo)
 
-claude-hooks/              # GitHub repo
+aily/                      # GitHub repo
 ├── hooks/
 │   ├── notify-clawdia.sh         # Notification hook (task complete)
 │   ├── extract-last-message.py   # JSONL response extractor
@@ -238,7 +239,7 @@ claude-hooks/              # GitHub repo
 ## Setup Checklist
 
 ### Notification Hook (Claude Code → Discord)
-- [ ] Clone repo: `git clone https://github.com/jiunbae/claude-hooks.git`
+- [ ] Clone repo: `git clone https://github.com/jiunbae/aily.git`
 - [ ] Run `./install.sh` to symlink hooks
 - [ ] Create `~/.claude/hooks/.notify-env` with Discord bot token and channel ID
 - [ ] Add `Notification` hook to `~/.claude/settings.json`
