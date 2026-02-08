@@ -1,6 +1,7 @@
 #!/bin/bash
 # Shared Discord posting logic for all agent hooks.
 # Usage: discord-post.sh <agent_name> <message_text>
+#    OR: discord-post.sh --raw <pre_formatted_message>
 #
 # Required env vars (from .notify-env in same dir): DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID
 # Requires: running inside a tmux session (TMUX/TMUX_PANE set)
@@ -9,8 +10,16 @@
 
 set -euo pipefail
 
-AGENT_NAME="${1:-unknown}"
-MESSAGE_TEXT="${2:-}"
+RAW_MODE=false
+if [[ "${1:-}" == "--raw" ]]; then
+  RAW_MODE=true
+  RAW_MESSAGE="${2:-}"
+  AGENT_NAME="raw"
+  MESSAGE_TEXT=""
+else
+  AGENT_NAME="${1:-unknown}"
+  MESSAGE_TEXT="${2:-}"
+fi
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${HOOK_DIR}/.notify-env"
@@ -130,26 +139,29 @@ fi
 
 # Post to thread
 if [[ -n "$THREAD_ID" ]]; then
-  if [[ -n "$MESSAGE_TEXT" && ${#MESSAGE_TEXT} -gt 1000 ]]; then
-    MESSAGE_TEXT="${MESSAGE_TEXT:0:1000}..."
+  if [[ "$RAW_MODE" == true ]]; then
+    # Raw mode: post pre-formatted message as-is
+    DISCORD_MSG="$RAW_MESSAGE"
+  else
+    # Standard mode: wrap in Task Complete format
+    if [[ -n "$MESSAGE_TEXT" && ${#MESSAGE_TEXT} -gt 1000 ]]; then
+      MESSAGE_TEXT="${MESSAGE_TEXT:0:1000}..."
+    fi
+
+    SUMMARY_BLOCK=""
+    if [[ -n "$MESSAGE_TEXT" ]]; then
+      ESCAPED=$(escape_json "$MESSAGE_TEXT")
+      ESCAPED="${ESCAPED:1:${#ESCAPED}-2}"
+      SUMMARY_BLOCK="\\n\\n**Response:**\\n${ESCAPED}"
+    fi
+
+    DISCORD_MSG="🔔 **Task Complete** (${AGENT_NAME})\\n\\n🖥 Host: \`${HOSTNAME_SHORT}\`\\n📁 Project: \`${PROJECT}\`\\n⏰ Time: ${TIMESTAMP}${SUMMARY_BLOCK}"
   fi
 
-  SUMMARY_BLOCK=""
-  if [[ -n "$MESSAGE_TEXT" ]]; then
-    ESCAPED=$(escape_json "$MESSAGE_TEXT")
-    ESCAPED="${ESCAPED:1:${#ESCAPED}-2}"
-    SUMMARY_BLOCK="\\n\\n**Response:**\\n${ESCAPED}"
-  fi
-
-  DISCORD_MSG="🔔 **Task Complete** (${AGENT_NAME})\\n\\n🖥 Host: \`${HOSTNAME_SHORT}\`\\n📁 Project: \`${PROJECT}\`\\n⏰ Time: ${TIMESTAMP}${SUMMARY_BLOCK}"
-
-  PAYLOAD="{\"content\": \"${DISCORD_MSG}\"}"
+  PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$DISCORD_MSG")
   if [[ ${#PAYLOAD} -gt 1990 ]]; then
-    SHORT="${MESSAGE_TEXT:0:400}..."
-    SHORT_ESC=$(escape_json "$SHORT")
-    SHORT_ESC="${SHORT_ESC:1:${#SHORT_ESC}-2}"
-    DISCORD_MSG="🔔 **Task Complete** (${AGENT_NAME})\\n\\n🖥 Host: \`${HOSTNAME_SHORT}\`\\n📁 Project: \`${PROJECT}\`\\n⏰ Time: ${TIMESTAMP}\\n\\n**(truncated) Response:**\\n${SHORT_ESC}"
-    PAYLOAD="{\"content\": \"${DISCORD_MSG}\"}"
+    SHORT="${DISCORD_MSG:0:1800}..."
+    PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$SHORT")
   fi
 
   curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
