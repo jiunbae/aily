@@ -73,7 +73,7 @@ discord_create_thread() {
   local thread_name="$1"
   local starter_content="${2:-"tmux session: ${thread_name}"}"
 
-  local payload msg_id
+  local payload msg_id thread_id
   payload=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$starter_content")
 
   msg_id=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
@@ -84,10 +84,19 @@ discord_create_thread() {
   if [[ -n "$msg_id" ]]; then
     local name_payload
     name_payload=$(python3 -c "import json; print(json.dumps({'name': '$thread_name'}))")
-    curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
+    thread_id=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
       -d "$name_payload" \
       "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages/${msg_id}/threads" 2>/dev/null \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo ""
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+
+    # Post welcome message with usage guide
+    if [[ -n "$thread_id" ]]; then
+      local welcome
+      welcome=$(printf '**Welcome to %s** 👋\n\nType a message here to forward it to the tmux session.\n\n**Commands:**\n`!sessions` — list all sessions\n`!kill %s` — kill this session + archive thread' \
+        "$thread_name" "${thread_name#\[agent\] }")
+      discord_post_to_thread "$thread_id" "$welcome"
+      echo "$thread_id"
+    fi
   fi
 }
 
