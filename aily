@@ -1,0 +1,123 @@
+#!/bin/bash
+# aily — CLI for managing AI agent notification relay.
+# Usage:
+#   aily auto on        Enable auto thread sync on tmux session create/close
+#   aily auto off       Disable auto thread sync
+#   aily auto           Show current auto-sync status
+#   aily sessions       List all tmux sessions with Discord thread sync status
+#   aily help           Show this help
+
+set -euo pipefail
+
+ENV_FILE="${AILY_ENV:-$HOME/.claude/hooks/.notify-env}"
+
+# --- helpers ---
+
+env_get() {
+  local key="$1" default="${2:-}"
+  if [[ -f "$ENV_FILE" ]]; then
+    local val
+    val=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+    echo "${val:-$default}"
+  else
+    echo "$default"
+  fi
+}
+
+env_set() {
+  local key="$1" value="$2"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "  Error: $ENV_FILE not found" >&2
+    exit 1
+  fi
+  if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    # Update existing line (use python for safe in-place edit)
+    python3 -c "
+import re, sys
+path = sys.argv[1]
+key, val = sys.argv[2], sys.argv[3]
+with open(path) as f:
+    text = f.read()
+text = re.sub(rf'^{key}=.*$', f'{key}=\"{val}\"', text, flags=re.MULTILINE)
+with open(path, 'w') as f:
+    f.write(text)
+" "$ENV_FILE" "$key" "$value"
+  else
+    # Append new line
+    echo "" >> "$ENV_FILE"
+    echo "${key}=\"${value}\"" >> "$ENV_FILE"
+  fi
+}
+
+# --- commands ---
+
+cmd_auto() {
+  local action="${1:-}"
+  case "$action" in
+    on)
+      env_set "TMUX_THREAD_SYNC" "true"
+      echo "  Auto thread sync: ON"
+      ;;
+    off)
+      env_set "TMUX_THREAD_SYNC" "false"
+      echo "  Auto thread sync: OFF"
+      ;;
+    "")
+      local current
+      current=$(env_get "TMUX_THREAD_SYNC" "true")
+      if [[ "$current" == "false" ]]; then
+        echo "  Auto thread sync: OFF"
+      else
+        echo "  Auto thread sync: ON"
+      fi
+      ;;
+    *)
+      echo "Usage: aily auto [on|off]"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_sessions() {
+  local hosts=("jiun-mini" "jiun-mbp")
+  echo "  Checking sessions..."
+  echo ""
+
+  for host in "${hosts[@]}"; do
+    local sessions
+    sessions=$(ssh "$host" "tmux list-sessions -F '#{session_name}' 2>/dev/null" 2>/dev/null || echo "")
+    if [[ -n "$sessions" ]]; then
+      echo "  $host:"
+      while IFS= read -r name; do
+        echo "    $name"
+      done <<< "$sessions"
+      echo ""
+    fi
+  done
+}
+
+cmd_help() {
+  echo "aily — AI agent notification relay"
+  echo ""
+  echo "Usage:"
+  echo "  aily auto [on|off]    Toggle auto thread sync (or show status)"
+  echo "  aily sessions         List tmux sessions across hosts"
+  echo "  aily help             Show this help"
+}
+
+# --- main ---
+
+CMD="${1:-help}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+  auto)     cmd_auto "$@" ;;
+  sessions) cmd_sessions "$@" ;;
+  help|-h|--help) cmd_help ;;
+  *)
+    echo "Unknown command: $CMD"
+    echo ""
+    cmd_help
+    exit 1
+    ;;
+esac
