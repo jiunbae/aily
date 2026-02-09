@@ -26,7 +26,6 @@ INTENT_MESSAGE_CONTENT = 1 << 15
 AGENT_PREFIX = "[agent] "
 SSH_HOSTS = ["jiun-mini", "jiun-mbp"]
 SEND_KEYS_DELAY = 0.3
-CAPTURE_DELAY = 8
 
 API_BASE = "https://discord.com/api/v10"
 
@@ -68,28 +67,19 @@ def find_session_host(session_name: str) -> str | None:
     return None
 
 
-def send_to_tmux(host: str, session: str, message: str) -> str:
-    """Send a message to a tmux session's Claude Code and capture output."""
+def send_to_tmux(host: str, session: str, message: str) -> bool:
+    """Send a message to a tmux session's Claude Code."""
     escaped = message.replace('\\', '\\\\').replace('"', '\\"')
 
     # Step 1: Type the text
     rc, _ = run_ssh(host, f'tmux send-keys -t {session} "{escaped}"')
     if rc != 0:
-        return f"Failed to send keys to {session} on {host}"
+        return False
 
     # Step 2: Press Enter (separate command — critical for Claude Code)
     time.sleep(SEND_KEYS_DELAY)
     rc, _ = run_ssh(host, f'tmux send-keys -t {session} Enter')
-    if rc != 0:
-        return f"Failed to send Enter to {session} on {host}"
-
-    # Step 3: Wait and capture output
-    time.sleep(CAPTURE_DELAY)
-    rc, output = run_ssh(host, f'tmux capture-pane -t {session} -p | tail -40')
-    if rc != 0:
-        return f"Failed to capture pane from {session} on {host}"
-
-    return output
+    return rc == 0
 
 
 async def discord_request(session: aiohttp.ClientSession, token: str,
@@ -155,9 +145,7 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
         f"⏳ Forwarding to `{session_name}` on `{host}`...")
 
     # Run tmux interaction in a thread to not block the event loop
-    output = await asyncio.to_thread(send_to_tmux, host, session_name, user_message)
-
-    await post_to_thread(http, token, channel_id, f"```\n{output}\n```")
+    await asyncio.to_thread(send_to_tmux, host, session_name, user_message)
 
 
 async def gateway_connect(token: str):
