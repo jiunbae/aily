@@ -37,6 +37,20 @@ else
   # Enforce restrictive permissions on credentials file
   chmod 600 "$HOOKS_DIR/.notify-env" 2>/dev/null || true
   echo "  ✓ .notify-env exists (chmod 600)"
+
+  # Show platform status
+  # shellcheck source=/dev/null
+  source "$HOOKS_DIR/.notify-env" 2>/dev/null || true
+  if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
+    echo "  ✓ Discord: configured"
+  else
+    echo "  · Discord: not configured (optional)"
+  fi
+  if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
+    echo "  ✓ Slack: configured"
+  else
+    echo "  · Slack: not configured (optional)"
+  fi
 fi
 
 # --- 2. Claude Code ---
@@ -196,7 +210,7 @@ fi
 # --- 5. tmux session hooks ---
 echo ""
 echo "=== tmux session hooks ==="
-SYNC_SCRIPT="$HOOKS_DIR/discord-thread-sync.sh"
+SYNC_SCRIPT="$HOOKS_DIR/thread-sync.sh"
 if [[ -x "$SYNC_SCRIPT" ]]; then
   if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
     tmux set-hook -g session-created \
@@ -217,7 +231,7 @@ if [[ -x "$SYNC_SCRIPT" ]]; then
   echo "    set-hook -g session-created \"run-shell '${SYNC_SCRIPT} create #{session_name}'\""
   echo "    set-hook -g session-closed \"run-shell '${SYNC_SCRIPT} delete #{hook_session_name}'\""
 else
-  echo "  ⚠️  discord-thread-sync.sh not found or not executable"
+  echo "  ⚠️  thread-sync.sh not found or not executable"
 fi
 
 # --- 6. aily CLI ---
@@ -242,7 +256,8 @@ echo "=== Done ==="
 echo "  Claude Code: notify-claude.sh (via ~/.claude/settings.json)"
 echo "  Codex CLI:   notify-codex.py  (via ~/.codex/config.toml)"
 echo "  Gemini CLI:  notify-gemini.sh (via ~/.gemini/settings.json)"
-echo "  tmux:        discord-thread-sync.sh (via tmux set-hook)"
-echo "  CLI:         aily (auto on/off, sessions)"
+echo "  tmux:        thread-sync.sh (via tmux set-hook)"
+echo "  CLI:         aily (start/stop/auto/sessions/status)"
 echo ""
-echo "All hooks post to Discord thread [agent] <tmux-session-name>."
+echo "Hooks post to [agent] <tmux-session-name> threads on all configured platforms."
+echo "Run 'aily status' to see which platforms are enabled."

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Code hook: forward AskUserQuestion prompts to Discord
+# Claude Code hook: forward AskUserQuestion prompts to enabled platforms
 # Triggered by PreToolUse event with AskUserQuestion matcher
 # Reads tool input from stdin, posts formatted choices via discord-post.sh
 
@@ -30,7 +30,7 @@ HOOK_DIR="$(dirname "$0")"
     exit 0
   fi
 
-  exec bash "${HOOK_DIR}/discord-post.sh" --raw "$FORMATTED"
+  exec bash "${HOOK_DIR}/post.sh" --raw "$FORMATTED"
 ) &
 
 # Return immediately - background process handles the notification

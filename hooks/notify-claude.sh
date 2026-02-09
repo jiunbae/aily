@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude Code Notification hook entry point.
-# Extracts last response from Claude Code JSONL, then posts to Discord.
+# Extracts last response from Claude Code JSONL, then posts to enabled platforms.
 # Registered in ~/.claude/settings.json → hooks.Notification
 
 set -euo pipefail
@@ -21,7 +21,7 @@ fi
   sleep 5
 
   LAST_MESSAGE=$(python3 "${HOOK_DIR}/extract-last-message.py" 2>/dev/null || echo "")
-  exec bash "${HOOK_DIR}/discord-post.sh" "claude" "$LAST_MESSAGE"
+  exec bash "${HOOK_DIR}/post.sh" "claude" "$LAST_MESSAGE"
 ) 1>/dev/null &
 
 disown
