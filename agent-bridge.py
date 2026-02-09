@@ -534,7 +534,7 @@ async def main():
     if hosts_str:
         SSH_HOSTS = [h.strip() for h in hosts_str.split(",") if h.strip()]
     else:
-        SSH_HOSTS = ["host-mini", "host-mbp"]
+        SSH_HOSTS = ["localhost"]
     DEFAULT_HOST = SSH_HOSTS[0] if SSH_HOSTS else ""
 
     if not token:
