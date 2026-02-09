@@ -1,10 +1,11 @@
 #!/bin/bash
 # aily — CLI for managing AI agent notification relay.
 # Usage:
-#   aily start [name]     Create Discord thread for current/named tmux session
-#   aily stop [name]      Archive Discord thread for current/named tmux session
+#   aily start [name]     Create thread for current/named tmux session
+#   aily stop [name]      Archive thread for current/named tmux session
 #   aily auto [on|off]    Toggle auto thread sync (or show status)
-#   aily sessions         List all tmux sessions with Discord thread sync status
+#   aily sessions         List all tmux sessions across hosts
+#   aily status           Show which platforms are configured
 #   aily help             Show this help
 
 set -euo pipefail
@@ -62,23 +63,27 @@ detect_tmux_session() {
 }
 
 load_discord_env() {
-  if [[ ! -f "$ENV_FILE" ]]; then
-    echo "  Error: $ENV_FILE not found" >&2
-    exit 1
-  fi
+  if [[ ! -f "$ENV_FILE" ]]; then return 1; fi
   # shellcheck source=/dev/null
   source "$ENV_FILE"
-  if [[ -z "${DISCORD_BOT_TOKEN:-}" || -z "${DISCORD_CHANNEL_ID:-}" ]]; then
-    echo "  Error: DISCORD_BOT_TOKEN or DISCORD_CHANNEL_ID not set in $ENV_FILE" >&2
-    exit 1
-  fi
+  if [[ -z "${DISCORD_BOT_TOKEN:-}" || -z "${DISCORD_CHANNEL_ID:-}" ]]; then return 1; fi
   local lib="${HOOKS_DIR}/discord-lib.sh"
-  if [[ ! -f "$lib" ]]; then
-    echo "  Error: discord-lib.sh not found at $lib" >&2
-    exit 1
-  fi
+  if [[ ! -f "$lib" ]]; then return 1; fi
   # shellcheck source=/dev/null
   source "$lib"
+  return 0
+}
+
+load_slack_env() {
+  if [[ ! -f "$ENV_FILE" ]]; then return 1; fi
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  if [[ -z "${SLACK_BOT_TOKEN:-}" || -z "${SLACK_CHANNEL_ID:-}" ]]; then return 1; fi
+  local lib="${HOOKS_DIR}/slack-lib.sh"
+  if [[ ! -f "$lib" ]]; then return 1; fi
+  # shellcheck source=/dev/null
+  source "$lib"
+  return 0
 }
 
 # --- commands ---
@@ -93,21 +98,41 @@ cmd_start() {
     exit 1
   fi
 
-  load_discord_env
-
   local thread_name="[agent] ${session_name}"
   local hostname_short
   hostname_short=$(hostname -s 2>/dev/null || hostname)
+  local timestamp
+  timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  local any_ok=false
 
   echo "  Starting thread for ${session_name}..."
-  local thread_id
-  thread_id=$(discord_ensure_thread "$thread_name" "🖥 **tmux session: ${thread_name}** (${hostname_short})")
 
-  if [[ -n "$thread_id" ]]; then
-    discord_post_to_thread "$thread_id" "▶️ Session \`${session_name}\` started on \`${hostname_short}\` · $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "  ✓ Thread ready: [agent] ${session_name}"
-  else
-    echo "  ✗ Failed to create thread" >&2
+  if load_discord_env 2>/dev/null; then
+    local thread_id
+    thread_id=$(discord_ensure_thread "$thread_name" "tmux session: ${thread_name} (${hostname_short})")
+    if [[ -n "$thread_id" ]]; then
+      discord_post_to_thread "$thread_id" "Session \`${session_name}\` started on \`${hostname_short}\` · ${timestamp}"
+      echo "  [discord] Thread ready"
+      any_ok=true
+    else
+      echo "  [discord] Failed to create thread" >&2
+    fi
+  fi
+
+  if load_slack_env 2>/dev/null; then
+    local thread_ts
+    thread_ts=$(slack_ensure_thread "$thread_name" "tmux session: ${thread_name} (${hostname_short})")
+    if [[ -n "$thread_ts" ]]; then
+      slack_post_to_thread "$thread_ts" "Session \`${session_name}\` started on \`${hostname_short}\` · ${timestamp}"
+      echo "  [slack] Thread ready"
+      any_ok=true
+    else
+      echo "  [slack] Failed to create thread" >&2
+    fi
+  fi
+
+  if [[ "$any_ok" == false ]]; then
+    echo "  No platforms configured. Check $ENV_FILE" >&2
     exit 1
   fi
 }
@@ -122,22 +147,36 @@ cmd_stop() {
     exit 1
   fi
 
-  load_discord_env
-
   local thread_name="[agent] ${session_name}"
   local hostname_short
   hostname_short=$(hostname -s 2>/dev/null || hostname)
+  local timestamp
+  timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
   echo "  Stopping thread for ${session_name}..."
-  local thread_id
-  thread_id=$(discord_find_thread "$thread_name")
 
-  if [[ -n "$thread_id" ]]; then
-    discord_post_to_thread "$thread_id" "⏹️ Session \`${session_name}\` stopped on \`${hostname_short}\` · $(date '+%Y-%m-%d %H:%M:%S')"
-    discord_archive_thread "$thread_id"
-    echo "  ✓ Thread archived: [agent] ${session_name}"
-  else
-    echo "  No thread found for [agent] ${session_name}"
+  if load_discord_env 2>/dev/null; then
+    local thread_id
+    thread_id=$(discord_find_thread "$thread_name")
+    if [[ -n "$thread_id" ]]; then
+      discord_post_to_thread "$thread_id" "Session \`${session_name}\` stopped on \`${hostname_short}\` · ${timestamp}"
+      discord_archive_thread "$thread_id"
+      echo "  [discord] Thread archived"
+    else
+      echo "  [discord] No thread found"
+    fi
+  fi
+
+  if load_slack_env 2>/dev/null; then
+    local thread_ts
+    thread_ts=$(slack_find_thread "$thread_name")
+    if [[ -n "$thread_ts" ]]; then
+      slack_post_to_thread "$thread_ts" "Session \`${session_name}\` stopped on \`${hostname_short}\` · ${timestamp}"
+      slack_archive_thread "$thread_ts"
+      echo "  [slack] Thread archived"
+    else
+      echo "  [slack] No thread found"
+    fi
   fi
 }
 
@@ -188,15 +227,44 @@ cmd_sessions() {
   done
 }
 
+cmd_status() {
+  echo "  Platforms:"
+  if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
+      echo "    discord: configured"
+    else
+      echo "    discord: not configured"
+    fi
+    if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
+      echo "    slack: configured"
+    else
+      echo "    slack: not configured"
+    fi
+    echo ""
+    echo "  Thread sync: $(env_get 'TMUX_THREAD_SYNC' 'true')"
+    local hosts
+    hosts=$(env_get "SSH_HOSTS" "localhost")
+    echo "  SSH hosts: ${hosts}"
+  else
+    echo "    No .notify-env found at $ENV_FILE"
+  fi
+}
+
 cmd_help() {
   echo "aily — AI agent notification relay"
   echo ""
   echo "Usage:"
-  echo "  aily start [name]     Create Discord thread (default: current tmux session)"
-  echo "  aily stop [name]      Archive Discord thread (default: current tmux session)"
+  echo "  aily start [name]     Create thread (default: current tmux session)"
+  echo "  aily stop [name]      Archive thread (default: current tmux session)"
   echo "  aily auto [on|off]    Toggle auto thread sync (or show status)"
   echo "  aily sessions         List tmux sessions across hosts"
+  echo "  aily status           Show which platforms are configured"
   echo "  aily help             Show this help"
+  echo ""
+  echo "Supported platforms: Discord, Slack"
+  echo "Configure in: $ENV_FILE"
 }
 
 # --- main ---
@@ -209,6 +277,7 @@ case "$CMD" in
   stop)     cmd_stop "$@" ;;
   auto)     cmd_auto "$@" ;;
   sessions) cmd_sessions "$@" ;;
+  status)   cmd_status "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
     echo "Unknown command: $CMD"

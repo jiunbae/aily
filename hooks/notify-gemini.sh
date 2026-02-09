@@ -1,6 +1,6 @@
 #!/bin/bash
 # Gemini CLI AfterAgent hook entry point.
-# Reads JSON from stdin, extracts last response from transcript, posts to Discord.
+# Reads JSON from stdin, extracts last response from transcript, posts to enabled platforms.
 #
 # Registered in ~/.gemini/settings.json → hooks.AfterAgent
 # IMPORTANT: Must output valid JSON to stdout. All logging to stderr.
@@ -167,7 +167,7 @@ PY
     cd "${GEMINI_CWD}" 2>/dev/null || true
   fi
 
-  exec bash "${HOOK_DIR}/discord-post.sh" "gemini" "${LAST_MESSAGE}"
+  exec bash "${HOOK_DIR}/post.sh" "gemini" "${LAST_MESSAGE}"
 ) 1>/dev/null &
 
 disown

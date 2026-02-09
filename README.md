@@ -5,7 +5,7 @@
 <br/>
 <br/>
 
-Connect your AI coding agents to Discord — get notified when tasks complete, see interactive prompts remotely, and send commands back.
+Connect your AI coding agents to Discord and Slack — get notified when tasks complete, see interactive prompts remotely, and send commands back.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hook-blueviolet)](https://docs.anthropic.com/en/docs/claude-code)
@@ -20,42 +20,42 @@ Connect your AI coding agents to Discord — get notified when tasks complete, s
 
 ```
                     aily
-  ┌─────────────────────────────────────────┐
-  │                                         │
-  │   Agent finishes task                   │
-  │       │                                 │
-  │       ▼                                 │
-  │   ┌──────────────┐   ┌──────────────┐  │
-  │   │ Notification  │──▶│ discord-post │──┼──▶  Discord Thread
-  │   │ Hook          │   │ .sh          │  │    [agent] my-session
-  │   └──────────────┘   └──────────────┘  │
-  │                                         │        ▲
-  │   Agent asks question                   │        │
-  │       │                                 │        │
-  │       ▼                                 │        │
-  │   ┌──────────────┐   ┌──────────────┐  │        │
-  │   │ PreToolUse   │──▶│ format +     │──┼────────┘
-  │   │ Hook         │   │ post         │  │
-  │   └──────────────┘   └──────────────┘  │
-  │                                         │
-  └─────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────┐
+  │                                              │
+  │   Agent finishes task                        │
+  │       │                                      │
+  │       ▼                                      │
+  │   ┌──────────────┐   ┌──────────┐           │
+  │   │ Notification  │──▶│ post.sh  │──┬──▶  Discord Thread
+  │   │ Hook          │   │(dispatch)│  │    [agent] my-session
+  │   └──────────────┘   └──────────┘  │
+  │                                     └──▶  Slack Thread
+  │   Agent asks question                    [agent] my-session
+  │       │                                      │
+  │       ▼                                      │
+  │   ┌──────────────┐   ┌──────────┐           │
+  │   │ PreToolUse   │──▶│ format + │──┬────────┘
+  │   │ Hook         │   │ post     │  └──▶  (both platforms)
+  │   └──────────────┘   └──────────┘
+  │                                              │
+  └──────────────────────────────────────────────┘
 
-  agent-bridge (optional, bidirectional)
-  ┌─────────────────────────────────────────┐
-  │                                         │
-  │   Discord ──▶ SSH ──▶ tmux send-keys   │
-  │   message        ──▶ Claude Code input │
-  │                                         │
-  └─────────────────────────────────────────┘
+  bridges (optional, bidirectional)
+  ┌──────────────────────────────────────────────┐
+  │                                              │
+  │   Discord / Slack ──▶ SSH ──▶ tmux send-keys│
+  │   message in thread      ──▶ agent input    │
+  │                                              │
+  └──────────────────────────────────────────────┘
 ```
 
 When an AI agent finishes a task, aily:
 
 1. Extracts the agent's last response
-2. Finds or creates a Discord thread `[agent] <tmux-session>`
+2. Finds or creates a thread `[agent] <tmux-session>` on all configured platforms
 3. Posts a formatted summary
 
-Each tmux session gets its own thread — notifications stay organized across projects and machines.
+Each tmux session gets its own thread — notifications stay organized across projects and machines. Configure one platform or both.
 
 ### Notification example
 
@@ -72,7 +72,7 @@ Fixed the bug in auth.ts by updating the token validation logic...
 
 ### Interactive prompt forwarding
 
-When Claude Code asks you a question (`AskUserQuestion`), aily forwards the choices to Discord immediately:
+When Claude Code asks you a question (`AskUserQuestion`), aily forwards the choices immediately:
 
 ```
 ❓ Waiting for Input
@@ -108,17 +108,25 @@ git clone https://github.com/your-user/aily.git
 cd aily
 ./install.sh
 
-# Configure Discord credentials
+# Configure credentials
 cp .env.example ~/.claude/hooks/.notify-env
 chmod 600 ~/.claude/hooks/.notify-env
 ```
 
-Edit `~/.claude/hooks/.notify-env`:
+Edit `~/.claude/hooks/.notify-env` with your platform credentials (one or both):
 
 ```env
+# Discord
 DISCORD_BOT_TOKEN="your-bot-token"
 DISCORD_CHANNEL_ID="your-channel-id"
+
+# Slack
+SLACK_BOT_TOKEN="xoxb-your-slack-bot-token"
+SLACK_APP_TOKEN="xapp-your-slack-app-level-token"
+SLACK_CHANNEL_ID="C0123456789"
 ```
+
+Platforms are auto-detected from available tokens. Run `aily status` to verify.
 
 The install script automatically:
 - Symlinks all hooks into `~/.claude/hooks/`
@@ -201,13 +209,14 @@ Add to `~/.gemini/settings.json`:
 
 ### aily CLI
 
-Manage Discord threads and tmux session sync from the command line:
+Manage threads and tmux session sync from the command line:
 
 ```bash
-aily start [name]     # Create Discord thread for current/named tmux session
-aily stop [name]      # Archive Discord thread for current/named tmux session
+aily start [name]     # Create thread for current/named tmux session
+aily stop [name]      # Archive thread for current/named tmux session
 aily auto [on|off]    # Toggle auto thread sync (or show status)
 aily sessions         # List tmux sessions across hosts
+aily status           # Show which platforms are configured
 aily help             # Show help
 ```
 
@@ -240,17 +249,17 @@ aily auto       # show current status
 
 For persistence across tmux restarts, add to `~/.tmux.conf`:
 ```bash
-set-hook -g session-created "run-shell '~/.claude/hooks/discord-thread-sync.sh create #{session_name}'"
-set-hook -g session-closed  "run-shell '~/.claude/hooks/discord-thread-sync.sh delete #{hook_session_name}'"
+set-hook -g session-created "run-shell '~/.claude/hooks/thread-sync.sh create #{session_name}'"
+set-hook -g session-closed  "run-shell '~/.claude/hooks/thread-sync.sh delete #{hook_session_name}'"
 ```
 
-### Discord commands
+### Bridge commands
 
-The agent bridge supports `!` commands in the workspace channel or any thread:
+The agent bridges support `!` commands in the workspace channel or any thread:
 
 | Command | Action |
 |---------|--------|
-| `!new <name> [host]` | Create tmux session + Discord thread |
+| `!new <name> [host]` | Create tmux session + thread |
 | `!kill <name>` | Kill tmux session + archive thread |
 | `!sessions` | List all sessions with sync status |
 
@@ -267,17 +276,21 @@ The agent bridge supports `!` commands in the workspace channel or any thread:
 ```
 aily/
 ├── hooks/
-│   ├── discord-lib.sh              # Shared Discord API functions
-│   ├── discord-post.sh             # Thread discovery + message posting
-│   ├── discord-thread-sync.sh      # tmux session lifecycle hooks
+│   ├── post.sh                     # Multi-platform dispatcher
+│   ├── discord-lib.sh              # Discord API functions
+│   ├── discord-post.sh             # Discord message posting
+│   ├── slack-lib.sh                # Slack API functions
+│   ├── slack-post.sh               # Slack message posting
+│   ├── thread-sync.sh              # tmux session lifecycle (multi-platform)
 │   ├── notify-claude.sh            # Claude Code notification hook
 │   ├── notify-codex.py             # Codex CLI notification hook
 │   ├── notify-gemini.sh            # Gemini CLI notification hook
 │   ├── ask-question-notify.sh      # AskUserQuestion prompt forwarder
-│   ├── format-question.py          # Formats interactive prompts for Discord
+│   ├── format-question.py          # Formats interactive prompts
 │   └── extract-last-message.py     # JSONL session response extractor
-├── aily                            # CLI tool (start/stop/auto/sessions)
+├── aily                            # CLI tool (start/stop/auto/sessions/status)
 ├── agent-bridge.py                 # Discord ↔ tmux bridge + ! commands
+├── slack-bridge.py                 # Slack ↔ tmux bridge + ! commands
 ├── install.sh                      # One-command setup
 └── docs/
     └── architecture.md             # Detailed technical docs
@@ -286,8 +299,9 @@ aily/
 ### Key design decisions
 
 - **Background execution** — All hooks fork to a background subshell (`( ... ) & disown; exit 0`) and return immediately to avoid agent hook timeouts
-- **Thread-per-session** — Each tmux session gets a dedicated Discord thread (`[agent] <session-name>`), keeping multi-project notifications organized
-- **Lifecycle coupling** — tmux hooks auto-create/archive Discord threads; `!` commands manage both from Discord
+- **Thread-per-session** — Each tmux session gets a dedicated thread (`[agent] <session-name>`) on each platform
+- **Multi-platform dispatch** — `post.sh` auto-detects enabled platforms from tokens and dispatches in parallel
+- **Lifecycle coupling** — tmux hooks auto-create/archive threads; `!` commands manage both from messaging platforms
 - **Hash-based dedup** — Prevents duplicate notifications when the same response triggers multiple hook events
 - **Interactive suppression** — When an `AskUserQuestion` prompt is active, task-complete notifications are suppressed to avoid stale messages
 
@@ -314,22 +328,32 @@ git pull
 ./install.sh   # re-symlinks any new hooks
 ```
 
-## Agent Bridge (optional)
+## Bridges (optional)
 
-`agent-bridge.py` enables **bidirectional** communication — send messages from Discord back to your tmux sessions, plus `!` commands for session management.
+Bridges enable **bidirectional** communication — send messages from Discord/Slack back to your tmux sessions, plus `!` commands for session management.
 
 ```
-Discord message in [agent] thread
-    → agent-bridge detects it
+Message in [agent] thread
+    → bridge detects it
     → SSH + tmux send-keys to the right session
 ```
 
-Requires `aiohttp`:
+### Discord bridge
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install aiohttp
+.venv/bin/pip install -r requirements.txt
 .venv/bin/python agent-bridge.py
+```
+
+### Slack bridge
+
+Requires a Slack app with Socket Mode enabled and an app-level token (`xapp-...`).
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python slack-bridge.py
 ```
 
 See [docs/architecture.md](docs/architecture.md) for implementation details.
@@ -338,12 +362,13 @@ See [docs/architecture.md](docs/architecture.md) for implementation details.
 
 | Symptom | Fix |
 |---------|-----|
-| No Discord notification | Check `~/.claude/hooks/.notify-env` exists with valid tokens |
-| Thread not found | Verify `DISCORD_CHANNEL_ID` matches your channel |
+| No notification | Check `~/.claude/hooks/.notify-env` exists with valid tokens |
+| Thread not found | Verify channel ID matches your channel |
 | tmux session not detected | Ensure you're inside tmux (`echo $TMUX`) |
 | Codex hook not firing | Check `~/.codex/config.toml` has the `notify` line |
 | Gemini hook not firing | Check `~/.gemini/settings.json` has `AfterAgent` hook |
 | macOS tmux path | Script tries `/opt/homebrew/bin/tmux` first, falls back to `tmux` |
+| Platform not detected | Run `aily status` to check configured platforms |
 
 ## Requirements
 
@@ -351,7 +376,7 @@ See [docs/architecture.md](docs/architecture.md) for implementation details.
 - Python 3
 - `curl`
 - `tmux`
-- Discord bot with message permissions
+- Discord bot with message permissions and/or Slack app with Socket Mode
 
 ## License
 

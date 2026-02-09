@@ -2,7 +2,7 @@
 """Codex CLI notification hook entry point.
 
 Codex passes a JSON object as sys.argv[1] with `last-assistant-message`.
-Extracts the response and calls discord-post.sh.
+Extracts the response and calls post.sh (multi-platform dispatcher).
 
 Registered in ~/.codex/config.toml:
   notify = ["python3", "/path/to/notify-codex.py"]
@@ -41,18 +41,18 @@ def main():
     hook_dir = os.path.dirname(os.path.abspath(__file__))
     if not os.path.isfile(os.path.join(hook_dir, ".notify-env")):
         return
-    discord_post = os.path.join(hook_dir, "discord-post.sh")
-    if not os.path.isfile(discord_post):
+    post_script = os.path.join(hook_dir, "post.sh")
+    if not os.path.isfile(post_script):
         return
 
     cwd = notification.get("cwd")
     if not isinstance(cwd, str) or not cwd or not os.path.isdir(cwd):
         cwd = os.getcwd()
 
-    # Background the Discord post so Codex isn't blocked by network calls.
+    # Background the post so Codex isn't blocked by network calls.
     try:
         subprocess.Popen(
-            ["bash", discord_post, "codex", last_message],
+            ["bash", post_script, "codex", last_message],
             cwd=cwd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
