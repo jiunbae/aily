@@ -4,19 +4,21 @@
       <stop offset="0%" stop-color="#6D28D9"/>
       <stop offset="100%" stop-color="#2563EB"/>
     </linearGradient>
+    <clipPath id="bg-clip">
+      <rect width="512" height="512" rx="112"/>
+    </clipPath>
   </defs>
   <rect width="512" height="512" rx="112" fill="url(#g)"/>
-  <!-- Stylized "a" with forward-pointing tail -->
-  <g transform="translate(248,262) scale(1.25)">
-    <!-- The "a" body as a circle -->
-    <circle cx="-15" cy="-20" r="68" fill="none" stroke="white" stroke-width="28" opacity="0.95"/>
-    <!-- The tail/stem going right and up, ending in arrow -->
-    <path d="M 53,-20 L 53,50 Q 53,70 73,70 L 110,70"
-          fill="none" stroke="white" stroke-width="28"
-          stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
-    <!-- Arrow tip -->
-    <path d="M 85,45 L 115,70 L 85,95"
-          fill="none" stroke="white" stroke-width="22"
-          stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+  <!-- Stylized "a" with forward-pointing tail, clipped to background -->
+  <g clip-path="url(#bg-clip)">
+    <g transform="translate(240,258) scale(1.25)">
+      <circle cx="-15" cy="-20" r="68" fill="none" stroke="white" stroke-width="28" opacity="0.95"/>
+      <path d="M 53,-20 L 53,50 Q 53,70 73,70 L 110,70"
+            fill="none" stroke="white" stroke-width="28"
+            stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+      <path d="M 85,45 L 115,70 L 85,95"
+            fill="none" stroke="white" stroke-width="22"
+            stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+    </g>
   </g>
 </svg>
