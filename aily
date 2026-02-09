@@ -1,15 +1,16 @@
 #!/bin/bash
 # aily — CLI for managing AI agent notification relay.
 # Usage:
-#   aily auto on        Enable auto thread sync on tmux session create/close
-#   aily auto off       Disable auto thread sync
-#   aily auto           Show current auto-sync status
-#   aily sessions       List all tmux sessions with Discord thread sync status
-#   aily help           Show this help
+#   aily start [name]     Create Discord thread for current/named tmux session
+#   aily stop [name]      Archive Discord thread for current/named tmux session
+#   aily auto [on|off]    Toggle auto thread sync (or show status)
+#   aily sessions         List all tmux sessions with Discord thread sync status
+#   aily help             Show this help
 
 set -euo pipefail
 
 ENV_FILE="${AILY_ENV:-$HOME/.claude/hooks/.notify-env}"
+HOOKS_DIR="$(dirname "$ENV_FILE")"
 
 # --- helpers ---
 
@@ -31,7 +32,6 @@ env_set() {
     exit 1
   fi
   if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
-    # Update existing line (use python for safe in-place edit)
     python3 -c "
 import re, sys
 path = sys.argv[1]
@@ -43,13 +43,103 @@ with open(path, 'w') as f:
     f.write(text)
 " "$ENV_FILE" "$key" "$value"
   else
-    # Append new line
     echo "" >> "$ENV_FILE"
     echo "${key}=\"${value}\"" >> "$ENV_FILE"
   fi
 }
 
+detect_tmux_session() {
+  local TMUX_BIN="/opt/homebrew/bin/tmux"
+  if [[ ! -x "$TMUX_BIN" ]]; then
+    TMUX_BIN="tmux"
+  fi
+
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    "$TMUX_BIN" display-message -t "${TMUX_PANE}" -p '#{session_name}' 2>/dev/null || true
+  elif [[ -n "${TMUX:-}" ]]; then
+    "$TMUX_BIN" display-message -p '#S' 2>/dev/null || true
+  fi
+}
+
+load_discord_env() {
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "  Error: $ENV_FILE not found" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  if [[ -z "${DISCORD_BOT_TOKEN:-}" || -z "${DISCORD_CHANNEL_ID:-}" ]]; then
+    echo "  Error: DISCORD_BOT_TOKEN or DISCORD_CHANNEL_ID not set in $ENV_FILE" >&2
+    exit 1
+  fi
+  local lib="${HOOKS_DIR}/discord-lib.sh"
+  if [[ ! -f "$lib" ]]; then
+    echo "  Error: discord-lib.sh not found at $lib" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "$lib"
+}
+
 # --- commands ---
+
+cmd_start() {
+  local session_name="${1:-}"
+  if [[ -z "$session_name" ]]; then
+    session_name=$(detect_tmux_session)
+  fi
+  if [[ -z "$session_name" ]]; then
+    echo "  Error: not inside tmux. Provide a session name: aily start <name>" >&2
+    exit 1
+  fi
+
+  load_discord_env
+
+  local thread_name="[agent] ${session_name}"
+  local hostname_short
+  hostname_short=$(hostname -s 2>/dev/null || hostname)
+
+  echo "  Starting thread for ${session_name}..."
+  local thread_id
+  thread_id=$(discord_ensure_thread "$thread_name" "🖥 **tmux session: ${thread_name}** (${hostname_short})")
+
+  if [[ -n "$thread_id" ]]; then
+    discord_post_to_thread "$thread_id" "▶️ Session \`${session_name}\` started on \`${hostname_short}\` · $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "  ✓ Thread ready: [agent] ${session_name}"
+  else
+    echo "  ✗ Failed to create thread" >&2
+    exit 1
+  fi
+}
+
+cmd_stop() {
+  local session_name="${1:-}"
+  if [[ -z "$session_name" ]]; then
+    session_name=$(detect_tmux_session)
+  fi
+  if [[ -z "$session_name" ]]; then
+    echo "  Error: not inside tmux. Provide a session name: aily stop <name>" >&2
+    exit 1
+  fi
+
+  load_discord_env
+
+  local thread_name="[agent] ${session_name}"
+  local hostname_short
+  hostname_short=$(hostname -s 2>/dev/null || hostname)
+
+  echo "  Stopping thread for ${session_name}..."
+  local thread_id
+  thread_id=$(discord_find_thread "$thread_name")
+
+  if [[ -n "$thread_id" ]]; then
+    discord_post_to_thread "$thread_id" "⏹️ Session \`${session_name}\` stopped on \`${hostname_short}\` · $(date '+%Y-%m-%d %H:%M:%S')"
+    discord_archive_thread "$thread_id"
+    echo "  ✓ Thread archived: [agent] ${session_name}"
+  else
+    echo "  No thread found for [agent] ${session_name}"
+  fi
+}
 
 cmd_auto() {
   local action="${1:-}"
@@ -100,6 +190,8 @@ cmd_help() {
   echo "aily — AI agent notification relay"
   echo ""
   echo "Usage:"
+  echo "  aily start [name]     Create Discord thread (default: current tmux session)"
+  echo "  aily stop [name]      Archive Discord thread (default: current tmux session)"
   echo "  aily auto [on|off]    Toggle auto thread sync (or show status)"
   echo "  aily sessions         List tmux sessions across hosts"
   echo "  aily help             Show this help"
@@ -111,6 +203,8 @@ CMD="${1:-help}"
 shift 2>/dev/null || true
 
 case "$CMD" in
+  start)    cmd_start "$@" ;;
+  stop)     cmd_stop "$@" ;;
   auto)     cmd_auto "$@" ;;
   sessions) cmd_sessions "$@" ;;
   help|-h|--help) cmd_help ;;
