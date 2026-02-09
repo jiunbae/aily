@@ -218,6 +218,22 @@ else
   echo "  ⚠️  discord-thread-sync.sh not found or not executable"
 fi
 
+# --- 6. aily CLI ---
+echo ""
+echo "=== aily CLI ==="
+AILY_BIN="$SCRIPT_DIR/aily"
+AILY_LINK="$HOME/.local/bin/aily"
+if [[ -x "$AILY_BIN" ]]; then
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$AILY_BIN" "$AILY_LINK"
+  echo "  ✓ aily → $AILY_LINK"
+  if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+    echo "  ⚠️  Add ~/.local/bin to your PATH if not already"
+  fi
+else
+  echo "  ⚠️  aily script not found"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Done ==="
@@ -225,5 +241,6 @@ echo "  Claude Code: notify-claude.sh (via ~/.claude/settings.json)"
 echo "  Codex CLI:   notify-codex.py  (via ~/.codex/config.toml)"
 echo "  Gemini CLI:  notify-gemini.sh (via ~/.gemini/settings.json)"
 echo "  tmux:        discord-thread-sync.sh (via tmux set-hook)"
+echo "  CLI:         aily (auto on/off, sessions)"
 echo ""
 echo "All hooks post to Discord thread [agent] <tmux-session-name>."
