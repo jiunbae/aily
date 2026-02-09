@@ -35,6 +35,11 @@ fi
     exit 0
   fi
 
+  # Check if thread sync is enabled (default: true)
+  if [[ "${TMUX_THREAD_SYNC:-true}" == "false" ]]; then
+    exit 0
+  fi
+
   # shellcheck source=/dev/null
   source "${HOOK_DIR}/discord-lib.sh"
 
