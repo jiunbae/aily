@@ -96,7 +96,7 @@ There are two independent data flows:
 - Checks if the message is in a thread with the `[agent]` prefix
 - Extracts the tmux session name from the thread name
 - Forwards via SSH + tmux send-keys (two-step — see Critical Implementation Notes)
-- Posts captured terminal output back to the Discord thread
+- Posts a "Forwarding to `<session>` on `<host>`..." status to the Discord thread
 
 **Forwarding flow:**
 1. Receives Discord message in an `[agent] <session>` thread
@@ -107,8 +107,7 @@ There are two independent data flows:
    sleep 0.3
    ssh <host> 'tmux send-keys -t <session> Enter'
    ```
-4. Waits 8 seconds, captures output: `ssh <host> 'tmux capture-pane -t <session> -p | tail -40'`
-5. Posts captured output back to the Discord thread
+4. The agent's response is posted back via notification hooks (not capture-pane)
 
 **Runtime:** Runs as a persistent process (typically in a tmux session `agent-bridge` on jiun-mini). Uses aiohttp (not urllib, which gets 403 from Discord API).
 
@@ -236,6 +235,35 @@ set-hook -g session-closed  "run-shell '~/.claude/hooks/discord-thread-sync.sh d
 | `!kill <name>` | Kill tmux session + archive Discord thread |
 | `!sessions` | List all sessions across hosts with thread sync status |
 
+### 7. aily CLI
+
+Command-line tool for managing Discord thread sync from the terminal.
+
+| Command | Action |
+|---------|--------|
+| `aily start [name]` | Create/unarchive Discord thread for current or named tmux session |
+| `aily stop [name]` | Archive Discord thread for current or named tmux session |
+| `aily auto [on\|off]` | Toggle `TMUX_THREAD_SYNC` in `.notify-env` |
+| `aily sessions` | List tmux sessions across SSH hosts |
+
+Auto-detects the current tmux session name when no argument is provided (via `TMUX_PANE`).
+
+### 8. Welcome Message
+
+When a new Discord thread is created (via tmux hooks, `aily start`, or `!new`), a welcome message is automatically posted with available commands:
+
+```
+Welcome to [agent] my-session
+
+Type a message here to forward it to the tmux session.
+
+Commands:
+  !sessions — list all sessions
+  !kill my-session — kill this session + archive thread
+```
+
+This is implemented in both `discord-lib.sh` (`discord_create_thread`) and `agent-bridge.py` (`create_thread`).
+
 ## File Layout
 
 ```
@@ -260,6 +288,7 @@ aily/                      # GitHub repo
 │   ├── ask-question-notify.sh     # AskUserQuestion prompt forwarder
 │   ├── format-question.py         # Question formatter for Discord
 │   └── extract-last-message.py    # JSONL response extractor
+├── aily                   # CLI tool (start/stop/auto/sessions)
 ├── agent-bridge.py        # Discord ↔ tmux bridge + ! commands
 ├── docs/
 │   └── architecture.md    # This document

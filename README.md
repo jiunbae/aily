@@ -198,11 +198,44 @@ Add to `~/.gemini/settings.json`:
 
 ## Session lifecycle
 
+### aily CLI
+
+Manage Discord threads and tmux session sync from the command line:
+
+```bash
+aily start [name]     # Create Discord thread for current/named tmux session
+aily stop [name]      # Archive Discord thread for current/named tmux session
+aily auto [on|off]    # Toggle auto thread sync (or show status)
+aily sessions         # List tmux sessions across hosts
+aily help             # Show help
+```
+
+When run inside tmux without a name argument, `aily start` and `aily stop` auto-detect the current session.
+
+New threads receive a welcome message with available commands:
+
+```
+Welcome to [agent] my-session
+
+Type a message here to forward it to the tmux session.
+
+Commands:
+  !sessions — list all sessions
+  !kill my-session — kill this session + archive thread
+```
+
 ### Auto-sync (tmux hooks)
 
 When `install.sh` runs, it sets tmux global hooks:
-- **Session created** -> Discord thread created + "Session started" message
+- **Session created** -> Discord thread created + welcome message
 - **Session closed** -> "Session closed" message + thread archived
+
+Toggle auto-sync without editing config files:
+```bash
+aily auto off   # disable auto thread creation/archival
+aily auto on    # re-enable
+aily auto       # show current status
+```
 
 For persistence across tmux restarts, add to `~/.tmux.conf`:
 ```bash
@@ -242,6 +275,7 @@ aily/
 │   ├── ask-question-notify.sh      # AskUserQuestion prompt forwarder
 │   ├── format-question.py          # Formats interactive prompts for Discord
 │   └── extract-last-message.py     # JSONL session response extractor
+├── aily                            # CLI tool (start/stop/auto/sessions)
 ├── agent-bridge.py                 # Discord ↔ tmux bridge + ! commands
 ├── install.sh                      # One-command setup
 └── docs/
