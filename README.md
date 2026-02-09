@@ -1,212 +1,130 @@
+<div align="center">
+
 # aily
 
-AI agent notification relay for Claude Code, Codex CLI, and Gemini CLI that posts task completions to Discord, with one thread per tmux session.
+**AI agent notification relay for Discord**
 
-## What it does
+Connect your AI coding agents to Discord — get notified when tasks complete, see interactive prompts remotely, and send commands back.
 
-When an agent finishes a task (Claude Code Notification hook, Codex notify hook, or Gemini AfterAgent hook), it:
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-hook-blueviolet)](https://docs.anthropic.com/en/docs/claude-code)
+[![Codex CLI](https://img.shields.io/badge/Codex_CLI-hook-green)](https://github.com/openai/codex)
+[![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-hook-orange)](https://github.com/google-gemini/gemini-cli)
 
-1. Extracts the agent's last response
-2. Finds or creates a Discord thread named `[agent] <tmux-session>` in your channel
-3. Posts a summary with host, project, timestamp, and the response
+</div>
+
+---
+
+## How it works
 
 ```
-🔔 **Task Complete** (claude)
+                    aily
+  ┌─────────────────────────────────────────┐
+  │                                         │
+  │   Agent finishes task                   │
+  │       │                                 │
+  │       ▼                                 │
+  │   ┌──────────────┐   ┌──────────────┐  │
+  │   │ Notification  │──▶│ discord-post │──┼──▶  Discord Thread
+  │   │ Hook          │   │ .sh          │  │    [agent] my-session
+  │   └──────────────┘   └──────────────┘  │
+  │                                         │        ▲
+  │   Agent asks question                   │        │
+  │       │                                 │        │
+  │       ▼                                 │        │
+  │   ┌──────────────┐   ┌──────────────┐  │        │
+  │   │ PreToolUse   │──▶│ format +     │──┼────────┘
+  │   │ Hook         │   │ post         │  │
+  │   └──────────────┘   └──────────────┘  │
+  │                                         │
+  └─────────────────────────────────────────┘
 
-🖥 Host: host-mini
-📁 Project: my-project
+  agent-bridge (optional, bidirectional)
+  ┌─────────────────────────────────────────┐
+  │                                         │
+  │   Discord ──▶ SSH ──▶ tmux send-keys   │
+  │   message        ──▶ Claude Code input │
+  │                                         │
+  └─────────────────────────────────────────┘
+```
+
+When an AI agent finishes a task, aily:
+
+1. Extracts the agent's last response
+2. Finds or creates a Discord thread `[agent] <tmux-session>`
+3. Posts a formatted summary
+
+Each tmux session gets its own thread — notifications stay organized across projects and machines.
+
+### Notification example
+
+```
+🔔 Task Complete (claude)
+
+🖥 Host: dev-server
+📁 Project: my-app
 ⏰ Time: 2026-02-07 22:01:38
 
-**Response:**
+Response:
 Fixed the bug in auth.ts by updating the token validation logic...
 ```
 
-Each tmux session gets its own thread, so notifications stay organized.
+### Interactive prompt forwarding
 
-## Requirements
+When Claude Code asks you a question (`AskUserQuestion`), aily forwards the choices to Discord immediately:
 
-- macOS or Linux
-- Python 3
-- `curl`
-- `tmux` (thread naming is based on the tmux session)
-- A Discord bot token with message permissions
+```
+❓ Waiting for Input
 
-## Installation
+📋 Approach
+Which pattern should we use for the API client?
+
+1️⃣ Singleton
+   Single shared instance, simpler but less testable
+
+2️⃣ Factory
+   Create instances per-request, more flexible
+
+3️⃣ Dependency injection
+   Register in container, best for testing
+
+💬 Reply with option number (1, 2, 3) or type a custom answer
+```
+
+## Supported agents
+
+| Agent | Hook type | Extractor |
+|-------|-----------|-----------|
+| **Claude Code** | `Notification` + `PreToolUse` | JSONL session parser |
+| **Codex CLI** | `notify` | stdin message |
+| **Gemini CLI** | `AfterAgent` | stdin JSON |
+
+## Quick start
 
 ```bash
+# Clone and install
 git clone https://github.com/jiunbae/aily.git
 cd aily
 ./install.sh
-```
 
-The install script:
-
-- Symlinks hook files into `~/.claude/hooks/`
-- Updates `~/.codex/config.toml` for Codex CLI
-- Updates `~/.gemini/settings.json` for Gemini CLI
-
-### Configure secrets
-
-```bash
+# Configure Discord credentials
 cp .env.example ~/.claude/hooks/.notify-env
 chmod 600 ~/.claude/hooks/.notify-env
 ```
 
-Edit `~/.claude/hooks/.notify-env` with your Discord bot token and channel ID:
+Edit `~/.claude/hooks/.notify-env`:
 
-```
+```env
 DISCORD_BOT_TOKEN="your-bot-token"
 DISCORD_CHANNEL_ID="your-channel-id"
 ```
 
-## Agent Configuration
+The install script automatically:
+- Symlinks all hooks into `~/.claude/hooks/`
+- Configures `~/.codex/config.toml` for Codex CLI
+- Configures `~/.gemini/settings.json` for Gemini CLI
 
-### Claude Code (Notification hook)
-
-Add the notification hook to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/notify-claude.sh",
-            "statusMessage": "Notifying..."
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Backward compatibility: `notify-clawdia.sh` still exists as a wrapper and can be used if you already have it configured.
-
-### Codex CLI (`notify` hook)
-
-Add (or ensure) this in `~/.codex/config.toml`:
-
-```toml
-notify = ["python3", "/Users/<you>/.claude/hooks/notify-codex.py"]
-```
-
-### Gemini CLI (`AfterAgent` hook)
-
-Merge this into `~/.gemini/settings.json`:
-
-```json
-{
-  "hooks": {
-    "AfterAgent": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/<you>/.claude/hooks/notify-gemini.sh",
-            "name": "discord-notify",
-            "timeout": 10000
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-## How it works
-
-### Unified flow
-
-Each agent-specific hook extracts the last assistant response, then calls the shared Discord poster:
-
-- `hooks/notify-claude.sh` (Claude Code)
-- `hooks/notify-codex.py` (Codex CLI)
-- `hooks/notify-gemini.sh` (Gemini CLI)
-- `hooks/discord-post.sh` (shared Discord thread discovery + posting)
-
-`discord-post.sh`:
-
-- Detects current tmux session name
-- Looks up the guild's active threads (via `/guilds/{id}/threads/active`) and matches threads where `parent_id == DISCORD_CHANNEL_ID`
-- Creates a thread if none found; unarchives if archived
-- Posts a formatted message to the thread
-
-All hooks are designed to return quickly and do network work in the background (to avoid hook timeouts).
-
-### extract-last-message.py
-
-Reads the Claude Code session JSONL file backwards to find the last meaningful assistant text response.
-
-- Locates the project JSONL at `~/.claude/projects/<sanitized-cwd>/*.jsonl`
-- Strips English Coach header blocks (`--- > ... ---`) if present
-- Converts markdown tables to code blocks for Discord compatibility
-- Uses hash-based dedup to prevent re-sending the same message
-- Suppresses notifications when interactive prompts (AskUserQuestion) are active
-- Truncates at 1000 characters
-
-## Multi-machine setup
-
-Each machine needs its own clone and `.notify-env`. The install script handles symlinking and agent config automatically.
-
-### Quick setup (new machine)
-
-```bash
-# 1. Clone
-git clone https://github.com/jiunbae/aily.git ~/workspace-ext/aily
-cd ~/workspace-ext/aily
-
-# 2. Install (symlinks + agent configs)
-./install.sh
-
-# 3. Create secrets
-cp .env.example ~/.claude/hooks/.notify-env
-chmod 600 ~/.claude/hooks/.notify-env
-nano ~/.claude/hooks/.notify-env   # fill in DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID
-```
-
-### Step-by-step walkthrough
-
-#### Prerequisites
-
-```bash
-# Verify these are available
-python3 --version   # Python 3.x
-curl --version
-tmux -V             # tmux must be installed
-```
-
-#### 1. Clone and install
-
-```bash
-git clone https://github.com/jiunbae/aily.git ~/workspace-ext/aily
-cd ~/workspace-ext/aily
-./install.sh
-```
-
-The install script will:
-- Symlink all hooks to `~/.claude/hooks/`
-- Add `notify` to `~/.codex/config.toml` (creates if needed)
-- Add `AfterAgent` hook to `~/.gemini/settings.json` (creates if needed)
-- Check if Claude Code `Notification` hook is configured
-
-#### 2. Configure secrets
-
-```bash
-cp .env.example ~/.claude/hooks/.notify-env
-chmod 600 ~/.claude/hooks/.notify-env
-```
-
-Edit `.notify-env`:
-
-```
-DISCORD_BOT_TOKEN="your-raw-bot-token"
-DISCORD_CHANNEL_ID="your-channel-id"
-```
-
-#### 3. Configure Claude Code (if not already done)
+### Configure Claude Code
 
 Add to `~/.claude/settings.json`:
 
@@ -215,64 +133,156 @@ Add to `~/.claude/settings.json`:
   "hooks": {
     "Notification": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/notify-claude.sh",
-            "statusMessage": "Notifying..."
-          }
-        ]
+        "hooks": [{
+          "type": "command",
+          "command": "bash ~/.claude/hooks/notify-claude.sh",
+          "statusMessage": "Notifying..."
+        }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [{
+          "type": "command",
+          "command": "bash ~/.claude/hooks/ask-question-notify.sh",
+          "statusMessage": "Forwarding question to Discord..."
+        }]
       }
     ]
   }
 }
 ```
 
-#### 4. Verify installation
+<details>
+<summary><b>Codex CLI configuration</b></summary>
 
-```bash
-# Check symlinks
-ls -la ~/.claude/hooks/notify-*.sh ~/.claude/hooks/notify-*.py ~/.claude/hooks/discord-post.sh
+Add to `~/.codex/config.toml`:
 
-# Check agent configs
-grep notify ~/.codex/config.toml
-python3 -c "import json; print(json.dumps(json.load(open('$HOME/.gemini/settings.json')).get('hooks',{}), indent=2))"
+```toml
+notify = ["python3", "~/.claude/hooks/notify-codex.py"]
 ```
 
-### Codex + oh-my-prompt chaining
+If you use [oh-my-prompt](https://github.com/nichochar/oh-my-prompt), chain both hooks:
 
-If the machine already has an oh-my-prompt Codex notify hook, use the wrapper to chain both:
-
-```bash
-# Edit ~/.codex/config.toml
-notify = "bash /path/to/.claude/hooks/notify-codex-wrapper.sh"
+```toml
+notify = "bash ~/.claude/hooks/notify-codex-wrapper.sh"
 ```
 
-The wrapper (`notify-codex-wrapper.sh`) calls both oh-my-prompt's `notify.js` and `notify-codex.py` in parallel.
+</details>
 
-### Updating on all machines
+<details>
+<summary><b>Gemini CLI configuration</b></summary>
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "hooks": {
+    "AfterAgent": [
+      {
+        "hooks": [{
+          "type": "command",
+          "command": "~/.claude/hooks/notify-gemini.sh",
+          "name": "discord-notify",
+          "timeout": 10000
+        }]
+      }
+    ]
+  }
+}
+```
+
+</details>
+
+## Architecture
+
+```
+aily/
+├── hooks/
+│   ├── notify-claude.sh            # Claude Code notification hook
+│   ├── notify-codex.py             # Codex CLI notification hook
+│   ├── notify-gemini.sh            # Gemini CLI notification hook
+│   ├── ask-question-notify.sh      # AskUserQuestion prompt forwarder
+│   ├── format-question.py          # Formats interactive prompts for Discord
+│   ├── extract-last-message.py     # JSONL session response extractor
+│   └── discord-post.sh             # Shared Discord thread discovery + posting
+├── agent-bridge.py                 # Bidirectional Discord ↔ tmux bridge
+├── install.sh                      # One-command setup
+└── docs/
+    └── architecture.md             # Detailed technical docs
+```
+
+### Key design decisions
+
+- **Background execution** — All hooks fork to a background subshell (`( ... ) & disown; exit 0`) and return immediately to avoid agent hook timeouts
+- **Thread-per-session** — Each tmux session gets a dedicated Discord thread (`[agent] <session-name>`), keeping multi-project notifications organized
+- **Hash-based dedup** — Prevents duplicate notifications when the same response triggers multiple hook events
+- **Interactive suppression** — When an `AskUserQuestion` prompt is active, task-complete notifications are suppressed to avoid stale messages
+
+## Multi-machine setup
+
+Each machine needs its own clone and `.notify-env`. The install script handles symlinking and agent config automatically.
 
 ```bash
-# On each machine
+# On a new machine
+git clone https://github.com/jiunbae/aily.git ~/workspace-ext/aily
+cd ~/workspace-ext/aily
+./install.sh
+
+cp .env.example ~/.claude/hooks/.notify-env
+chmod 600 ~/.claude/hooks/.notify-env
+# Edit .notify-env with your Discord credentials
+```
+
+### Updating
+
+```bash
 cd ~/workspace-ext/aily
 git pull
-./install.sh   # re-run to pick up any new hooks
+./install.sh   # re-symlinks any new hooks
 ```
 
-### Troubleshooting
+## Agent Bridge (optional)
 
-| Issue | Fix |
-|-------|-----|
+`agent-bridge.py` enables **bidirectional** communication — send messages from Discord back to your tmux sessions:
+
+```
+Discord message in [agent] thread
+    → agent-bridge detects it
+    → SSH + tmux send-keys to the right session
+    → captures terminal output
+    → posts it back to the thread
+```
+
+Requires `aiohttp`:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install aiohttp
+.venv/bin/python agent-bridge.py
+```
+
+See [docs/architecture.md](docs/architecture.md) for implementation details.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
 | No Discord notification | Check `~/.claude/hooks/.notify-env` exists with valid tokens |
-| Thread not found | Verify `DISCORD_CHANNEL_ID` matches your #workspace channel |
-| tmux session not detected | Ensure you're running inside `tmux` (check `echo $TMUX`) |
+| Thread not found | Verify `DISCORD_CHANNEL_ID` matches your channel |
+| tmux session not detected | Ensure you're inside tmux (`echo $TMUX`) |
 | Codex hook not firing | Check `~/.codex/config.toml` has the `notify` line |
 | Gemini hook not firing | Check `~/.gemini/settings.json` has `AfterAgent` hook |
-| macOS tmux path issue | Script tries `/opt/homebrew/bin/tmux` first, falls back to `tmux` |
+| macOS tmux path | Script tries `/opt/homebrew/bin/tmux` first, falls back to `tmux` |
 
-## Thread naming
+## Requirements
 
-Threads are named `[agent] <tmux-session-name>`. This prefix allows Discord bots to identify notification threads and implement bidirectional flows (e.g., forwarding Discord replies back to the tmux session's Claude Code instance).
+- macOS or Linux
+- Python 3
+- `curl`
+- `tmux`
+- Discord bot with message permissions
 
 ## License
 
