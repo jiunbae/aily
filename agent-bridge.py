@@ -162,7 +162,18 @@ async def create_thread(http: aiohttp.ClientSession, token: str,
         return None
     thread = await discord_request(http, token, "POST",
         f"/channels/{CHANNEL_ID}/messages/{msg_id}/threads", {"name": thread_name})
-    return thread.get("id") if isinstance(thread, dict) else None
+    thread_id = thread.get("id") if isinstance(thread, dict) else None
+    if thread_id:
+        session_name = thread_name.removeprefix(AGENT_PREFIX) if thread_name.startswith(AGENT_PREFIX) else thread_name
+        welcome = (
+            f"**Welcome to {thread_name}** \U0001f44b\n\n"
+            "Type a message here to forward it to the tmux session.\n\n"
+            "**Commands:**\n"
+            "`!sessions` \u2014 list all sessions\n"
+            f"`!kill {session_name}` \u2014 kill this session + archive thread"
+        )
+        await post_message(http, token, thread_id, welcome)
+    return thread_id
 
 
 async def ensure_thread(http: aiohttp.ClientSession, token: str,
