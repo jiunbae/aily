@@ -26,14 +26,16 @@ discord_find_thread() {
   if [[ -n "$guild_id" ]]; then
     thread_id=$(curl -sf -H "$_DISCORD_AUTH" \
       "${_DISCORD_API}/guilds/${guild_id}/threads/active" 2>/dev/null \
-      | python3 -c "
-import sys, json
+      | _THREAD_NAME="$thread_name" _PARENT_ID="$DISCORD_CHANNEL_ID" python3 -c "
+import sys, json, os
 try:
+    name = os.environ['_THREAD_NAME']
+    parent = os.environ['_PARENT_ID']
     data = json.load(sys.stdin)
     for t in data.get('threads', []):
-        if t.get('name') == '${thread_name}' and t.get('parent_id') == '${DISCORD_CHANNEL_ID}':
+        if t.get('name') == name and t.get('parent_id') == parent:
             print(t['id']); break
-except: pass
+except Exception: pass
 " 2>/dev/null || echo "")
   fi
 
@@ -41,13 +43,14 @@ except: pass
   if [[ -z "$thread_id" ]]; then
     thread_id=$(curl -sf -H "$_DISCORD_AUTH" \
       "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/threads/archived/public" 2>/dev/null \
-      | python3 -c "
-import sys, json
+      | _THREAD_NAME="$thread_name" python3 -c "
+import sys, json, os
 try:
+    name = os.environ['_THREAD_NAME']
     data = json.load(sys.stdin)
     for t in data.get('threads', []):
-        if t.get('name') == '${thread_name}': print(t['id']); break
-except: pass
+        if t.get('name') == name: print(t['id']); break
+except Exception: pass
 " 2>/dev/null || echo "")
   fi
 
@@ -55,14 +58,15 @@ except: pass
   if [[ -z "$thread_id" ]]; then
     thread_id=$(curl -sf -H "$_DISCORD_AUTH" \
       "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages?limit=50" 2>/dev/null \
-      | python3 -c "
-import sys, json
+      | _THREAD_NAME="$thread_name" python3 -c "
+import sys, json, os
 try:
+    name = os.environ['_THREAD_NAME']
     msgs = json.load(sys.stdin)
     for m in msgs:
         t = m.get('thread', {})
-        if t.get('name') == '${thread_name}': print(t['id']); break
-except: pass
+        if t.get('name') == name: print(t['id']); break
+except Exception: pass
 " 2>/dev/null || echo "")
   fi
 
@@ -83,7 +87,7 @@ discord_create_thread() {
 
   if [[ -n "$msg_id" ]]; then
     local name_payload
-    name_payload=$(python3 -c "import json; print(json.dumps({'name': '$thread_name'}))")
+    name_payload=$(python3 -c "import json,sys; print(json.dumps({'name': sys.stdin.read().strip()}))" <<< "$thread_name")
     thread_id=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
       -d "$name_payload" \
       "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages/${msg_id}/threads" 2>/dev/null \

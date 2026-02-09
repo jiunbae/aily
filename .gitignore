@@ -1,7 +1,23 @@
+# Credentials
 .notify-env
 .env
+.env.*
 *.local
+
+# Keys and certificates
+*.pem
+*.key
+*.p12
+*.credentials
+*.secret
+
+# Python
 .venv/
 __pycache__/
 *.pyc
+
+# macOS
+.DS_Store
+
+# Project
 .context/
