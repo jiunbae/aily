@@ -191,11 +191,39 @@ else
   echo "     \"command\": \"$GEMINI_HOOK_CMD\""
 fi
 
+# --- 5. tmux session hooks ---
+echo ""
+echo "=== tmux session hooks ==="
+SYNC_SCRIPT="$HOOKS_DIR/discord-thread-sync.sh"
+if [[ -x "$SYNC_SCRIPT" ]]; then
+  if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
+    tmux set-hook -g session-created \
+      "run-shell '${SYNC_SCRIPT} create #{session_name}'" 2>/dev/null && \
+      echo "  ✓ session-created hook set" || \
+      echo "  ⚠️  Failed to set session-created hook"
+
+    tmux set-hook -g session-closed \
+      "run-shell '${SYNC_SCRIPT} delete #{hook_session_name}'" 2>/dev/null && \
+      echo "  ✓ session-closed hook set" || \
+      echo "  ⚠️  Failed to set session-closed hook"
+  else
+    echo "  ⚠️  tmux not running. Start tmux first, then re-run install.sh"
+  fi
+
+  echo ""
+  echo "  For persistence across tmux restarts, add to ~/.tmux.conf:"
+  echo "    set-hook -g session-created \"run-shell '${SYNC_SCRIPT} create #{session_name}'\""
+  echo "    set-hook -g session-closed \"run-shell '${SYNC_SCRIPT} delete #{hook_session_name}'\""
+else
+  echo "  ⚠️  discord-thread-sync.sh not found or not executable"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Done ==="
 echo "  Claude Code: notify-claude.sh (via ~/.claude/settings.json)"
 echo "  Codex CLI:   notify-codex.py  (via ~/.codex/config.toml)"
 echo "  Gemini CLI:  notify-gemini.sh (via ~/.gemini/settings.json)"
+echo "  tmux:        discord-thread-sync.sh (via tmux set-hook)"
 echo ""
 echo "All hooks post to Discord thread [agent] <tmux-session-name>."

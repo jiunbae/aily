@@ -52,86 +52,13 @@ PROJECT=$(basename "${PWD:-unknown}")
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
 THREAD_NAME="[agent] ${TMUX_SESSION}"
-AUTH="Authorization: Bot ${DISCORD_BOT_TOKEN}"
 
-# Get guild ID from channel
-GUILD_ID=$(curl -sf -H "$AUTH" \
-  "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}" 2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin).get('guild_id',''))" 2>/dev/null || echo "")
+# Source shared Discord API functions
+# shellcheck source=/dev/null
+source "${HOOK_DIR}/discord-lib.sh"
 
-# Find existing thread (active) - must use guild endpoint
-THREAD_ID=""
-if [[ -n "$GUILD_ID" ]]; then
-  THREAD_ID=$(curl -sf -H "$AUTH" \
-    "https://discord.com/api/v10/guilds/${GUILD_ID}/threads/active" 2>/dev/null \
-    | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for t in data.get('threads', []):
-        if t.get('name') == '${THREAD_NAME}' and t.get('parent_id') == '${DISCORD_CHANNEL_ID}':
-            print(t['id'])
-            break
-except: pass
-" 2>/dev/null || echo "")
-fi
-
-# Check archived
-if [[ -z "$THREAD_ID" ]]; then
-  THREAD_ID=$(curl -sf -H "$AUTH" \
-    "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/threads/archived/public" 2>/dev/null \
-    | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    for t in data.get('threads', []):
-        if t.get('name') == '${THREAD_NAME}':
-            print(t['id'])
-            break
-except: pass
-" 2>/dev/null || echo "")
-fi
-
-# Check channel messages for thread metadata
-if [[ -z "$THREAD_ID" ]]; then
-  THREAD_ID=$(curl -sf -H "$AUTH" \
-    "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages?limit=50" 2>/dev/null \
-    | python3 -c "
-import sys, json
-try:
-    msgs = json.load(sys.stdin)
-    for m in msgs:
-        t = m.get('thread', {})
-        if t.get('name') == '${THREAD_NAME}':
-            print(t['id'])
-            break
-except: pass
-" 2>/dev/null || echo "")
-fi
-
-# Create thread if not found
-if [[ -z "$THREAD_ID" ]]; then
-  STARTER_MSG_ID=$(curl -sf -X POST \
-    -H "$AUTH" -H "Content-Type: application/json" \
-    -d "{\"content\": \"🖥 **tmux session: ${THREAD_NAME}** (${HOSTNAME_SHORT})\"}" \
-    "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages" 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-
-  if [[ -n "$STARTER_MSG_ID" ]]; then
-    THREAD_ID=$(curl -sf -X POST \
-      -H "$AUTH" -H "Content-Type: application/json" \
-      -d "{\"name\": \"${THREAD_NAME}\"}" \
-      "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages/${STARTER_MSG_ID}/threads" 2>/dev/null \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-  fi
-fi
-
-# Unarchive if needed
-if [[ -n "$THREAD_ID" ]]; then
-  curl -sf -X PATCH -H "$AUTH" -H "Content-Type: application/json" \
-    -d '{"archived": false}' \
-    "https://discord.com/api/v10/channels/${THREAD_ID}" > /dev/null 2>&1 || true
-fi
+# Find or create thread
+THREAD_ID=$(discord_ensure_thread "$THREAD_NAME")
 
 # Post to thread
 if [[ -n "$THREAD_ID" ]]; then
@@ -139,7 +66,7 @@ if [[ -n "$THREAD_ID" ]]; then
     # Raw mode: post pre-formatted message as-is
     DISCORD_MSG="$RAW_MESSAGE"
   else
-    # Standard mode: wrap in Task Complete format (use printf for real newlines)
+    # Standard mode: wrap in Task Complete format
     if [[ -n "$MESSAGE_TEXT" && ${#MESSAGE_TEXT} -gt 1000 ]]; then
       MESSAGE_TEXT="${MESSAGE_TEXT:0:1000}..."
     fi
@@ -152,14 +79,5 @@ if [[ -n "$THREAD_ID" ]]; then
     fi
   fi
 
-  # Use python json.dumps for safe JSON encoding (handles newlines, quotes, etc.)
-  PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$DISCORD_MSG")
-  if [[ ${#PAYLOAD} -gt 1990 ]]; then
-    SHORT="${DISCORD_MSG:0:1800}..."
-    PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$SHORT")
-  fi
-
-  curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" \
-    "https://discord.com/api/v10/channels/${THREAD_ID}/messages" > /dev/null 2>&1 || true
+  discord_post_to_thread "$THREAD_ID" "$DISCORD_MSG"
 fi

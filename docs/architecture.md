@@ -210,23 +210,57 @@ macOS ships with Bash 3.x which doesn't support negative indices in substring ex
 "${var:1:${#var}-2}"
 ```
 
+### 5. Session Lifecycle (`discord-thread-sync.sh` + tmux hooks)
+
+**Trigger:** tmux `session-created` and `session-closed` global hooks
+
+**What it does:**
+- `session-created`: Finds or creates a Discord thread, posts "Session started" message
+- `session-closed`: Posts "Session closed" message, archives the thread
+- Skips infrastructure sessions (e.g., `agent-bridge`)
+- Forks to background immediately so tmux is not blocked
+
+**tmux hook setup** (set by `install.sh` or manually in `~/.tmux.conf`):
+```bash
+set-hook -g session-created "run-shell '~/.claude/hooks/discord-thread-sync.sh create #{session_name}'"
+set-hook -g session-closed  "run-shell '~/.claude/hooks/discord-thread-sync.sh delete #{hook_session_name}'"
+```
+
+### 6. Discord Commands (agent-bridge.py)
+
+**Trigger:** Messages starting with `!` in the workspace channel or any thread
+
+| Command | Action |
+|---------|--------|
+| `!new <name> [host]` | Create tmux session (default: jiun-mini) + Discord thread |
+| `!kill <name>` | Kill tmux session + archive Discord thread |
+| `!sessions` | List all sessions across hosts with thread sync status |
+
 ## File Layout
 
 ```
 ~/.claude/
-├── settings.json          # Hook configuration (Notification event)
+├── settings.json          # Hook configuration (Notification + PreToolUse)
 └── hooks/
-    ├── notify-clawdia.sh  # Symlink → aily repo
-    ├── extract-last-message.py  # Symlink → aily repo
-    └── .notify-env        # Secrets (not in repo)
+    ├── notify-claude.sh           # Symlink → aily repo
+    ├── extract-last-message.py    # Symlink → aily repo
+    ├── discord-lib.sh             # Symlink → aily repo (shared API functions)
+    ├── discord-thread-sync.sh     # Symlink → aily repo (tmux lifecycle hooks)
+    └── .notify-env                # Secrets (not in repo)
 
 aily/                      # GitHub repo
 ├── hooks/
-│   ├── notify-clawdia.sh         # Notification hook (task complete)
-│   ├── extract-last-message.py   # JSONL response extractor
-│   ├── ask-question-notify.sh    # PreToolUse hook (AskUserQuestion)
-│   └── format-question.py        # Question formatter for Discord
-├── agent-bridge.py        # Deterministic Discord ↔ tmux forwarder
+│   ├── discord-lib.sh             # Shared Discord API functions
+│   ├── discord-post.sh            # Thread discovery + message posting
+│   ├── discord-thread-sync.sh     # tmux session lifecycle hooks
+│   ├── notify-claude.sh           # Claude Code notification hook
+│   ├── notify-clawdia.sh          # Backward compat wrapper
+│   ├── notify-codex.py            # Codex CLI notification hook
+│   ├── notify-gemini.sh           # Gemini CLI notification hook
+│   ├── ask-question-notify.sh     # AskUserQuestion prompt forwarder
+│   ├── format-question.py         # Question formatter for Discord
+│   └── extract-last-message.py    # JSONL response extractor
+├── agent-bridge.py        # Discord ↔ tmux bridge + ! commands
 ├── docs/
 │   └── architecture.md    # This document
 ├── .env.example
@@ -240,7 +274,7 @@ aily/                      # GitHub repo
 
 ### Notification Hook (Claude Code → Discord)
 - [ ] Clone repo: `git clone https://github.com/jiunbae/aily.git`
-- [ ] Run `./install.sh` to symlink hooks
+- [ ] Run `./install.sh` to symlink hooks + set tmux hooks
 - [ ] Create `~/.claude/hooks/.notify-env` with Discord bot token and channel ID
 - [ ] Add `Notification` hook to `~/.claude/settings.json`
 - [ ] Ensure tmux is running (hook only fires inside tmux sessions)

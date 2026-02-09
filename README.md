@@ -123,6 +123,7 @@ The install script automatically:
 - Symlinks all hooks into `~/.claude/hooks/`
 - Configures `~/.codex/config.toml` for Codex CLI
 - Configures `~/.gemini/settings.json` for Gemini CLI
+- Sets tmux hooks for auto thread creation/archival on session start/close
 
 ### Configure Claude Code
 
@@ -195,19 +196,53 @@ Add to `~/.gemini/settings.json`:
 
 </details>
 
+## Session lifecycle
+
+### Auto-sync (tmux hooks)
+
+When `install.sh` runs, it sets tmux global hooks:
+- **Session created** -> Discord thread created + "Session started" message
+- **Session closed** -> "Session closed" message + thread archived
+
+For persistence across tmux restarts, add to `~/.tmux.conf`:
+```bash
+set-hook -g session-created "run-shell '~/.claude/hooks/discord-thread-sync.sh create #{session_name}'"
+set-hook -g session-closed  "run-shell '~/.claude/hooks/discord-thread-sync.sh delete #{hook_session_name}'"
+```
+
+### Discord commands
+
+The agent bridge supports `!` commands in the workspace channel or any thread:
+
+| Command | Action |
+|---------|--------|
+| `!new <name> [host]` | Create tmux session + Discord thread |
+| `!kill <name>` | Kill tmux session + archive thread |
+| `!sessions` | List all sessions with sync status |
+
+```
+> !sessions
+  clawdbot              jiun-mini                synced
+  vibe                  jiun-mini                synced
+  po-jong               jiun-mbp                 no thread
+  old-thing             ---                      orphan thread
+```
+
 ## Architecture
 
 ```
 aily/
 ├── hooks/
+│   ├── discord-lib.sh              # Shared Discord API functions
+│   ├── discord-post.sh             # Thread discovery + message posting
+│   ├── discord-thread-sync.sh      # tmux session lifecycle hooks
 │   ├── notify-claude.sh            # Claude Code notification hook
 │   ├── notify-codex.py             # Codex CLI notification hook
 │   ├── notify-gemini.sh            # Gemini CLI notification hook
 │   ├── ask-question-notify.sh      # AskUserQuestion prompt forwarder
 │   ├── format-question.py          # Formats interactive prompts for Discord
-│   ├── extract-last-message.py     # JSONL session response extractor
-│   └── discord-post.sh             # Shared Discord thread discovery + posting
-├── agent-bridge.py                 # Bidirectional Discord ↔ tmux bridge
+│   └── extract-last-message.py     # JSONL session response extractor
+├── agent-bridge.py                 # Discord ↔ tmux bridge + ! commands
 ├── install.sh                      # One-command setup
 └── docs/
     └── architecture.md             # Detailed technical docs
@@ -217,6 +252,7 @@ aily/
 
 - **Background execution** — All hooks fork to a background subshell (`( ... ) & disown; exit 0`) and return immediately to avoid agent hook timeouts
 - **Thread-per-session** — Each tmux session gets a dedicated Discord thread (`[agent] <session-name>`), keeping multi-project notifications organized
+- **Lifecycle coupling** — tmux hooks auto-create/archive Discord threads; `!` commands manage both from Discord
 - **Hash-based dedup** — Prevents duplicate notifications when the same response triggers multiple hook events
 - **Interactive suppression** — When an `AskUserQuestion` prompt is active, task-complete notifications are suppressed to avoid stale messages
 
@@ -245,14 +281,12 @@ git pull
 
 ## Agent Bridge (optional)
 
-`agent-bridge.py` enables **bidirectional** communication — send messages from Discord back to your tmux sessions:
+`agent-bridge.py` enables **bidirectional** communication — send messages from Discord back to your tmux sessions, plus `!` commands for session management.
 
 ```
 Discord message in [agent] thread
     → agent-bridge detects it
     → SSH + tmux send-keys to the right session
-    → captures terminal output
-    → posts it back to the thread
 ```
 
 Requires `aiohttp`:
