@@ -109,12 +109,12 @@ There are two independent data flows:
    ```
 4. The agent's response is posted back via notification hooks (not capture-pane)
 
-**Runtime:** Runs as a persistent process (typically in a tmux session `agent-bridge` on jiun-mini). Uses aiohttp (not urllib, which gets 403 from Discord API).
+**Runtime:** Runs as a persistent process (typically in a dedicated tmux session `agent-bridge`). Uses aiohttp (not urllib, which gets 403 from Discord API).
 
 **Configuration:**
 - `#workspace` channel is set to `allow: false` in Clawdia bot's Discord config so the bot ignores it
 - Agent bridge exclusively handles `[agent]` threads in that channel
-- SSH hosts: `jiun-mini`, `jiun-mbp`
+- SSH hosts: configured via `SSH_HOSTS` in `.notify-env`
 
 ### 4. SSH Infrastructure
 
@@ -230,7 +230,7 @@ set-hook -g session-closed  "run-shell '~/.claude/hooks/discord-thread-sync.sh d
 
 | Command | Action |
 |---------|--------|
-| `!new <name> [host]` | Create tmux session (default: jiun-mini) + Discord thread |
+| `!new <name> [host]` | Create tmux session (default: first SSH host) + Discord thread |
 | `!kill <name>` | Kill tmux session + archive Discord thread |
 | `!sessions` | List all sessions across hosts with thread sync status |
 
@@ -301,7 +301,7 @@ aily/                      # GitHub repo
 ## Setup Checklist
 
 ### Notification Hook (Claude Code → Discord)
-- [ ] Clone repo: `git clone https://github.com/jiunbae/aily.git`
+- [ ] Clone repo: `git clone https://github.com/your-user/aily.git`
 - [ ] Run `./install.sh` to symlink hooks + set tmux hooks
 - [ ] Create `~/.claude/hooks/.notify-env` with Discord bot token and channel ID
 - [ ] Add `Notification` hook to `~/.claude/settings.json`
@@ -310,6 +310,6 @@ aily/                      # GitHub repo
 ### Agent Bridge (Discord → Claude Code)
 - [ ] Set up Python venv: `python3 -m venv .venv && .venv/bin/pip install aiohttp`
 - [ ] Configure `.notify-env` with `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`
-- [ ] Ensure SSH access from bridge host to tmux hosts (`jiun-mini`, `jiun-mbp`)
+- [ ] Ensure SSH access from bridge host to tmux hosts (configured in `SSH_HOSTS`)
 - [ ] Run: `.venv/bin/python agent-bridge.py` (typically in a dedicated tmux session)
 - [ ] Disable the `#workspace` channel in the Clawdia bot's Discord config (`allow: false`) to avoid conflicts

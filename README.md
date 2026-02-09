@@ -1,8 +1,9 @@
 <div align="center">
 
-# aily
+<img src="docs/banner.svg" alt="aily — AI notification relay" width="700"/>
 
-**AI agent notification relay for Discord**
+<br/>
+<br/>
 
 Connect your AI coding agents to Discord — get notified when tasks complete, see interactive prompts remotely, and send commands back.
 
@@ -103,7 +104,7 @@ Which pattern should we use for the API client?
 
 ```bash
 # Clone and install
-git clone https://github.com/jiunbae/aily.git
+git clone https://github.com/your-user/aily.git
 cd aily
 ./install.sh
 
@@ -255,10 +256,10 @@ The agent bridge supports `!` commands in the workspace channel or any thread:
 
 ```
 > !sessions
-  clawdbot              jiun-mini                synced
-  vibe                  jiun-mini                synced
-  po-jong               jiun-mbp                 no thread
-  old-thing             ---                      orphan thread
+  my-project            host-1                   synced
+  dev-api               host-1                   synced
+  data-pipeline         host-2                   no thread
+  old-experiment        ---                      orphan thread
 ```
 
 ## Architecture
@@ -296,7 +297,7 @@ Each machine needs its own clone and `.notify-env`. The install script handles s
 
 ```bash
 # On a new machine
-git clone https://github.com/jiunbae/aily.git ~/workspace-ext/aily
+git clone https://github.com/your-user/aily.git ~/workspace-ext/aily
 cd ~/workspace-ext/aily
 ./install.sh
 

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6C5CE7;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0984E3;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#FFFFFF;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#DFE6E9;stop-opacity:0.9" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#2D3436" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="200" cy="200" r="180" fill="url(#bg)" filter="url(#shadow)"/>
+
+  <!-- Subtle ring -->
+  <circle cx="200" cy="200" r="165" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+
+  <!-- Signal waves (notification relay concept) -->
+  <g transform="translate(200, 170)" filter="url(#glow)">
+    <!-- Left wave arcs -->
+    <path d="M -45,-30 A 55,55 0 0,0 -45,30" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="3" stroke-linecap="round"/>
+    <path d="M -60,-45 A 75,75 0 0,0 -60,45" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M -75,-58 A 95,95 0 0,0 -75,58" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2" stroke-linecap="round"/>
+
+    <!-- Right wave arcs -->
+    <path d="M 45,-30 A 55,55 0 0,1 45,30" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="3" stroke-linecap="round"/>
+    <path d="M 60,-45 A 75,75 0 0,1 60,45" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M 75,-58 A 95,95 0 0,1 75,58" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2" stroke-linecap="round"/>
+
+    <!-- Center diamond/bolt (the "relay" node) -->
+    <polygon points="0,-28 18,0 0,32 -18,0" fill="url(#wave)" opacity="0.95"/>
+    <polygon points="0,-18 10,0 0,20 -10,0" fill="url(#bg)" opacity="0.6"/>
+  </g>
+
+  <!-- Terminal bracket hints -->
+  <g transform="translate(200, 170)" opacity="0.6">
+    <text x="-95" y="8" font-family="'SF Mono', 'Fira Code', 'Cascadia Code', monospace" font-size="48" font-weight="700" fill="white" text-anchor="middle">&gt;</text>
+    <text x="95" y="8" font-family="'SF Mono', 'Fira Code', 'Cascadia Code', monospace" font-size="48" font-weight="700" fill="white" text-anchor="middle">&lt;</text>
+  </g>
+
+  <!-- "aily" text -->
+  <text x="200" y="295" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', sans-serif" font-size="64" font-weight="800" fill="white" text-anchor="middle" letter-spacing="-2">aily</text>
+
+  <!-- Tagline -->
+  <text x="200" y="325" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', sans-serif" font-size="14" font-weight="400" fill="rgba(255,255,255,0.6)" text-anchor="middle" letter-spacing="3">AI NOTIFICATION RELAY</text>
+</svg>
