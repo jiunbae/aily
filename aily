@@ -169,7 +169,9 @@ cmd_auto() {
 }
 
 cmd_sessions() {
-  local hosts=("jiun-mini" "jiun-mbp")
+  local hosts_str
+  hosts_str=$(env_get "SSH_HOSTS" "jiun-mini,jiun-mbp")
+  IFS=',' read -ra hosts <<< "$hosts_str"
   echo "  Checking sessions..."
   echo ""
 

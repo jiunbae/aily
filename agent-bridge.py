@@ -17,6 +17,8 @@ are ALWAYS forwarded to tmux, never answered by a chatbot.
 import asyncio
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import time
@@ -29,15 +31,16 @@ INTENT_GUILD_MESSAGES = 1 << 9
 INTENT_MESSAGE_CONTENT = 1 << 15
 
 AGENT_PREFIX = "[agent] "
-SSH_HOSTS = ["jiun-mini", "jiun-mbp"]
-DEFAULT_HOST = "jiun-mini"
 SEND_KEYS_DELAY = 0.3
+SESSION_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 API_BASE = "https://discord.com/api/v10"
 
 # Globals set at startup
 CHANNEL_ID: str = ""
 GUILD_ID: str = ""
+SSH_HOSTS: list[str] = []
+DEFAULT_HOST: str = ""
 
 
 def load_env(env_path: str) -> dict:
@@ -68,10 +71,16 @@ def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
         return 1, str(e)
 
 
+def is_valid_session_name(name: str) -> bool:
+    """Check if session name is safe for use in shell commands."""
+    return bool(SESSION_NAME_RE.match(name)) and len(name) <= 64
+
+
 def find_session_host(session_name: str) -> str | None:
     """Find which SSH host has the tmux session."""
+    safe_name = shlex.quote(session_name)
     for host in SSH_HOSTS:
-        rc, out = run_ssh(host, f"tmux has-session -t {session_name} 2>/dev/null && echo found")
+        rc, out = run_ssh(host, f"tmux has-session -t {safe_name} 2>/dev/null && echo found")
         if rc == 0 and "found" in out:
             return host
     return None
@@ -79,16 +88,17 @@ def find_session_host(session_name: str) -> str | None:
 
 def send_to_tmux(host: str, session: str, message: str) -> bool:
     """Send a message to a tmux session's Claude Code."""
-    escaped = message.replace('\\', '\\\\').replace('"', '\\"')
+    safe_session = shlex.quote(session)
+    safe_message = shlex.quote(message)
 
     # Step 1: Type the text
-    rc, _ = run_ssh(host, f'tmux send-keys -t {session} "{escaped}"')
+    rc, _ = run_ssh(host, f'tmux send-keys -t {safe_session} {safe_message}')
     if rc != 0:
         return False
 
     # Step 2: Press Enter (separate command — critical for Claude Code)
     time.sleep(SEND_KEYS_DELAY)
-    rc, _ = run_ssh(host, f'tmux send-keys -t {session} Enter')
+    rc, _ = run_ssh(host, f'tmux send-keys -t {safe_session} Enter')
     return rc == 0
 
 
@@ -227,6 +237,11 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
     session_name = parts[1]
     host = parts[2] if len(parts) > 2 else DEFAULT_HOST
 
+    if not is_valid_session_name(session_name):
+        await post_message(http, token, reply_to,
+            "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).")
+        return
+
     if host not in SSH_HOSTS:
         await post_message(http, token, reply_to,
             f"Unknown host `{host}`. Available: `{'`, `'.join(SSH_HOSTS)}`")
@@ -240,8 +255,9 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
         return
 
     # Create tmux session
+    safe_name = shlex.quote(session_name)
     rc, _ = await asyncio.to_thread(run_ssh, host,
-        f"tmux new-session -d -s {session_name}")
+        f"tmux new-session -d -s {safe_name}")
     if rc != 0:
         await post_message(http, token, reply_to,
             f"Failed to create tmux session `{session_name}` on `{host}`.")
@@ -271,12 +287,18 @@ async def cmd_kill(http: aiohttp.ClientSession, token: str,
 
     session_name = parts[1]
 
+    if not is_valid_session_name(session_name):
+        await post_message(http, token, reply_to,
+            "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).")
+        return
+
     # Kill tmux session
     host = await asyncio.to_thread(find_session_host, session_name)
     tmux_killed = False
     if host:
+        safe_name = shlex.quote(session_name)
         rc, _ = await asyncio.to_thread(run_ssh, host,
-            f"tmux kill-session -t {session_name}")
+            f"tmux kill-session -t {safe_name}")
         tmux_killed = (rc == 0)
 
     # Archive Discord thread
@@ -494,7 +516,7 @@ async def heartbeat_loop(ws, interval: float, get_sequence):
 
 
 async def main():
-    global CHANNEL_ID
+    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST
 
     env_path = os.environ.get("AGENT_BRIDGE_ENV",
         os.path.expanduser("~/.claude/hooks/.notify-env"))
@@ -506,6 +528,14 @@ async def main():
     env = load_env(env_path)
     token = env.get("DISCORD_BOT_TOKEN")
     CHANNEL_ID = env.get("DISCORD_CHANNEL_ID", "")
+
+    # SSH hosts from env (comma-separated) or defaults
+    hosts_str = env.get("SSH_HOSTS", "")
+    if hosts_str:
+        SSH_HOSTS = [h.strip() for h in hosts_str.split(",") if h.strip()]
+    else:
+        SSH_HOSTS = ["jiun-mini", "jiun-mbp"]
+    DEFAULT_HOST = SSH_HOSTS[0] if SSH_HOSTS else ""
 
     if not token:
         print("DISCORD_BOT_TOKEN not set", file=sys.stderr)

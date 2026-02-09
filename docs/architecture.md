@@ -122,13 +122,12 @@ There are two independent data flows:
 
 | Host | Access | Purpose |
 |------|--------|---------|
-| jiun-mini | `ssh jiun-mini` (host.internal) | OrbStack host, primary dev machine |
-| jiun-mbp | `ssh jiun-mbp` (100.88.17.8 via Tailscale) | MacBook Pro, secondary dev |
+| host-a | `ssh host-a` (local network) | Primary dev machine |
+| host-b | `ssh host-b` (Tailscale VPN) | Secondary dev machine |
 
-- SSH key stored as K8s Secret `clawdia-ssh-key`
-- Mounted at `/home/node/.ssh-keys/` in the pod
-- SSH config created at startup in the container entrypoint
-- `~/.zshenv` on both hosts ensures `/opt/homebrew/bin` is in PATH for non-interactive SSH
+- SSH keys managed outside this repo
+- `~/.zshenv` on target hosts ensures `/opt/homebrew/bin` is in PATH for non-interactive SSH
+- Configure hosts via `SSH_HOSTS` in `.notify-env` (comma-separated)
 
 ## Thread Naming Convention
 

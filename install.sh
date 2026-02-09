@@ -34,7 +34,9 @@ if [[ ! -f "$HOOKS_DIR/.notify-env" ]]; then
   echo "     cp $SCRIPT_DIR/.env.example $HOOKS_DIR/.notify-env"
   echo "     chmod 600 $HOOKS_DIR/.notify-env"
 else
-  echo "  ✓ .notify-env exists"
+  # Enforce restrictive permissions on credentials file
+  chmod 600 "$HOOKS_DIR/.notify-env" 2>/dev/null || true
+  echo "  ✓ .notify-env exists (chmod 600)"
 fi
 
 # --- 2. Claude Code ---
