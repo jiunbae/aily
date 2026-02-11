@@ -185,6 +185,16 @@ sleep 0.3 && tmux send-keys -t session Enter
 - **Thread creation:** Post a message first, then create a thread on that message
 - **Unarchive:** `PATCH /channels/{thread_id}` with `{"archived": false}` before posting to an archived thread
 
+### Slack API Notes
+
+- **Socket Mode:** The Slack bridge uses Socket Mode (WebSocket), not HTTP endpoints. Requires an app-level token (`xapp-...`) with `connections:write` scope. No public URL or ngrok needed.
+- **No thread archive:** Slack has no built-in thread archive. We simulate it by posting a `:lock: Thread archived` message and adding a `:lock:` reaction to the parent message. The `!sessions` command checks for this reaction to detect archived threads.
+- **Thread identity:** Slack threads are identified by the parent message's `ts` (timestamp), not by a thread ID. All thread operations use `thread_ts`.
+- **Thread discovery:** To find existing `[agent]` threads, we call `conversations.history` and match the first line of each message against the thread name. No dedicated thread-search API exists.
+- **Message limits:** Slack messages truncate at 40,000 chars, but we cap at 3,800 chars to keep messages readable.
+- **Bot message filtering:** The bridge filters out its own messages using `bot_id` and `user == BOT_USER_ID` checks on incoming events.
+- **Rate limits:** Slack API rate limits are per-method. `chat.postMessage` allows ~1 msg/sec per channel. The background dispatch pattern naturally stays within limits.
+
 ### Hook Timeout
 
 Claude Code hooks have a timeout. Long-running hooks get killed. Solution:
@@ -332,8 +342,13 @@ aily/                      # GitHub repo
 - [ ] Run: `.venv/bin/python agent-bridge.py` (typically in a dedicated tmux session)
 
 ### Slack Bridge (optional)
-- [ ] Create a Slack app with Socket Mode enabled
-- [ ] Bot scopes: `chat:write`, `channels:history`, `channels:read`, `reactions:write`
-- [ ] Event subscriptions: `message.channels`, `message.groups`
+- [ ] Create a Slack app at https://api.slack.com/apps (From scratch)
+- [ ] Enable Socket Mode → generate app-level token (`xapp-...`) with `connections:write`
+- [ ] Add bot token scopes: `chat:write`, `channels:history`, `channels:read`, `reactions:write`
+- [ ] Enable Event Subscriptions → subscribe to `message.channels`, `message.groups`
+- [ ] Install app to workspace → copy Bot User OAuth Token (`xoxb-...`)
+- [ ] Invite bot to channel (`/invite @app-name`)
 - [ ] Configure `.notify-env` with `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID`
+- [ ] Set up Python venv: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 - [ ] Run: `.venv/bin/python slack-bridge.py` (typically in a dedicated tmux session)
+- [ ] Verify: `aily status` should show `slack: configured`

@@ -128,6 +128,61 @@ SLACK_CHANNEL_ID="C0123456789"
 
 Platforms are auto-detected from available tokens. Run `aily status` to verify.
 
+<details>
+<summary><b>Discord Bot Setup</b></summary>
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. Click **New Application** → name it (e.g., `aily`)
+3. Go to **Bot** tab:
+   - Click **Reset Token** → copy the bot token (`DISCORD_BOT_TOKEN`)
+   - Enable **Message Content Intent** under Privileged Gateway Intents
+4. Go to **OAuth2** → **URL Generator**:
+   - Scopes: `bot`
+   - Bot Permissions: `Send Messages`, `Create Public Threads`, `Send Messages in Threads`, `Manage Threads`, `Read Message History`
+   - Copy the generated URL and open it to invite the bot to your server
+5. Get `DISCORD_CHANNEL_ID`:
+   - Enable Developer Mode in Discord (Settings → App Settings → Advanced)
+   - Right-click the channel → **Copy Channel ID**
+
+</details>
+
+<details>
+<summary><b>Slack App Setup</b></summary>
+
+1. Go to [Slack API: Your Apps](https://api.slack.com/apps)
+2. Click **Create New App** → **From scratch** → name it (e.g., `aily`) → select your workspace
+
+3. **Enable Socket Mode** (required for the bridge):
+   - Go to **Socket Mode** in the sidebar → toggle **Enable Socket Mode**
+   - Generate an app-level token with `connections:write` scope → name it (e.g., `aily-socket`)
+   - Copy the token (`xapp-...`) → this is your `SLACK_APP_TOKEN`
+
+4. **Set Bot Token Scopes**:
+   - Go to **OAuth & Permissions** → scroll to **Bot Token Scopes** → add:
+     - `chat:write` — post messages and thread replies
+     - `channels:history` — read channel messages (find threads)
+     - `channels:read` — list channels
+     - `reactions:write` — add :lock: reaction on thread archive
+
+5. **Subscribe to Events** (required for the bridge):
+   - Go to **Event Subscriptions** → toggle **Enable Events**
+   - Under **Subscribe to bot events** → add:
+     - `message.channels` — messages in public channels
+     - `message.groups` — messages in private channels (if needed)
+
+6. **Install the App**:
+   - Go to **Install App** → **Install to Workspace** → authorize
+   - Copy the **Bot User OAuth Token** (`xoxb-...`) → this is your `SLACK_BOT_TOKEN`
+
+7. **Get the Channel ID**:
+   - In Slack, right-click the channel → **View channel details** → scroll to the bottom
+   - Copy the **Channel ID** (starts with `C`) → this is your `SLACK_CHANNEL_ID`
+
+8. **Invite the bot to the channel**:
+   - In the channel, type `/invite @aily` (or whatever you named your app)
+
+</details>
+
 The install script automatically:
 - Symlinks all hooks into `~/.claude/hooks/`
 - Configures `~/.codex/config.toml` for Codex CLI
