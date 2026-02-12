@@ -41,22 +41,19 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ gitea.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-      - name: Checkout IaC repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.IAC_REPO }}
-          token: ${{ secrets.IAC_GITHUB_TOKEN }}
-          path: iac
+      - name: Clone IaC repo from GitHub
+        run: |
+          git clone https://x-access-token:${{ secrets.IAC_GITHUB_TOKEN }}@github.com/${{ env.IAC_REPO }}.git iac
 
       - name: Update image tag in IaC repo
         run: |
           cd iac/${{ env.APP_PATH }}
-          sed -i "s/newTag: .*/newTag: ${{ github.sha }}/" kustomization.yaml
+          sed -i "s/newTag: .*/newTag: ${{ gitea.sha }}/" kustomization.yaml
           cat kustomization.yaml
 
       - name: Commit and push to IaC repo
@@ -65,5 +62,5 @@ jobs:
           git config user.name "Gitea Actions"
           git config user.email "actions@gitea.jiun.dev"
           git add ${{ env.APP_PATH }}/kustomization.yaml
-          git diff --staged --quiet || git commit -m "chore(aily): update image tag to ${{ github.sha }}"
+          git diff --staged --quiet || git commit -m "chore(aily): update image tag to ${{ gitea.sha }}"
           git push
