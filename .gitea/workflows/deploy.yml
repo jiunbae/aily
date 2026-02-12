@@ -15,6 +15,7 @@ env:
   REGISTRY: registry.jiun.dev
   IMAGE_NAME: aily
   IAC_REPO: jiunbae/IaC
+  IAC_BRANCH: release
   APP_PATH: kubernetes/apps/aily
 
 jobs:
@@ -48,7 +49,7 @@ jobs:
 
       - name: Clone IaC repo from GitHub
         run: |
-          git clone https://x-access-token:${{ secrets.IAC_GITHUB_TOKEN }}@github.com/${{ env.IAC_REPO }}.git iac
+          git clone -b ${{ env.IAC_BRANCH }} https://x-access-token:${{ secrets.IAC_GITHUB_TOKEN }}@github.com/${{ env.IAC_REPO }}.git iac
 
       - name: Update image tag in IaC repo
         run: |
