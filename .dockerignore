@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.pyc
+docs/
+hooks/
+aily
+install.sh
+.env*
+*.md
+LICENSE
+.gitignore
+.claude/
