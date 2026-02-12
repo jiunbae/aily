@@ -18,5 +18,6 @@ USER 1000
 # BRIDGE_MODE: "discord" or "slack"
 ENV BRIDGE_MODE=discord
 ENV AGENT_BRIDGE_ENV=/app/.notify-env
+ENV PYTHONUNBUFFERED=1
 
 CMD ["sh", "-c", "if [ \"$BRIDGE_MODE\" = 'slack' ]; then exec python3 slack-bridge.py; else exec python3 agent-bridge.py; fi"]
