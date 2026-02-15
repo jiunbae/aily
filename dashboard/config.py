@@ -49,6 +49,12 @@ class Config:
     enable_message_ingester: bool = False  # Phase 2 feature, disabled by default
     enable_platform_sync: bool = True
 
+    # JSONL ingestion settings
+    enable_jsonl_ingester: bool = False  # disabled by default
+    jsonl_scan_interval: int = 60        # seconds between JSONL scans
+    jsonl_max_lines: int = 500           # max lines to tail per file
+    jsonl_max_content_length: int = 5000 # truncate content longer than this
+
     # .notify-env path
     env_file: str = ""
 
@@ -96,6 +102,17 @@ class Config:
         )
         config.enable_platform_sync = (
             os.environ.get("ENABLE_PLATFORM_SYNC", "true").lower() != "false"
+        )
+
+        # JSONL ingestion
+        config.enable_jsonl_ingester = (
+            os.environ.get("ENABLE_JSONL_INGESTER", "false").lower() == "true"
+        )
+        config.jsonl_scan_interval = int(
+            os.environ.get("JSONL_SCAN_INTERVAL", str(config.jsonl_scan_interval))
+        )
+        config.jsonl_max_lines = int(
+            os.environ.get("JSONL_MAX_LINES", str(config.jsonl_max_lines))
         )
 
         # Fallback: load .notify-env file (same format as bridges)
