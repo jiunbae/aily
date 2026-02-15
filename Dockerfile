@@ -12,12 +12,20 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY agent-bridge.py slack-bridge.py ./
+COPY dashboard/ ./dashboard/
+
+RUN mkdir -p /app/data && chown app:app /app/data
 
 USER 1000
 
-# BRIDGE_MODE: "discord" or "slack"
+# BRIDGE_MODE: "discord", "slack", or "dashboard"
 ENV BRIDGE_MODE=discord
 ENV AGENT_BRIDGE_ENV=/app/.notify-env
 ENV PYTHONUNBUFFERED=1
 
-CMD ["sh", "-c", "if [ \"$BRIDGE_MODE\" = 'slack' ]; then exec python3 slack-bridge.py; else exec python3 agent-bridge.py; fi"]
+EXPOSE 8080
+
+CMD ["sh", "-c", \
+  "if [ \"$BRIDGE_MODE\" = 'slack' ]; then exec python3 slack-bridge.py; \
+   elif [ \"$BRIDGE_MODE\" = 'dashboard' ]; then exec python3 -m dashboard; \
+   else exec python3 agent-bridge.py; fi"]

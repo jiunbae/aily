@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+
+{% block title %}aily Dashboard{% endblock %}
+
+{% block nav_dashboard_active %}is-active{% endblock %}
+
+{% block content %}
+<div x-data="dashboardHome()" x-init="init()">
+
+  <!-- Status Summary Bar -->
+  <div class="flex flex-wrap gap-3 mb-6">
+    <div class="stat-pill flex items-center gap-3 px-3 py-2 rounded-md min-w-[120px] h-[40px] bg-[rgba(16,185,129,0.12)]">
+      <span class="w-2 h-2 rounded-full bg-[var(--status-active)] pulse-active"></span>
+      <div class="flex items-baseline gap-2">
+        <span class="text-xl font-bold text-[var(--status-active)]" x-text="activeCount"></span>
+        <span class="text-[11px] text-[var(--text-secondary)] uppercase tracking-[0.08em]">active</span>
+      </div>
+    </div>
+    <div class="stat-pill flex items-center gap-3 px-3 py-2 rounded-md min-w-[120px] h-[40px] bg-[rgba(245,158,11,0.12)]">
+      <span class="w-2 h-2 rounded-full bg-[var(--status-waiting)] pulse-attention"></span>
+      <div class="flex items-baseline gap-2">
+        <span class="text-xl font-bold text-[var(--status-waiting)]" x-text="waitingCount"></span>
+        <span class="text-[11px] text-[var(--text-secondary)] uppercase tracking-[0.08em]">waiting</span>
+      </div>
+    </div>
+    <div class="stat-pill flex items-center gap-3 px-3 py-2 rounded-md min-w-[120px] h-[40px] bg-[rgba(107,114,128,0.12)]">
+      <span class="w-2 h-2 rounded-full bg-[var(--status-idle)]"></span>
+      <div class="flex items-baseline gap-2">
+        <span class="text-xl font-bold text-[var(--text-secondary)]" x-text="idleCount"></span>
+        <span class="text-[11px] text-[var(--text-secondary)] uppercase tracking-[0.08em]">idle</span>
+      </div>
+    </div>
+    <div class="stat-pill flex items-center gap-3 px-3 py-2 rounded-md min-w-[140px] h-[40px] bg-[rgba(99,102,241,0.12)]">
+      <span class="w-2 h-2 rounded-full bg-[var(--accent-primary)]"></span>
+      <div class="flex items-baseline gap-2">
+        <span class="text-xl font-bold text-[var(--accent-primary)]" x-text="messages24h"></span>
+        <span class="text-[11px] text-[var(--text-secondary)] uppercase tracking-[0.08em]">msgs 24h</span>
+      </div>
+    </div>
+    <div class="ml-auto flex items-center gap-2">
+      <button @click="refresh()" class="btn-ghost px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+        Refresh
+      </button>
+      <button @click="showNewSessionModal = true" class="btn-primary px-3 py-2 text-xs font-semibold">
+        New Session
+      </button>
+    </div>
+  </div>
+
+  <template x-if="createError">
+    <div class="mb-6 bg-[rgba(239,68,68,0.10)] border border-[rgba(239,68,68,0.35)] rounded-lg p-4 text-sm text-[var(--text-secondary)]">
+      <span class="text-[var(--status-error)] font-semibold">Error:</span>
+      <span x-text="createError"></span>
+    </div>
+  </template>
+
+  <!-- Attention Required -->
+  <template x-if="!loading && attentionSessions.length">
+    <div class="mb-6 rounded-xl border border-[rgba(245,158,11,0.35)] bg-[rgba(245,158,11,0.06)] p-4">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="w-2 h-2 rounded-full bg-[var(--status-waiting)] pulse-attention"></span>
+        <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Attention Required</h2>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <template x-for="s in attentionSessions" :key="s.name">
+          <a :href="'/sessions/' + s.name"
+             class="block rounded-lg border border-[var(--bg-overlay)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] hover:border-[#30363D] transition-all duration-200 p-4 no-underline">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full"
+                    :class="ailyUtils.statusMeta(s.status).dotClass"></span>
+              <span class="font-mono font-medium text-[15px] text-[var(--text-primary)] truncate" x-text="s.name"></span>
+              <span class="ml-auto text-xs text-[var(--text-muted)]"
+                    x-text="timeAgo(s.last_activity || s.updated_at)"
+                    :title="formatTime(s.last_activity || s.updated_at)"></span>
+            </div>
+            <div class="mt-2 text-xs text-[var(--text-secondary)]">
+              <span x-text="s.host || 'unknown'"></span>
+              <template x-if="s.agent_type">
+                <span>
+                  <span class="text-[var(--text-muted)]">&middot;</span>
+                  <span x-text="agentLabel(s.agent_type)"></span>
+                </span>
+              </template>
+            </div>
+          </a>
+        </template>
+      </div>
+    </div>
+  </template>
+
+  <!-- Loading Skeleton -->
+  <template x-if="loading">
+    <div>
+      <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <template x-for="i in 6" :key="i">
+            <div class="skeleton-card rounded-lg p-4 h-[160px]">
+              <div class="skeleton-line w-3/5 h-4 mb-3"></div>
+              <div class="skeleton-line w-2/5 h-3 mb-6"></div>
+              <div class="skeleton-line w-full h-3 mb-2"></div>
+              <div class="skeleton-line w-4/5 h-3 mb-6"></div>
+              <div class="flex justify-between">
+                <div class="skeleton-line w-12 h-3"></div>
+                <div class="skeleton-line w-16 h-3"></div>
+              </div>
+            </div>
+          </template>
+        </div>
+        <div class="skeleton-card rounded-xl p-4 h-[520px]">
+          <div class="skeleton-line w-2/5 h-4 mb-6"></div>
+          <template x-for="i in 10" :key="i">
+            <div class="mb-4">
+              <div class="skeleton-line w-full h-3 mb-2"></div>
+              <div class="skeleton-line w-2/3 h-3"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- Empty State -->
+  <template x-if="!loading && sessions.length === 0">
+    <div class="flex flex-col items-center justify-center py-20 text-center">
+      <svg class="w-16 h-16 text-[var(--bg-overlay)] mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+      </svg>
+      <h3 class="text-base font-semibold text-[var(--text-primary)] mb-2">No active sessions</h3>
+      <p class="text-sm text-[var(--text-secondary)] max-w-[280px] mb-6">
+        Start an AI agent in a tmux session and it will appear here automatically.
+      </p>
+      <button @click="showNewSessionModal = true"
+              class="btn-primary inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-semibold">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        New Session
+      </button>
+    </div>
+  </template>
+
+  <!-- Active Sessions Grid + Activity Feed -->
+  <template x-if="!loading && sessions.length > 0">
+    <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6">
+      <section>
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Active Sessions</h2>
+          <button @click="showNewSessionModal = true"
+                  class="btn-secondary inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            </svg>
+            New Session
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <template x-for="session in activeSessions" :key="session.name">
+            <a :href="'/sessions/' + session.name"
+               class="session-card block rounded-lg p-4 bg-[var(--bg-surface)] border border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] hover:border-[#30363D] hover:shadow-[var(--shadow-md)] transition-all duration-200 cursor-pointer no-underline"
+               :style="'border-left: 3px solid ' + statusColor(session.status)">
+
+              <!-- Header -->
+              <div class="flex items-center gap-2 mb-1">
+                <span class="w-2 h-2 rounded-full flex-shrink-0"
+                      :class="ailyUtils.statusMeta(session.status).dotClass"></span>
+                <span class="font-mono font-medium text-[15px] text-[var(--text-primary)] truncate"
+                      x-text="session.name"></span>
+              </div>
+
+              <!-- Host + Agent -->
+              <div class="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] mb-3">
+                <span x-text="session.host || 'unknown'"></span>
+                <template x-if="session.agent_type">
+                  <span>
+                    <span class="text-[var(--text-muted)]">&middot;</span>
+                    <span x-text="agentLabel(session.agent_type)"></span>
+                  </span>
+                </template>
+              </div>
+
+              <!-- Preview -->
+              <div class="text-[13px] text-[var(--text-secondary)] line-clamp-2 mb-3 min-h-[40px]"
+                   x-text="session.last_message_preview || session.working_dir || 'No messages yet'"></div>
+
+              <!-- Footer -->
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <template x-if="session.discord_thread_id">
+                    <span class="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)]" title="Discord synced">
+                      <span class="w-2.5 h-2.5 rounded-full bg-[var(--platform-discord)]"></span>
+                      D
+                    </span>
+                  </template>
+                  <template x-if="session.slack_thread_ts">
+                    <span class="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)]" title="Slack synced">
+                      <span class="w-2.5 h-2.5 rounded-full bg-[var(--platform-slack)]"></span>
+                      S
+                    </span>
+                  </template>
+                </div>
+                <span class="text-xs text-[var(--text-muted)]"
+                      x-text="timeAgo(session.last_activity || session.updated_at)"
+                      :title="formatTime(session.last_activity || session.updated_at)"></span>
+              </div>
+            </a>
+          </template>
+        </div>
+      </section>
+
+      <aside class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-4 h-fit">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Activity</h3>
+          <span class="text-[11px] text-[var(--text-muted)]" x-text="activity.length ? activity.length : ''"></span>
+        </div>
+
+        <template x-if="activity.length === 0">
+          <div class="text-sm text-[var(--text-secondary)] py-10 text-center">
+            Real-time events will appear here.
+          </div>
+        </template>
+
+        <div class="divide-y divide-[var(--bg-overlay)]">
+          <template x-for="item in activity" :key="item.id">
+            <div class="py-3 flex gap-3">
+              <div class="mt-1 w-2 h-2 rounded-full flex-shrink-0"
+                   :style="'background:' + activityDotColor(item)"></div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <a class="font-mono text-xs text-[var(--text-primary)] hover:underline truncate"
+                     :href="item.sessionName ? ('/sessions/' + item.sessionName) : '#'"
+                     x-text="item.sessionName || 'system'"></a>
+                  <span class="ml-auto text-[11px] text-[var(--text-muted)]"
+                        x-text="timeAgo(item.timestamp)"
+                        :title="formatTime(item.timestamp)"></span>
+                </div>
+                <div class="text-xs text-[var(--text-secondary)] truncate" x-text="activityText(item)"></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </aside>
+    </div>
+  </template>
+
+  <!-- New Session Modal -->
+  <template x-if="showNewSessionModal">
+    <div class="fixed inset-0 z-50 flex items-center justify-center" @keydown.escape.window="showNewSessionModal = false">
+      <div class="absolute inset-0 bg-black/60" @click="showNewSessionModal = false"></div>
+      <div class="relative bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl shadow-xl w-full max-w-[480px] p-6 modal-enter">
+        <h3 class="text-lg font-semibold text-[var(--text-primary)] mb-4">Create New Session</h3>
+
+        <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Session Name</label>
+        <input type="text" x-model="newSession.name"
+               placeholder="my-session-name"
+               class="input-field w-full mb-1 font-mono"
+               @input="validateSessionName()"
+               maxlength="64">
+        <p class="text-[11px] text-[var(--text-muted)] mb-4">Letters, numbers, hyphens, and underscores only</p>
+
+        <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Host</label>
+        <input type="text" x-model="newSession.host"
+               placeholder="dev-1"
+               class="input-field w-full mb-6">
+
+        <template x-if="createError">
+          <div class="mb-4 text-xs text-[var(--status-error)]" x-text="createError"></div>
+        </template>
+
+        <div class="flex justify-end gap-2">
+          <button @click="showNewSessionModal = false"
+                  class="btn-secondary px-4 py-2 rounded-md text-sm font-medium">Cancel</button>
+          <button @click="createSession()"
+                  :disabled="!isValidSessionName"
+                  class="btn-primary px-4 py-2 rounded-md text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed">
+            <span x-show="!creating">Create Session</span>
+            <span x-show="creating" x-cloak>Creating...</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+</div>
+{% endblock %}

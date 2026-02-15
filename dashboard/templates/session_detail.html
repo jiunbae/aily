@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+
+{% block title %}{{ session_name }} - aily Dashboard{% endblock %}
+
+{% block nav_sessions_active %}is-active{% endblock %}
+
+{% block content %}
+<div x-data="sessionDetail('{{ session_name|e }}')" x-init="init()">
+  <!-- Breadcrumbs -->
+  <div class="flex items-center gap-2 text-xs text-[var(--text-muted)] mb-4">
+    <a href="/" class="hover:text-[var(--text-secondary)] transition-colors">Dashboard</a>
+    <span>&rsaquo;</span>
+    <a href="/sessions" class="hover:text-[var(--text-secondary)] transition-colors">Sessions</a>
+    <span>&rsaquo;</span>
+    <span class="font-mono text-[var(--text-secondary)] truncate">{{ session_name }}</span>
+  </div>
+
+  <template x-if="error">
+    <div class="mb-4 bg-[rgba(239,68,68,0.10)] border border-[rgba(239,68,68,0.35)] rounded-lg p-4 text-sm text-[var(--text-secondary)]">
+      <span class="text-[var(--status-error)] font-semibold">Error:</span>
+      <span x-text="error"></span>
+    </div>
+  </template>
+
+  <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
+    <!-- Conversation -->
+    <section class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl overflow-hidden flex flex-col h-[calc(100vh-220px)] min-h-[560px]">
+      <!-- Header -->
+      <div class="px-5 py-4 border-b border-[var(--bg-overlay)] flex items-start gap-4">
+        <div class="min-w-0">
+          <h1 class="font-mono text-[16px] font-medium text-[var(--text-primary)] truncate">{{ session_name }}</h1>
+          <div class="text-xs text-[var(--text-muted)] mt-1 truncate" x-text="session?.working_dir || ''"></div>
+        </div>
+        <div class="ml-auto flex items-center gap-2 flex-wrap justify-end">
+          <template x-if="session?.host">
+            <span class="badge badge-agent">
+              <span class="badge-dot" style="background: rgba(255,255,255,0.25)"></span>
+              <span x-text="session.host"></span>
+            </span>
+          </template>
+          <template x-if="session">
+            <span class="badge" :class="statusMeta(session.status).badgeClass">
+              <span class="badge-dot"></span>
+              <span x-text="statusMeta(session.status).label"></span>
+            </span>
+          </template>
+          <template x-if="session?.agent_type">
+            <span class="badge badge-agent" :style="'color:' + agentColor(session.agent_type)">
+              <span class="badge-dot" :style="'background:' + agentColor(session.agent_type)"></span>
+              <span x-text="agentLabel(session.agent_type)"></span>
+            </span>
+          </template>
+          <button class="btn-danger px-3 py-2 text-xs font-semibold" @click="killSession()">
+            Kill
+          </button>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div class="relative flex-1 min-h-0">
+        <div x-ref="msgScroll" class="h-full overflow-y-auto px-4 py-4 space-y-3">
+          <template x-if="loading">
+            <div class="space-y-4 py-4">
+              <template x-for="i in 6" :key="i">
+                <div :class="i % 2 === 0 ? 'flex' : 'flex justify-end'">
+                  <div class="skeleton-card rounded-xl p-4" :class="i % 2 === 0 ? 'w-4/5' : 'w-3/5'">
+                    <div class="skeleton-line w-3/4 h-3 mb-2"></div>
+                    <div class="skeleton-line w-full h-3 mb-2"></div>
+                    <div class="skeleton-line w-2/3 h-3"></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <template x-if="!loading && renderedItems.length === 0">
+            <div class="flex flex-col items-center justify-center py-20 text-center">
+              <svg class="w-12 h-12 text-[var(--bg-overlay)] mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                      d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+              </svg>
+              <h3 class="text-sm font-semibold text-[var(--text-primary)] mb-1">Conversation is empty</h3>
+              <p class="text-xs text-[var(--text-secondary)] max-w-[320px]">
+                Messages from the agent and your commands will appear here.
+              </p>
+            </div>
+          </template>
+
+          <template x-if="!loading && renderedItems.length > 0">
+            <div class="space-y-3">
+              <template x-for="item in renderedItems"
+                        :key="item.kind === 'date' ? ('date:' + item.day) : ('msg:' + (item.msg.external_id || item.msg.id || item.msg.timestamp))">
+                <div>
+                  <!-- Date separator -->
+                  <template x-if="item.kind === 'date'">
+                    <div class="msg-system py-2">
+                      <div class="system-divider">
+                        <span class="text-xs text-[var(--text-muted)]" x-text="dateLabel(item.day)"></span>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- Message -->
+                  <template x-if="item.kind === 'msg'">
+                    <div>
+                      <!-- System -->
+                      <template x-if="messageKind(item.msg) === 'system'">
+                        <div class="msg-system py-2">
+                          <div class="system-divider">
+                            <span class="text-xs text-[var(--text-muted)]" x-text="item.msg.content"></span>
+                          </div>
+                        </div>
+                      </template>
+
+                      <!-- AI -->
+                      <template x-if="messageKind(item.msg) === 'ai'">
+                        <div class="flex gap-3">
+                          <div class="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white mt-1"
+                               :style="'background:' + agentColor(session?.agent_type || '')">
+                            AI
+                          </div>
+                          <div class="msg msg-ai min-w-0">
+                            <div class="md" x-html="renderMarkdown(item.msg.content)"></div>
+                            <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
+                              <span x-text="timeAgo(item.msg.timestamp)" :title="formatTime(item.msg.timestamp)"></span>
+                              <template x-if="messageSourceLabel(item.msg)">
+                                <span x-text="'via ' + messageSourceLabel(item.msg)"></span>
+                              </template>
+                            </div>
+                          </div>
+                        </div>
+                      </template>
+
+                      <!-- User -->
+                      <template x-if="messageKind(item.msg) === 'user'">
+                        <div class="flex justify-end">
+                          <div class="max-w-[70%]">
+                            <div class="text-[11px] font-medium text-[var(--text-muted)] text-right mb-1">You</div>
+                            <div class="msg msg-user">
+                              <div class="md" x-html="renderMarkdown(item.msg.content)"></div>
+                              <div class="mt-2 text-[11px] text-[#6E8099]" x-text="timeAgo(item.msg.timestamp)" :title="formatTime(item.msg.timestamp)"></div>
+                            </div>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <!-- Jump to latest -->
+        <div class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10" x-show="!isAtBottom && unread > 0" x-cloak>
+          <button class="jump-latest inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold"
+                  @click="scrollToBottom(true)">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
+            Jump to latest
+            <span class="ml-1 px-2 py-0.5 rounded-full bg-black/20 font-mono" x-text="unread"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Input -->
+      <div class="border-t border-[var(--bg-overlay)] p-3 bg-[var(--bg-surface)]">
+        <div class="flex items-end gap-2">
+          <textarea x-ref="draft"
+                    x-model="draft"
+                    @input="onDraftInput()"
+                    @keydown="onDraftKeydown($event)"
+                    rows="1"
+                    class="input-field flex-1 font-mono text-sm resize-none leading-relaxed"
+                    placeholder="Type a message to send to the tmux session..."
+                    :disabled="sending"></textarea>
+
+          <button class="w-10 h-10 rounded-lg flex items-center justify-center transition-colors duration-150"
+                  :class="draft.trim() && !sending
+                    ? 'bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary-hover)]'
+                    : 'bg-[var(--bg-overlay)] text-[var(--text-muted)] cursor-not-allowed'"
+                  :disabled="!draft.trim() || sending"
+                  @click="sendMessage()"
+                  aria-label="Send message">
+            <svg x-show="!sending" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+            </svg>
+            <svg x-show="sending" x-cloak class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="mt-2 text-[11px] text-[var(--text-muted)]">
+          Enter to send, Shift+Enter for newline.
+        </div>
+      </div>
+    </section>
+
+    <!-- Metadata -->
+    <aside class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl p-5 xl:sticky xl:top-8 h-fit">
+      <div class="space-y-6">
+        <!-- Session Info -->
+        <section>
+          <h3 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-3">Session Info</h3>
+          <div class="space-y-2">
+            <div class="flex items-baseline gap-3">
+              <div class="w-[100px] text-[13px] text-[var(--text-secondary)]">Name</div>
+              <div class="font-mono text-[13px] text-[var(--text-primary)] truncate">{{ session_name }}</div>
+            </div>
+            <div class="flex items-baseline gap-3">
+              <div class="w-[100px] text-[13px] text-[var(--text-secondary)]">Host</div>
+              <div class="text-[13px] font-medium text-[var(--text-primary)]" x-text="session?.host || '-'"></div>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="w-[100px] text-[13px] text-[var(--text-secondary)]">Status</div>
+              <div>
+                <template x-if="session">
+                  <span class="badge" :class="statusMeta(session.status).badgeClass">
+                    <span class="badge-dot"></span>
+                    <span x-text="statusMeta(session.status).label"></span>
+                  </span>
+                </template>
+                <template x-if="!session">
+                  <span class="text-[13px] text-[var(--text-muted)]">-</span>
+                </template>
+              </div>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="w-[100px] text-[13px] text-[var(--text-secondary)]">Agent</div>
+              <div class="text-[13px] text-[var(--text-primary)]" x-text="session?.agent_type ? agentLabel(session.agent_type) : '-'"></div>
+            </div>
+            <div class="flex items-baseline gap-3">
+              <div class="w-[100px] text-[13px] text-[var(--text-secondary)]">Created</div>
+              <div class="text-[13px] text-[var(--text-primary)]"
+                   x-text="session?.created_at ? formatTime(session.created_at) : '-'"></div>
+            </div>
+            <div class="flex items-baseline gap-3">
+              <div class="w-[100px] text-[13px] text-[var(--text-secondary)]">Duration</div>
+              <div class="text-[13px] text-[var(--text-primary)]" x-text="durationText()"></div>
+            </div>
+            <template x-if="session?.working_dir">
+              <div class="flex items-baseline gap-3">
+                <div class="w-[100px] text-[13px] text-[var(--text-secondary)]">CWD</div>
+                <div class="font-mono text-[13px] text-[var(--text-primary)] truncate" :title="session.working_dir" x-text="session.working_dir"></div>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <!-- Platform Links -->
+        <section>
+          <h3 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-3">Platform Links</h3>
+          <div class="space-y-2">
+            <template x-if="session?.discord_url">
+              <a class="flex items-center gap-3 px-3 py-3 rounded-lg border border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] transition-colors"
+                 :href="session.discord_url" target="_blank" rel="noopener noreferrer">
+                <span class="w-2.5 h-2.5 rounded-full bg-[var(--platform-discord)]"></span>
+                <span class="text-sm text-[var(--text-primary)]">Open in Discord</span>
+                <span class="ml-auto text-xs text-[var(--text-muted)]">-&gt;</span>
+              </a>
+            </template>
+            <template x-if="!session?.discord_url">
+              <div class="flex items-center gap-3 px-3 py-3 rounded-lg border border-[var(--bg-overlay)] opacity-60">
+                <span class="w-2.5 h-2.5 rounded-full bg-[var(--platform-discord)]"></span>
+                <span class="text-sm text-[var(--text-secondary)]">Discord (not synced)</span>
+              </div>
+            </template>
+
+            <template x-if="session?.slack_url">
+              <a class="flex items-center gap-3 px-3 py-3 rounded-lg border border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] transition-colors"
+                 :href="session.slack_url" target="_blank" rel="noopener noreferrer">
+                <span class="w-2.5 h-2.5 rounded-full bg-[var(--platform-slack)]"></span>
+                <span class="text-sm text-[var(--text-primary)]">Open in Slack</span>
+                <span class="ml-auto text-xs text-[var(--text-muted)]">-&gt;</span>
+              </a>
+            </template>
+            <template x-if="!session?.slack_url">
+              <div class="flex items-center gap-3 px-3 py-3 rounded-lg border border-[var(--bg-overlay)] opacity-60">
+                <span class="w-2.5 h-2.5 rounded-full bg-[var(--platform-slack)]"></span>
+                <span class="text-sm text-[var(--text-secondary)]">Slack (not synced)</span>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <!-- Statistics -->
+        <section>
+          <h3 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-3">Statistics</h3>
+          <div class="space-y-2">
+            <div class="flex items-baseline gap-3">
+              <div class="w-[140px] text-[13px] text-[var(--text-secondary)]">Total messages</div>
+              <div class="font-mono text-[13px] text-[var(--text-primary)]" x-text="session?.message_count ?? '-'"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Actions -->
+        <section>
+          <h3 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-3">Actions</h3>
+          <div class="space-y-2">
+            <button class="btn-primary w-full px-4 py-2 text-sm font-semibold"
+                    @click="$refs.draft && $refs.draft.focus()">
+              Send Command
+            </button>
+            <button class="btn-secondary w-full px-4 py-2 text-sm font-medium"
+                    @click="scrollToBottom(true)">
+              Jump to Latest
+            </button>
+            <button class="btn-danger w-full px-4 py-2 text-sm font-semibold"
+                    @click="killSession()">
+              Kill Session
+            </button>
+          </div>
+        </section>
+      </div>
+    </aside>
+  </div>
+</div>
+{% endblock %}
