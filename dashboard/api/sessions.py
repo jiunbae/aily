@@ -356,6 +356,67 @@ async def get_session_messages(request: web.Request) -> web.Response:
     )
 
 
+async def sync_session_messages(request: web.Request) -> web.Response:
+    """POST /api/sessions/{name}/sync
+
+    Trigger an immediate message sync from Discord/Slack for this session.
+    Returns the number of new messages ingested.
+    """
+    name = request.match_info["name"]
+
+    session = await db.fetchone(
+        "SELECT * FROM sessions WHERE name = ?", (name,)
+    )
+    if not session:
+        return error_response(404, "NOT_FOUND", f"Session '{name}' not found")
+
+    platform_svc: PlatformService = request.app["platform_service"]
+    message_svc: MessageService = request.app["message_service"]
+    total = 0
+
+    # Sync Discord messages
+    discord_thread_id = session["discord_thread_id"]
+    if platform_svc.has_discord and discord_thread_id:
+        try:
+            # Get last known message ID
+            last_msg = await db.fetchone(
+                """SELECT source_id FROM messages
+                   WHERE session_name = ? AND source = 'discord'
+                   ORDER BY timestamp DESC LIMIT 1""",
+                (name,),
+            )
+            after = last_msg["source_id"] if last_msg else None
+
+            messages = await platform_svc.fetch_all_discord_thread_messages(
+                discord_thread_id, after=after
+            )
+            if messages:
+                # Get bot user ID for role detection
+                import aiohttp as _aiohttp
+
+                bot_id = ""
+                try:
+                    headers = {"Authorization": f"Bot {platform_svc.discord_token}"}
+                    async with _aiohttp.ClientSession() as http:
+                        async with http.get(
+                            "https://discord.com/api/v10/users/@me",
+                            headers=headers,
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                bot_id = data.get("id", "")
+                except Exception:
+                    pass
+
+                total += await message_svc.ingest_discord_messages(
+                    name, messages, bot_user_id=bot_id
+                )
+        except Exception:
+            logger.exception("Failed to sync Discord messages for '%s'", name)
+
+    return json_ok({"synced": total})
+
+
 async def receive_bridge_event(request: web.Request) -> web.Response:
     """POST /api/hooks/event
 

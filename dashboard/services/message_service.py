@@ -158,3 +158,76 @@ class MessageService:
                 "created_at": db.now_iso(),
             },
         )
+
+    async def ingest_discord_messages(
+        self,
+        session_name: str,
+        discord_messages: list[dict],
+        bot_user_id: str = "",
+    ) -> int:
+        """Ingest messages fetched from a Discord thread.
+
+        Converts Discord message format to our unified message schema.
+        Bot messages (from aily relay) are treated as role=assistant,
+        human messages as role=user.
+
+        Args:
+            session_name: The tmux session name.
+            discord_messages: List of Discord message dicts from the API.
+            bot_user_id: The Discord bot's user ID (to identify assistant messages).
+
+        Returns:
+            Number of new messages ingested.
+        """
+        ingested = 0
+        for msg in discord_messages:
+            content = msg.get("content", "").strip()
+            if not content:
+                continue
+
+            msg_id = msg.get("id", "")
+            author = msg.get("author", {})
+            author_id = author.get("id", "")
+            author_name = author.get("username", "")
+            is_bot = author.get("bot", False)
+
+            # Determine role: bot messages are assistant, human messages are user
+            if is_bot and (not bot_user_id or author_id == bot_user_id):
+                role = "assistant"
+            elif is_bot:
+                role = "system"
+            else:
+                role = "user"
+
+            # Parse Discord timestamp (ISO 8601)
+            timestamp = msg.get("timestamp", db.now_iso())
+
+            dedup_hash = compute_dedup_hash(
+                session_name, "discord", msg_id, content
+            )
+
+            cursor = await db.insert_or_ignore(
+                "messages",
+                {
+                    "session_name": session_name,
+                    "role": role,
+                    "content": content,
+                    "source": "discord",
+                    "source_id": msg_id,
+                    "source_author": author_name,
+                    "timestamp": timestamp,
+                    "ingested_at": db.now_iso(),
+                    "dedup_hash": dedup_hash,
+                },
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                ingested += 1
+
+        if ingested > 0:
+            logger.info(
+                "Ingested %d Discord messages for session '%s'",
+                ingested,
+                session_name,
+            )
+
+        return ingested

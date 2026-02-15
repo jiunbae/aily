@@ -243,3 +243,78 @@ class PlatformService:
                 logger.exception("Failed to archive Slack thread")
 
         return archived
+
+    async def fetch_discord_thread_messages(
+        self, thread_id: str, limit: int = 100, after: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch messages from a Discord thread.
+
+        Args:
+            thread_id: Discord thread/channel ID.
+            limit: Max messages to fetch (1-100).
+            after: Fetch messages after this message ID (for pagination).
+
+        Returns:
+            List of Discord message dicts, oldest first.
+        """
+        if not self.has_discord:
+            return []
+
+        headers = {"Authorization": f"Bot {self.discord_token}"}
+        api = "https://discord.com/api/v10"
+        params: dict[str, str] = {"limit": str(min(limit, 100))}
+        if after:
+            params["after"] = after
+
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(
+                    f"{api}/channels/{thread_id}/messages",
+                    headers=headers,
+                    params=params,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "Discord messages fetch failed: %d for thread %s",
+                            resp.status,
+                            thread_id,
+                        )
+                        return []
+                    messages = await resp.json()
+                    # Discord returns newest first, reverse to oldest first
+                    messages.reverse()
+                    return messages
+        except Exception:
+            logger.exception(
+                "Error fetching Discord messages for thread %s", thread_id
+            )
+            return []
+
+    async def fetch_all_discord_thread_messages(
+        self, thread_id: str, after: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch ALL messages from a Discord thread using pagination.
+
+        Args:
+            thread_id: Discord thread/channel ID.
+            after: Fetch messages after this message ID.
+
+        Returns:
+            List of all Discord message dicts, oldest first.
+        """
+        all_messages: list[dict[str, Any]] = []
+        cursor = after
+
+        while True:
+            batch = await self.fetch_discord_thread_messages(
+                thread_id, limit=100, after=cursor
+            )
+            if not batch:
+                break
+            all_messages.extend(batch)
+            cursor = batch[-1]["id"]
+            # Safety: Discord rate limit friendly
+            if len(batch) < 100:
+                break
+
+        return all_messages

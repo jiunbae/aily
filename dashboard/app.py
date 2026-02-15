@@ -28,6 +28,7 @@ from dashboard.services.event_bus import EventBus
 from dashboard.services.message_service import MessageService
 from dashboard.services.platform_service import PlatformService
 from dashboard.services.session_service import SessionService
+from dashboard.workers.message_sync import message_sync_worker
 from dashboard.workers.session_poller import session_poller
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,9 @@ def _setup_routes(app: web.Application) -> None:
     )
     app.router.add_get(
         "/api/sessions/{name}/messages", sessions_api.get_session_messages
+    )
+    app.router.add_post(
+        "/api/sessions/{name}/sync", sessions_api.sync_session_messages
     )
 
     # Stats
@@ -224,6 +228,7 @@ async def _on_startup(app: web.Application) -> None:
     event_bus: EventBus = app["event_bus"]
 
     app["_worker_tasks"] = []
+    message_svc: MessageService = app["message_service"]
 
     if config.enable_session_poller:
         task = asyncio.create_task(
@@ -236,6 +241,16 @@ async def _on_startup(app: web.Application) -> None:
             "Session poller worker started (interval=%ds)",
             config.poll_interval,
         )
+
+    # Start message sync worker (Discord/Slack → messages table)
+    if platform_svc.has_discord or platform_svc.has_slack:
+        task = asyncio.create_task(
+            message_sync_worker(
+                platform_svc, message_svc, event_bus, interval=300
+            )
+        )
+        app["_worker_tasks"].append(task)
+        logger.info("Message sync worker started (interval=300s)")
 
     logger.info("Dashboard started on %s:%d", config.host, config.port)
 
