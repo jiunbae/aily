@@ -53,6 +53,50 @@ class Event:
         return cls(type="message.new", payload=message_data)
 
     @classmethod
+    def session_status_changed(
+        cls, session_data: dict[str, Any], old_status: str, new_status: str
+    ) -> Event:
+        """Session status transition with before/after state."""
+        return cls(
+            type="session.status_changed",
+            payload={
+                **session_data,
+                "old_status": old_status,
+                "new_status": new_status,
+            },
+        )
+
+    @classmethod
+    def typing_start(cls, session_name: str) -> Event:
+        """Agent is producing output in this session."""
+        return cls(
+            type="typing.start",
+            payload={"session_name": session_name},
+        )
+
+    @classmethod
+    def typing_stop(cls, session_name: str) -> Event:
+        """Agent stopped producing output."""
+        return cls(
+            type="typing.stop",
+            payload={"session_name": session_name},
+        )
+
+    @classmethod
+    def sync_complete(
+        cls, session_name: str, source: str, count: int
+    ) -> Event:
+        """A sync operation completed for a session."""
+        return cls(
+            type="sync.complete",
+            payload={
+                "session_name": session_name,
+                "source": source,
+                "new_messages": count,
+            },
+        )
+
+    @classmethod
     def heartbeat(cls) -> Event:
         return cls(type="heartbeat", payload={})
 

@@ -244,6 +244,130 @@ class PlatformService:
 
         return archived
 
+    async def fetch_slack_thread_messages(
+        self, channel_id: str, thread_ts: str, limit: int = 200, cursor: str | None = None
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Fetch messages from a Slack thread using conversations.replies.
+
+        Args:
+            channel_id: Slack channel ID containing the thread.
+            thread_ts: Parent message timestamp identifying the thread.
+            limit: Max messages per page (1-200, Slack default 100).
+            cursor: Pagination cursor for next page.
+
+        Returns:
+            Tuple of (list of Slack message dicts, next_cursor or None).
+        """
+        if not self.has_slack:
+            return [], None
+
+        headers = {"Authorization": f"Bearer {self.slack_token}"}
+        params: dict[str, str] = {
+            "channel": channel_id,
+            "ts": thread_ts,
+            "limit": str(min(limit, 200)),
+        }
+        if cursor:
+            params["cursor"] = cursor
+
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(
+                    "https://slack.com/api/conversations.replies",
+                    headers=headers,
+                    params=params,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "Slack replies fetch failed: %d for thread %s",
+                            resp.status, thread_ts,
+                        )
+                        return [], None
+                    data = await resp.json()
+                    if not data.get("ok"):
+                        logger.warning("Slack API error: %s", data.get("error"))
+                        return [], None
+
+                    messages = data.get("messages", [])
+                    # First message is the parent -- skip it
+                    if messages and messages[0].get("ts") == thread_ts:
+                        messages = messages[1:]
+
+                    next_cursor = (
+                        data.get("response_metadata", {}).get("next_cursor") or None
+                    )
+                    return messages, next_cursor
+        except Exception:
+            logger.exception("Error fetching Slack replies for thread %s", thread_ts)
+            return [], None
+
+    async def fetch_all_slack_thread_messages(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        after_ts: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch ALL replies from a Slack thread using pagination.
+
+        Args:
+            channel_id: Slack channel ID.
+            thread_ts: Parent message timestamp.
+            after_ts: Only return messages with ts > after_ts (for incremental sync).
+
+        Returns:
+            List of all Slack message dicts, oldest first (Slack default order).
+        """
+        import asyncio
+
+        all_messages: list[dict[str, Any]] = []
+        cursor: str | None = None
+
+        while True:
+            batch, next_cursor = await self.fetch_slack_thread_messages(
+                channel_id, thread_ts, limit=200, cursor=cursor
+            )
+            if not batch:
+                break
+
+            # Filter by after_ts if provided
+            if after_ts:
+                batch = [m for m in batch if m.get("ts", "") > after_ts]
+
+            all_messages.extend(batch)
+            cursor = next_cursor
+
+            if not cursor:
+                break
+
+            # Rate limit safety
+            await asyncio.sleep(1)
+
+        return all_messages
+
+    async def get_slack_bot_user_id(self) -> str:
+        """Get the Slack bot's own user ID via auth.test.
+
+        Returns:
+            The bot user ID string, or empty string on failure.
+        """
+        if not self.has_slack:
+            return ""
+
+        headers = {"Authorization": f"Bearer {self.slack_token}"}
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(
+                    "https://slack.com/api/auth.test",
+                    headers=headers,
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("ok"):
+                            return data.get("user_id", "")
+        except Exception:
+            logger.exception("Failed to get Slack bot user ID")
+        return ""
+
     async def fetch_discord_thread_messages(
         self, thread_id: str, limit: int = 100, after: str | None = None
     ) -> list[dict[str, Any]]:

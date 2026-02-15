@@ -536,6 +536,30 @@ async def sync_session_messages(request: web.Request) -> web.Response:
         except Exception:
             logger.exception("Failed to sync Discord messages for '%s'", name)
 
+    # Sync Slack messages
+    slack_thread_ts = session["slack_thread_ts"]
+    slack_channel = session["slack_channel_id"] or platform_svc.slack_channel_id
+    if platform_svc.has_slack and slack_thread_ts:
+        try:
+            last_msg = await db.fetchone(
+                """SELECT source_id FROM messages
+                   WHERE session_name = ? AND source = 'slack'
+                   ORDER BY timestamp DESC LIMIT 1""",
+                (name,),
+            )
+            after_ts = last_msg["source_id"] if last_msg else None
+
+            slack_bot_id = await platform_svc.get_slack_bot_user_id()
+            messages = await platform_svc.fetch_all_slack_thread_messages(
+                slack_channel, slack_thread_ts, after_ts=after_ts
+            )
+            if messages:
+                total += await message_svc.ingest_slack_messages(
+                    name, messages, bot_user_id=slack_bot_id
+                )
+        except Exception:
+            logger.exception("Failed to sync Slack messages for '%s'", name)
+
     return json_ok({"synced": total})
 
 
