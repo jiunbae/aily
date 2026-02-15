@@ -66,6 +66,15 @@ async def create_app() -> web.Application:
     )
     message_svc = MessageService(event_bus=event_bus)
 
+    # Create JSONL service
+    from dashboard.services.jsonl_service import JSONLService
+
+    jsonl_svc = JSONLService(
+        event_bus=event_bus,
+        max_lines=config.jsonl_max_lines,
+        max_content_length=config.jsonl_max_content_length,
+    )
+
     # Create app with auth middleware
     app = web.Application(middlewares=[auth_middleware])
 
@@ -75,6 +84,7 @@ async def create_app() -> web.Application:
     app["session_service"] = session_svc
     app["platform_service"] = platform_svc
     app["message_service"] = message_svc
+    app["jsonl_service"] = jsonl_svc
 
     # Setup Jinja2 templates (if available)
     template_dir = os.path.join(os.path.dirname(__file__), "templates")
@@ -132,6 +142,9 @@ def _setup_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/api/sessions/bulk-delete", sessions_api.bulk_delete_sessions
+    )
+    app.router.add_post(
+        "/api/sessions/{name}/ingest-jsonl", sessions_api.ingest_jsonl
     )
 
     # Preferences
@@ -283,6 +296,19 @@ async def _on_startup(app: web.Application) -> None:
         )
         app["_worker_tasks"].append(task)
         logger.info("Message sync worker started (interval=300s)")
+
+    # Start JSONL ingester worker
+    if config.enable_jsonl_ingester:
+        from dashboard.workers.jsonl_ingester import jsonl_ingester
+
+        jsonl_svc_ref = app["jsonl_service"]
+        task = asyncio.create_task(
+            jsonl_ingester(jsonl_svc_ref, interval=config.jsonl_scan_interval)
+        )
+        app["_worker_tasks"].append(task)
+        logger.info(
+            "JSONL ingester started (interval=%ds)", config.jsonl_scan_interval
+        )
 
     logger.info("Dashboard started on %s:%d", config.host, config.port)
 

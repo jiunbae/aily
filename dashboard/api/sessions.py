@@ -563,6 +563,40 @@ async def sync_session_messages(request: web.Request) -> web.Response:
     return json_ok({"synced": total})
 
 
+async def ingest_jsonl(request: web.Request) -> web.Response:
+    """POST /api/sessions/{name}/ingest-jsonl
+
+    Trigger an immediate JSONL ingestion for this session.
+    Returns the number of new messages ingested.
+    """
+    name = request.match_info["name"]
+
+    session = await db.fetchone(
+        "SELECT * FROM sessions WHERE name = ?", (name,)
+    )
+    if not session:
+        return error_response(404, "NOT_FOUND", f"Session '{name}' not found")
+
+    if not session.get("host") or not session.get("working_dir"):
+        return error_response(
+            400,
+            "MISSING_CWD",
+            "Session has no known working directory. Cannot locate JSONL files.",
+        )
+
+    jsonl_svc = request.app.get("jsonl_service")
+    if not jsonl_svc:
+        return error_response(503, "DISABLED", "JSONL ingestion is not enabled")
+
+    ingested = await jsonl_svc.ingest_for_session(
+        host=session["host"],
+        session_name=name,
+        working_dir=session["working_dir"],
+    )
+
+    return json_ok({"ingested": ingested})
+
+
 async def receive_bridge_event(request: web.Request) -> web.Response:
     """POST /api/hooks/event
 
