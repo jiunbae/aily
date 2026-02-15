@@ -145,10 +145,12 @@
     return data;
   }
 
-  // Minimal, safe markdown-ish renderer:
-  // - Escapes HTML first
-  // - Supports fenced code blocks, inline code, bold/italic, links, lists, blockquotes
-  function renderMarkdown(input) {
+  // ------------------------------------
+  // Markdown rendering (marked.js + fallback)
+  // ------------------------------------
+
+  // Fallback: the original custom renderer
+  function _renderMarkdownFallback(input) {
     const raw = String(input ?? "");
     if (!raw) return "";
 
@@ -179,7 +181,6 @@
     s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
       const safe = safeUrl(url);
       if (!safe) return text;
-      // `safe` is already HTML-escaped because we escaped the whole string earlier.
       return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${text}</a>`;
     });
 
@@ -187,7 +188,6 @@
     s = s.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, (_m, prefix, url) => {
       const safe = safeUrl(url);
       if (!safe) return `${prefix}${url}`;
-      // `safe` is already HTML-escaped because we escaped the whole string earlier.
       return `${prefix}<a href="${safe}" target="_blank" rel="noopener noreferrer">${safe}</a>`;
     });
 
@@ -201,40 +201,21 @@
       const olMatch = line.match(/^\s*\d+\.\s+(.+)$/);
 
       if (ulMatch) {
-        if (inOl) {
-          out.push("</ol>");
-          inOl = false;
-        }
-        if (!inUl) {
-          out.push("<ul>");
-          inUl = true;
-        }
+        if (inOl) { out.push("</ol>"); inOl = false; }
+        if (!inUl) { out.push("<ul>"); inUl = true; }
         out.push(`<li>${ulMatch[1]}</li>`);
         continue;
       }
       if (olMatch) {
-        if (inUl) {
-          out.push("</ul>");
-          inUl = false;
-        }
-        if (!inOl) {
-          out.push("<ol>");
-          inOl = true;
-        }
+        if (inUl) { out.push("</ul>"); inUl = false; }
+        if (!inOl) { out.push("<ol>"); inOl = true; }
         out.push(`<li>${olMatch[1]}</li>`);
         continue;
       }
 
-      if (inUl) {
-        out.push("</ul>");
-        inUl = false;
-      }
-      if (inOl) {
-        out.push("</ol>");
-        inOl = false;
-      }
+      if (inUl) { out.push("</ul>"); inUl = false; }
+      if (inOl) { out.push("</ol>"); inOl = false; }
 
-      // Preserve blank lines as spacing.
       if (line.trim() === "") {
         out.push("");
       } else if (line.startsWith("<blockquote>")) {
@@ -273,14 +254,109 @@
     return s;
   }
 
-  function highlightAllSafe() {
-    if (!window.hljs || typeof window.hljs.highlightAll !== "function") return;
-    try {
-      window.hljs.highlightAll();
-    } catch {
-      // ignore
+  // Enhanced renderMarkdown using marked.js with fallback
+  function renderMarkdown(input) {
+    const raw = String(input ?? "");
+    if (!raw) return "";
+
+    // Configure marked (once)
+    if (window.marked && !window._markedConfigured) {
+      window.marked.setOptions({
+        gfm: true,
+        breaks: true,
+        headerIds: false,
+        mangle: false,
+      });
+
+      const renderer = new window.marked.Renderer();
+
+      // Custom code block renderer (marked v12+ uses object param)
+      renderer.code = function(codeObj) {
+        var text, lang;
+        if (typeof codeObj === "object" && codeObj !== null) {
+          text = codeObj.text || "";
+          lang = codeObj.lang || "";
+        } else {
+          text = String(codeObj ?? "");
+          lang = arguments.length > 1 ? String(arguments[1] || "") : "";
+        }
+        var escapedCode = escapeHtml(text);
+        var language = (lang || "").trim().toLowerCase();
+        var label = language
+          ? `<span class="codeblock-btn" style="pointer-events:none">${escapeHtml(language)}</span>`
+          : "";
+        var className = language ? `language-${escapeHtml(language)}` : "";
+
+        return (
+          `<pre>` +
+            `<div class="codeblock-toolbar">` +
+              `${label}` +
+              `<button type="button" class="codeblock-btn" data-copy-code>Copy</button>` +
+            `</div>` +
+            `<code class="${className}">${escapedCode}</code>` +
+          `</pre>`
+        );
+      };
+
+      // Sanitize links (only allow http/https)
+      renderer.link = function(linkObj) {
+        var href, title, text;
+        if (typeof linkObj === "object" && linkObj !== null) {
+          href = linkObj.href || "";
+          title = linkObj.title || "";
+          text = linkObj.text || "";
+        } else {
+          href = String(linkObj ?? "");
+          title = arguments.length > 1 ? String(arguments[1] || "") : "";
+          text = arguments.length > 2 ? String(arguments[2] || "") : "";
+        }
+        var safe = safeUrl(href);
+        if (!safe) return text;
+        var titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+        return `<a href="${safe}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+      };
+
+      window.marked.use({ renderer: renderer });
+      window._markedConfigured = true;
     }
+
+    // Use marked if available, fallback to old renderer
+    if (window.marked) {
+      try {
+        return window.marked.parse(raw);
+      } catch {
+        // fallback below
+      }
+    }
+
+    return _renderMarkdownFallback(raw);
   }
+
+  // ------------------------------------
+  // Targeted highlight.js
+  // ------------------------------------
+
+  function highlightNewCodeBlocks(container) {
+    if (!window.hljs) return;
+    var el = container || document;
+    var blocks = el.querySelectorAll("pre code:not(.hljs)");
+    blocks.forEach(function(block) {
+      try {
+        window.hljs.highlightElement(block);
+      } catch {
+        // ignore
+      }
+    });
+  }
+
+  // Keep backward-compatible name
+  function highlightAllSafe() {
+    highlightNewCodeBlocks(document);
+  }
+
+  // ------------------------------------
+  // Enhanced copy button
+  // ------------------------------------
 
   function copyNearestCode(btn) {
     const pre = btn.closest("pre");
@@ -290,9 +366,13 @@
     const text = code.textContent || "";
     navigator.clipboard?.writeText(text).then(
       () => {
-        const prev = btn.textContent;
-        btn.textContent = "Copied";
-        window.setTimeout(() => (btn.textContent = prev), 900);
+        const prev = btn.innerHTML;
+        btn.innerHTML = '<svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Copied';
+        btn.classList.add("text-[var(--status-active)]");
+        window.setTimeout(() => {
+          btn.innerHTML = prev;
+          btn.classList.remove("text-[var(--status-active)]");
+        }, 1200);
       },
       () => {
         // Fallback: select text
@@ -301,9 +381,6 @@
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
-        const prev = btn.textContent;
-        btn.textContent = "Select";
-        window.setTimeout(() => (btn.textContent = prev), 900);
       }
     );
   }
@@ -359,6 +436,11 @@
       status: "disconnected",
       lastHeartbeatAt: null,
       sessionCount: 0,
+      // Typing indicators: { "session-name": timestamp }
+      typingIndicators: {},
+      // Connection quality
+      lastReconnectAt: null,
+      reconnectCount: 0,
     });
 
     Alpine.store("sidebar", {
@@ -395,6 +477,13 @@
     if (window.ailyWS) {
       window.ailyWS.on("connection.status", (evt) => {
         Alpine.store("ws").status = evt.status || "disconnected";
+        if (evt.status === "reconnecting") {
+          Alpine.store("ws").lastReconnectAt = Date.now();
+          Alpine.store("ws").reconnectCount += 1;
+        }
+        if (evt.status === "connected") {
+          Alpine.store("ws").reconnectCount = 0;
+        }
       });
       window.ailyWS.on("heartbeat", () => {
         Alpine.store("ws").lastHeartbeatAt = Date.now();
@@ -406,6 +495,32 @@
       window.ailyWS.on("session.updated", () => refreshSidebarSessionsDebounced());
       window.ailyWS.on("session.deleted", () => refreshSidebarSessionsDebounced());
       window.ailyWS.on("message.new", () => refreshSidebarSessionsDebounced());
+
+      // Typing indicators
+      window.ailyWS.on("typing.start", (evt) => {
+        var name = evt?.payload?.session_name;
+        if (name) {
+          Alpine.store("ws").typingIndicators[name] = Date.now();
+          setTimeout(() => {
+            var ts = Alpine.store("ws").typingIndicators[name];
+            if (ts && Date.now() - ts > 9000) {
+              delete Alpine.store("ws").typingIndicators[name];
+            }
+          }, 10000);
+        }
+      });
+      window.ailyWS.on("typing.stop", (evt) => {
+        var name = evt?.payload?.session_name;
+        if (name) {
+          delete Alpine.store("ws").typingIndicators[name];
+        }
+      });
+
+      // Session status changes refresh sidebar
+      window.ailyWS.on("session.status_changed", () => refreshSidebarSessionsDebounced());
+
+      // Sync complete refreshes sidebar
+      window.ailyWS.on("sync.complete", () => refreshSidebarSessionsDebounced());
     }
 
     // Initial sidebar load.
@@ -467,15 +582,30 @@
       showNewSessionModal: false,
       creating: false,
       createError: "",
-      newSession: { name: "", host: "" },
+      newSession: { name: "", host: "", agent_type: "" },
       isValidSessionName: false,
+      configuredHosts: [],
+
+      // Delete confirmation
+      deleteTarget: null,
+      deleting: false,
 
       timeAgo,
       formatTime,
 
       init() {
         this.refresh();
+        this._loadHosts();
         this._wireWs();
+      },
+
+      async _loadHosts() {
+        try {
+          var stats = await apiJson("/api/stats");
+          this.configuredHosts = stats?.configured_hosts || [];
+        } catch {
+          // ignore, host field will fall back to text input
+        }
       },
 
       async refresh() {
@@ -500,7 +630,6 @@
       },
 
       get waitingCount() {
-        // Backend may or may not support waiting; fallback to scan sessions.
         const fromStats = this.stats?.sessions?.waiting ?? this.stats?.sessions?.waiting_input ?? null;
         if (typeof fromStats === "number") return fromStats;
         return this.sessions.filter((s) => normalizeStatus(s.status) === "waiting").length;
@@ -597,11 +726,14 @@
         this.creating = true;
         this.createError = "";
         try {
-          const body = { name: this.newSession.name.trim(), host: this.newSession.host.trim() };
-          const data = await apiJson("/api/sessions", { method: "POST", body });
+          var body = { name: this.newSession.name.trim(), host: this.newSession.host.trim() };
+          if (this.newSession.agent_type) {
+            body.agent_type = this.newSession.agent_type;
+          }
+          const data = await apiJson("/api/sessions", { method: "POST", body: body });
           const session = data?.session;
           this.showNewSessionModal = false;
-          this.newSession = { name: "", host: "" };
+          this.newSession = { name: "", host: "", agent_type: "" };
           this.isValidSessionName = false;
           if (session?.name) {
             window.location.href = `/sessions/${encodeURIComponent(session.name)}`;
@@ -612,6 +744,31 @@
           this.createError = e?.message || "Failed to create session";
         } finally {
           this.creating = false;
+        }
+      },
+
+      // Delete confirmation
+      confirmDelete(sessionName) {
+        this.deleteTarget = { name: sessionName };
+      },
+
+      cancelDelete() {
+        this.deleteTarget = null;
+      },
+
+      async confirmKillSession() {
+        var name = this.deleteTarget?.name;
+        if (!name) return;
+        this.deleting = true;
+        try {
+          await apiJson(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
+          this.sessions = this.sessions.filter((s) => s.name !== name);
+          this.deleteTarget = null;
+        } catch (e) {
+          this.createError = e?.message || "Failed to kill session";
+          this.deleteTarget = null;
+        } finally {
+          this.deleting = false;
         }
       },
 
@@ -644,6 +801,13 @@
         });
 
         window.ailyWS.on("session.updated", (evt) => {
+          const s = evt?.payload;
+          if (s?.name) this._upsertSession(s);
+          addEvent("session.updated", s, evt?.timestamp);
+          this._refreshStatsSoon();
+        });
+
+        window.ailyWS.on("session.status_changed", (evt) => {
           const s = evt?.payload;
           if (s?.name) this._upsertSession(s);
           addEvent("session.updated", s, evt?.timestamp);
@@ -719,15 +883,35 @@
       showNewSessionModal: false,
       creating: false,
       createError: "",
-      newSession: { name: "", host: "" },
+      newSession: { name: "", host: "", agent_type: "" },
       isValidSessionName: false,
+      configuredHosts: [],
+
+      // Delete confirmation
+      deleteTarget: null,
+      deleting: false,
+
+      // Bulk select
+      selectedSessions: new Set(),
+      selectMode: false,
+      bulkDeleting: false,
 
       timeAgo,
       formatTime,
 
       init() {
         this.refresh();
+        this._loadHosts();
         this._wireWs();
+      },
+
+      async _loadHosts() {
+        try {
+          var stats = await apiJson("/api/stats");
+          this.configuredHosts = stats?.configured_hosts || [];
+        } catch {
+          // ignore
+        }
       },
 
       async refresh() {
@@ -773,7 +957,6 @@
           if (key === "host") return dir * String(a.host || "").localeCompare(String(b.host || ""));
           if (key === "status") return dir * normalizeStatus(a.status).localeCompare(normalizeStatus(b.status));
           if (key === "messages") return dir * ((a.message_count || a.messages || 0) - (b.message_count || b.messages || 0));
-          // default: last activity
           return dir * (toNumTime(a.last_activity || a.updated_at) - toNumTime(b.last_activity || b.updated_at));
         });
 
@@ -815,11 +998,14 @@
         this.creating = true;
         this.createError = "";
         try {
-          const body = { name: this.newSession.name.trim(), host: this.newSession.host.trim() };
-          const data = await apiJson("/api/sessions", { method: "POST", body });
+          var body = { name: this.newSession.name.trim(), host: this.newSession.host.trim() };
+          if (this.newSession.agent_type) {
+            body.agent_type = this.newSession.agent_type;
+          }
+          const data = await apiJson("/api/sessions", { method: "POST", body: body });
           const session = data?.session;
           this.showNewSessionModal = false;
-          this.newSession = { name: "", host: "" };
+          this.newSession = { name: "", host: "", agent_type: "" };
           this.isValidSessionName = false;
           if (session?.name) {
             window.location.href = `/sessions/${encodeURIComponent(session.name)}`;
@@ -833,17 +1019,77 @@
         }
       },
 
-      async killSession(name) {
-        const sessionName = String(name || "");
-        if (!sessionName) return;
-        const ok = window.confirm(`Kill session '${sessionName}'? This will archive threads where possible.`);
-        if (!ok) return;
+      // Delete confirmation (replacing window.confirm)
+      confirmDelete(sessionName) {
+        this.deleteTarget = { name: sessionName };
+      },
 
+      cancelDelete() {
+        this.deleteTarget = null;
+      },
+
+      async confirmKillSession() {
+        var name = this.deleteTarget?.name;
+        if (!name) return;
+        this.deleting = true;
         try {
-          await apiJson(`/api/sessions/${encodeURIComponent(sessionName)}`, { method: "DELETE" });
-          this.sessions = this.sessions.filter((s) => s.name !== sessionName);
+          await apiJson(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
+          this.sessions = this.sessions.filter((s) => s.name !== name);
+          this.deleteTarget = null;
         } catch (e) {
-          window.alert(e?.message || "Failed to kill session");
+          this.createError = e?.message || "Failed to kill session";
+          this.deleteTarget = null;
+        } finally {
+          this.deleting = false;
+        }
+      },
+
+      // Bulk select
+      toggleSelectMode() {
+        this.selectMode = !this.selectMode;
+        if (!this.selectMode) {
+          this.selectedSessions = new Set();
+        }
+      },
+
+      toggleSelect(name) {
+        if (this.selectedSessions.has(name)) {
+          this.selectedSessions.delete(name);
+        } else {
+          this.selectedSessions.add(name);
+        }
+        this.selectedSessions = new Set(this.selectedSessions);
+      },
+
+      selectAll() {
+        if (this.selectedSessions.size === this.filtered.length) {
+          this.selectedSessions = new Set();
+        } else {
+          this.selectedSessions = new Set(this.filtered.map(function(s) { return s.name; }));
+        }
+      },
+
+      get selectedCount() {
+        return this.selectedSessions.size;
+      },
+
+      async bulkDelete() {
+        if (this.selectedCount === 0) return;
+        this.bulkDeleting = true;
+        try {
+          var names = Array.from(this.selectedSessions);
+          await apiJson("/api/sessions/bulk-delete", {
+            method: "POST",
+            body: { names: names },
+          });
+          var selected = this.selectedSessions;
+          this.sessions = this.sessions.filter(function(s) { return !selected.has(s.name); });
+          this.selectedSessions = new Set();
+          this.selectMode = false;
+        } catch (e) {
+          this.createError = e?.message || "Failed to bulk delete sessions";
+        } finally {
+          this.bulkDeleting = false;
         }
       },
 
@@ -854,6 +1100,10 @@
           if (s?.name) this._upsertSession(s);
         });
         window.ailyWS.on("session.updated", (evt) => {
+          const s = evt?.payload;
+          if (s?.name) this._upsertSession(s);
+        });
+        window.ailyWS.on("session.status_changed", (evt) => {
           const s = evt?.payload;
           if (s?.name) this._upsertSession(s);
         });
@@ -891,6 +1141,23 @@
       isAtBottom: true,
       unread: 0,
 
+      // Pagination state
+      totalMessages: 0,
+      messageOffset: 0,
+      messagesPerPage: 50,
+      loadingOlder: false,
+      hasOlderMessages: false,
+
+      // Delete confirmation
+      deleteTarget: null,
+      deleting: false,
+
+      // Mobile metadata toggle
+      showMetadata: false,
+
+      // Typing
+      _lastTypingSentAt: 0,
+
       timeAgo,
       formatTime,
       renderMarkdown,
@@ -899,6 +1166,11 @@
       statusMeta,
 
       _durationTimer: null,
+
+      get isAgentTyping() {
+        var ts = this.$store.ws.typingIndicators[this.sessionName];
+        return ts && (Date.now() - ts) < 10000;
+      },
 
       init() {
         this.load();
@@ -910,32 +1182,92 @@
         this.error = "";
         try {
           const enc = encodeURIComponent(this.sessionName);
-          // Trigger background sync from Discord and load existing messages in parallel
-          const [sessionResp, msgResp] = await Promise.all([
+          // First fetch session + count to calculate newest page offset
+          const [sessionResp, countResp] = await Promise.all([
             apiJson(`/api/sessions/${enc}`),
-            apiJson(`/api/sessions/${enc}/messages?limit=200&offset=0`),
+            apiJson(`/api/sessions/${enc}/messages?limit=1&offset=0`),
             fetch(`/api/sessions/${enc}/sync`, { method: "POST" }).catch(() => {}),
           ]);
           this.session = sessionResp?.session || null;
+          this.totalMessages = countResp?.total ?? (countResp?.messages?.length || 0);
+
+          // Calculate offset to get newest messages
+          var limit = this.messagesPerPage;
+          var offset = Math.max(0, this.totalMessages - limit);
+          var msgResp = await apiJson(`/api/sessions/${enc}/messages?limit=${limit}&offset=${offset}`);
           this.messages = msgResp?.messages || [];
+          this.totalMessages = msgResp?.total ?? this.totalMessages;
+          this.messageOffset = offset;
+          this.hasOlderMessages = offset > 0;
 
           // After sync completes, re-fetch messages if we had none
           if (this.messages.length === 0) {
             await new Promise((r) => setTimeout(r, 2000));
-            const fresh = await apiJson(`/api/sessions/${enc}/messages?limit=200&offset=0`);
-            if (fresh?.messages?.length) this.messages = fresh.messages;
+            var fresh = await apiJson(`/api/sessions/${enc}/messages?limit=${limit}&offset=0`);
+            if (fresh?.messages?.length) {
+              this.messages = fresh.messages;
+              this.totalMessages = fresh?.total ?? this.messages.length;
+              this.messageOffset = 0;
+              this.hasOlderMessages = false;
+            }
           }
 
           this.$nextTick(() => {
             this._setupScrollTracking();
             this.scrollToBottom(true);
-            highlightAllSafe();
+            highlightNewCodeBlocks(this.$refs.msgScroll);
             this._startDurationTicker();
           });
         } catch (e) {
           this.error = e?.message || "Failed to load session";
         } finally {
           this.loading = false;
+        }
+      },
+
+      async loadOlderMessages() {
+        if (this.loadingOlder || !this.hasOlderMessages) return;
+        this.loadingOlder = true;
+
+        try {
+          var enc = encodeURIComponent(this.sessionName);
+          var limit = this.messagesPerPage;
+          var offset = Math.max(0, this.messageOffset - limit);
+          var actualLimit = this.messageOffset - offset;
+
+          var msgResp = await apiJson(
+            `/api/sessions/${enc}/messages?limit=${actualLimit}&offset=${offset}`
+          );
+          var olderMsgs = msgResp?.messages || [];
+
+          if (olderMsgs.length > 0) {
+            // Preserve scroll position
+            var scrollEl = this.$refs.msgScroll;
+            var prevScrollHeight = scrollEl ? scrollEl.scrollHeight : 0;
+
+            // Prepend older messages (dedup by id)
+            var existingIds = new Set(this.messages.map(function(m) { return m.id || m.external_id; }));
+            var newMsgs = olderMsgs.filter(function(m) { return !existingIds.has(m.id || m.external_id); });
+            this.messages = [...newMsgs, ...this.messages];
+
+            this.messageOffset = offset;
+            this.hasOlderMessages = offset > 0;
+
+            // Restore scroll position after DOM update
+            this.$nextTick(() => {
+              if (scrollEl) {
+                var newScrollHeight = scrollEl.scrollHeight;
+                scrollEl.scrollTop += (newScrollHeight - prevScrollHeight);
+              }
+              highlightNewCodeBlocks(this.$refs.msgScroll);
+            });
+          } else {
+            this.hasOlderMessages = false;
+          }
+        } catch {
+          // ignore, user can scroll up again
+        } finally {
+          this.loadingOlder = false;
         }
       },
 
@@ -950,10 +1282,14 @@
       },
 
       get renderedItems() {
-        // Inject date separators.
+        // Inject date separators + new messages divider.
         const items = [];
         let lastDay = "";
         for (const m of this.messages) {
+          // New messages divider
+          if (m._isNewIndicator) {
+            items.push({ kind: "new-divider" });
+          }
           const ts = m.timestamp || m.created_at || m.updated_at;
           const d = ts ? new Date(ts) : null;
           const day = d && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : "";
@@ -1005,10 +1341,17 @@
       onScroll() {
         const el = this.$refs.msgScroll;
         if (!el) return;
+
+        // Bottom detection
         const distance = el.scrollHeight - (el.scrollTop + el.clientHeight);
         const atBottom = distance < 100;
         this.isAtBottom = atBottom;
         if (atBottom) this.unread = 0;
+
+        // Top detection: load older messages when scrolled near top
+        if (el.scrollTop < 100 && this.hasOlderMessages && !this.loadingOlder) {
+          this.loadOlderMessages();
+        }
       },
 
       _setupScrollTracking() {
@@ -1030,11 +1373,25 @@
           if (s?.name === this.sessionName) this.session = { ...(this.session || {}), ...s };
         });
 
+        window.ailyWS.on("session.status_changed", (evt) => {
+          const s = evt?.payload;
+          if (s?.name === this.sessionName) {
+            this.session = { ...(this.session || {}), ...s };
+          }
+        });
+
         window.ailyWS.on("message.new", (evt) => {
           const m = evt?.payload;
           if (!m) return;
           if (!this._belongsToThisSession(m)) return;
           this._appendMessage(m);
+        });
+
+        window.ailyWS.on("sync.complete", (evt) => {
+          var s = evt?.payload;
+          if (s?.session_name === this.sessionName && s?.new_messages > 0) {
+            this._refetchMessages();
+          }
         });
       },
 
@@ -1052,17 +1409,44 @@
         if (ext && this.messages.some((x) => (x.external_id || x.source_id) === ext)) return;
         if (m.id != null && this.messages.some((x) => x.id === m.id)) return;
 
+        // Mark first unread message
+        if (!this.isAtBottom) {
+          m._isNewIndicator = this.unread === 0;
+        }
+
         this.messages.push(m);
 
         // Auto-scroll only if user is at bottom.
         this.$nextTick(() => {
-          highlightAllSafe();
+          highlightNewCodeBlocks(this.$refs.msgScroll);
           if (this.isAtBottom) {
             this.scrollToBottom(true);
           } else {
             this.unread += 1;
           }
         });
+      },
+
+      async _refetchMessages() {
+        try {
+          var enc = encodeURIComponent(this.sessionName);
+          var msgResp = await apiJson(`/api/sessions/${enc}/messages?limit=200&offset=0`);
+          var fresh = msgResp?.messages || [];
+          if (fresh.length > this.messages.length) {
+            var prevLen = this.messages.length;
+            this.messages = fresh;
+            this.$nextTick(() => {
+              highlightNewCodeBlocks(this.$refs.msgScroll);
+              if (this.isAtBottom) {
+                this.scrollToBottom(true);
+              } else {
+                this.unread += (fresh.length - prevLen);
+              }
+            });
+          }
+        } catch {
+          // ignore, will retry on next sync
+        }
       },
 
       async sendMessage() {
@@ -1078,7 +1462,7 @@
             body: { message: text },
           });
 
-          // Optimistic echo (will be replaced/duplicated by ingested message; dedup best-effort).
+          // Optimistic echo
           const nowIso = new Date().toISOString();
           this._appendMessage({
             id: `local_${Date.now()}`,
@@ -1098,19 +1482,39 @@
         }
       },
 
-      async killSession() {
-        const ok = window.confirm(`Kill session '${this.sessionName}'? This will archive threads where possible.`);
-        if (!ok) return;
+      // Delete confirmation
+      confirmDelete(sessionName) {
+        this.deleteTarget = { name: sessionName || this.sessionName };
+      },
+
+      cancelDelete() {
+        this.deleteTarget = null;
+      },
+
+      async confirmKillSession() {
+        this.deleting = true;
         try {
           await apiJson(`/api/sessions/${encodeURIComponent(this.sessionName)}`, { method: "DELETE" });
           window.location.href = "/sessions";
         } catch (e) {
           this.error = e?.message || "Failed to kill session";
+          this.deleteTarget = null;
+        } finally {
+          this.deleting = false;
         }
       },
 
       onDraftInput() {
         this._autosizeTextarea();
+
+        // Send typing indicator (throttled to once per 3 seconds)
+        var now = Date.now();
+        if (this.draft.trim() && now - this._lastTypingSentAt > 3000) {
+          this._lastTypingSentAt = now;
+          if (window.ailyWS && window.ailyWS.sendTyping) {
+            window.ailyWS.sendTyping(this.sessionName);
+          }
+        }
       },
 
       _autosizeTextarea() {
@@ -1160,7 +1564,6 @@
 
   function themeToggle() {
     return {
-      // 'dark', 'light', 'system'
       preference: localStorage.getItem("aily-theme") || "dark",
 
       get resolvedTheme() {
@@ -1172,8 +1575,6 @@
 
       init() {
         this._apply();
-
-        // Listen for system theme changes
         this._mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
         this._mediaHandler = () => {
           if (this.preference === "system") this._apply();
@@ -1185,8 +1586,6 @@
         this.preference = pref;
         localStorage.setItem("aily-theme", pref);
         this._apply();
-
-        // Persist to API (fire and forget)
         apiJson("/api/preferences", {
           method: "PUT",
           body: { theme: pref },
