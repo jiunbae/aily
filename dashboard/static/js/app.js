@@ -876,12 +876,22 @@
         this.loading = true;
         this.error = "";
         try {
+          const enc = encodeURIComponent(this.sessionName);
+          // Trigger background sync from Discord and load existing messages in parallel
           const [sessionResp, msgResp] = await Promise.all([
-            apiJson(`/api/sessions/${encodeURIComponent(this.sessionName)}`),
-            apiJson(`/api/sessions/${encodeURIComponent(this.sessionName)}/messages?limit=200&offset=0`),
+            apiJson(`/api/sessions/${enc}`),
+            apiJson(`/api/sessions/${enc}/messages?limit=200&offset=0`),
+            fetch(`/api/sessions/${enc}/sync`, { method: "POST" }).catch(() => {}),
           ]);
           this.session = sessionResp?.session || null;
           this.messages = msgResp?.messages || [];
+
+          // After sync completes, re-fetch messages if we had none
+          if (this.messages.length === 0) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const fresh = await apiJson(`/api/sessions/${enc}/messages?limit=200&offset=0`);
+            if (fresh?.messages?.length) this.messages = fresh.messages;
+          }
 
           this.$nextTick(() => {
             this._setupScrollTracking();
