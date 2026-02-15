@@ -315,6 +315,31 @@
     copyNearestCode(btn);
   });
 
+  // ------------------------------------
+  // highlight.js theme switching
+  // ------------------------------------
+
+  function updateHighlightTheme(theme) {
+    var id = "hljs-theme";
+    var link = document.getElementById(id);
+    if (!link) {
+      link = document.createElement("link");
+      link.id = id;
+      link.rel = "stylesheet";
+      document.head.appendChild(link);
+    }
+    var isDark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    link.href = isDark
+      ? "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css"
+      : "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css";
+  }
+
+  // Set initial hljs theme based on localStorage (mirrors FOUC script logic)
+  (function() {
+    var pref = localStorage.getItem("aily-theme") || "dark";
+    updateHighlightTheme(pref);
+  })();
+
   // Expose utilities for Alpine templates (and debugging).
   window.ailyUtils = {
     timeAgo,
@@ -385,6 +410,14 @@
 
     // Initial sidebar load.
     refreshSidebarSessionsDebounced();
+
+    // Load user preferences (theme, etc.)
+    apiJson("/api/preferences").then((data) => {
+      var prefs = data?.preferences;
+      if (prefs?.theme && prefs.theme !== localStorage.getItem("aily-theme")) {
+        localStorage.setItem("aily-theme", prefs.theme);
+      }
+    }).catch(() => {});
   }
 
   // -----------------------------
@@ -1121,6 +1154,77 @@
     };
   }
 
+  // ------------------------------------
+  // Theme toggle component
+  // ------------------------------------
+
+  function themeToggle() {
+    return {
+      // 'dark', 'light', 'system'
+      preference: localStorage.getItem("aily-theme") || "dark",
+
+      get resolvedTheme() {
+        if (this.preference === "system") {
+          return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        return this.preference;
+      },
+
+      init() {
+        this._apply();
+
+        // Listen for system theme changes
+        this._mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+        this._mediaHandler = () => {
+          if (this.preference === "system") this._apply();
+        };
+        this._mediaQuery.addEventListener("change", this._mediaHandler);
+      },
+
+      setTheme(pref) {
+        this.preference = pref;
+        localStorage.setItem("aily-theme", pref);
+        this._apply();
+
+        // Persist to API (fire and forget)
+        apiJson("/api/preferences", {
+          method: "PUT",
+          body: { theme: pref },
+        }).catch(() => {});
+      },
+
+      cycle() {
+        var order = ["dark", "light", "system"];
+        var idx = order.indexOf(this.preference);
+        this.setTheme(order[(idx + 1) % order.length]);
+      },
+
+      _apply() {
+        var resolved = this.resolvedTheme;
+        document.documentElement.classList.toggle("dark", resolved === "dark");
+        document.documentElement.classList.toggle("light", resolved === "light");
+        document.documentElement.style.colorScheme = resolved;
+        updateHighlightTheme(this.preference);
+      },
+
+      get icon() {
+        if (this.preference === "dark") return "moon";
+        if (this.preference === "light") return "sun";
+        return "system";
+      },
+
+      get label() {
+        if (this.preference === "dark") return "Dark";
+        if (this.preference === "light") return "Light";
+        return "System";
+      },
+
+      destroy() {
+        if (this._mediaQuery) this._mediaQuery.removeEventListener("change", this._mediaHandler);
+      },
+    };
+  }
+
   // -----------------------------
   // Register Alpine data providers
   // -----------------------------
@@ -1133,6 +1237,7 @@
 
     Alpine.data("wsStatus", wsStatus);
     Alpine.data("sidebarSessions", sidebarSessions);
+    Alpine.data("themeToggle", themeToggle);
     Alpine.data("dashboardHome", dashboardHome);
     Alpine.data("sessionList", sessionList);
     Alpine.data("sessionDetail", sessionDetail);

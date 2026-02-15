@@ -577,3 +577,243 @@ a:hover {
 *::-webkit-scrollbar-thumb:hover {
   background: #3c4450;
 }
+
+/* ===========================
+   Light theme overrides
+   =========================== */
+.light {
+  --bg-base: #ffffff;
+  --bg-surface: #f6f8fa;
+  --bg-elevated: #ffffff;
+  --bg-overlay: #d0d7de;
+
+  --text-primary: #1f2328;
+  --text-secondary: #656d76;
+  --text-muted: #8b949e;
+  --text-link: #0969da;
+
+  --status-active: #1a7f37;
+  --status-waiting: #bf8700;
+  --status-idle: #6e7781;
+  --status-archived: #8b949e;
+  --status-error: #cf222e;
+  --status-orphaned: #bc4c00;
+
+  --accent-primary: #6366f1;
+  --accent-primary-hover: #4f46e5;
+  --accent-primary-subtle: rgba(99, 102, 241, 0.12);
+
+  --platform-discord: #5865f2;
+  --platform-slack: #e01e5a;
+
+  --agent-claude: #b45309;
+  --agent-codex: #15803d;
+  --agent-gemini: #4f46e5;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-glow-amber: none;
+  --shadow-glow-green: none;
+
+  color-scheme: light;
+}
+
+/* Light theme background gradient */
+.light body::before {
+  background:
+    radial-gradient(1000px 600px at 15% -10%, rgba(99, 102, 241, 0.06), transparent 60%),
+    radial-gradient(800px 500px at 90% 10%, rgba(245, 158, 11, 0.04), transparent 60%),
+    radial-gradient(700px 500px at 50% 110%, rgba(16, 185, 129, 0.04), transparent 55%);
+}
+
+/* Light sidebar */
+.light .sidebar {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.02), transparent 26%),
+    var(--bg-surface);
+}
+
+/* Light input fields */
+.light .input-field {
+  background: var(--bg-elevated);
+  border-color: var(--bg-overlay);
+}
+
+.light .input-field:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+/* Light buttons */
+.light .btn-secondary {
+  border-color: var(--bg-overlay);
+}
+
+.light .btn-secondary:hover {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: #8b949e;
+}
+
+.light .btn-danger {
+  border-color: rgba(207, 34, 46, 0.35);
+}
+
+.light .btn-danger:hover {
+  background: rgba(207, 34, 46, 0.08);
+}
+
+.light .btn-ghost:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* Light messages */
+.light .msg-ai {
+  background: var(--bg-surface);
+  border-color: var(--bg-overlay);
+}
+
+.light .msg-user {
+  background: #dbeafe;
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+/* Light code blocks */
+.light .md pre {
+  background: #f6f8fa;
+  border-color: var(--bg-overlay);
+}
+
+.light .md code.inline-code {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+/* Light scrollbars */
+.light * {
+  scrollbar-color: #d0d7de var(--bg-base);
+}
+
+.light *::-webkit-scrollbar-track {
+  background: var(--bg-base);
+}
+
+.light *::-webkit-scrollbar-thumb {
+  background: #d0d7de;
+  border-color: var(--bg-base);
+}
+
+.light *::-webkit-scrollbar-thumb:hover {
+  background: #8b949e;
+}
+
+/* Light skeleton */
+.light .skeleton-card {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.01));
+}
+
+.light .skeleton-line {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.light .skeleton-line::after {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(0, 0, 0, 0.04),
+    transparent
+  );
+}
+
+/* Light selection */
+.light ::selection {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+/* Light nav-link active */
+.light .nav-link.is-active {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+/* Light codeblock toolbar */
+.light .codeblock-btn {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+/* Light badge agent */
+.light .badge-agent {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* Light blockquote */
+.light .md blockquote {
+  border-left-color: var(--bg-overlay);
+  background: #f6f8fa;
+}
+
+/* Light hover states */
+.light .nav-link:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* ===========================
+   Theme-aware hover utility
+   =========================== */
+.hover-surface:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.light .hover-surface:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* Light mobile top bar */
+.light .topbar-blur {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+/* ===========================
+   Typing indicator animation
+   =========================== */
+.typing-dot {
+  animation: typingBounce 1.2s ease-in-out infinite;
+}
+
+@keyframes typingBounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* ===========================
+   Touch-friendly styles
+   =========================== */
+@media (pointer: coarse) {
+  .input-field {
+    min-height: 44px;
+    font-size: 16px; /* Prevents iOS zoom on focus */
+  }
+
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .btn-ghost {
+    min-height: 44px;
+  }
+}
+
+/* ===========================
+   Collapsible sidebar
+   =========================== */
+.sidebar-collapsed .sidebar-text {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar-section {
+  display: none;
+}
