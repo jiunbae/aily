@@ -1,2 +1,5 @@
 aiohttp==3.13.3
 slack-sdk>=3.33.0
+aiohttp-jinja2>=1.6
+aiosqlite>=0.20.0
+jinja2>=3.1

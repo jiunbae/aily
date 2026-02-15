@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}aily Dashboard{% endblock %}</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'SF Mono', 'Consolas', 'monospace'],
+          },
+          colors: {
+            base: 'var(--bg-base)',
+            surface: 'var(--bg-surface)',
+            elevated: 'var(--bg-elevated)',
+            overlay: 'var(--bg-overlay)',
+          },
+        },
+      },
+    }
+  </script>
+
+  <!-- highlight.js for code blocks -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="/static/css/app.css">
+
+  {% block head %}{% endblock %}
+</head>
+<body x-data="{ sidebarOpen: false }" class="bg-[var(--bg-base)] text-[var(--text-primary)] font-sans text-sm antialiased min-h-screen flex">
+
+  <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:bg-[var(--bg-surface)] focus:border focus:border-[var(--bg-overlay)] focus:text-[var(--text-primary)] focus:px-3 focus:py-2 focus:rounded-md">
+    Skip to content
+  </a>
+
+  <!-- Mobile overlay -->
+  <div class="fixed inset-0 bg-black/60 z-40 lg:hidden" x-show="sidebarOpen" x-cloak @click="sidebarOpen = false"></div>
+
+  <!-- Left Sidebar -->
+  <aside id="sidebar"
+         class="sidebar w-60 flex-shrink-0 h-screen lg:sticky top-0 flex flex-col border-r border-[var(--bg-overlay)] bg-[var(--bg-surface)] z-50 fixed lg:static inset-y-0 left-0 transform transition-transform duration-200 ease-out"
+         :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'">
+    <!-- Logo -->
+    <div class="px-5 py-5 border-b border-[var(--bg-overlay)]">
+      <a href="/" class="flex items-center gap-2 no-underline">
+        <span class="text-xl font-bold text-[var(--accent-primary)] font-mono tracking-tight">aily</span>
+        <span class="text-xs font-medium text-[var(--text-muted)] uppercase tracking-widest">Dashboard</span>
+      </a>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="px-3 py-4 space-y-1">
+      <a href="/"
+         class="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150 {% block nav_dashboard_active %}{% endblock %}">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
+        </svg>
+        <span class="text-[13px] font-medium">Dashboard</span>
+      </a>
+      <a href="/sessions"
+         class="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150 {% block nav_sessions_active %}{% endblock %}">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+        </svg>
+        <span class="text-[13px] font-medium">Sessions</span>
+        <span x-data="wsStatus()" x-show="sessionCount > 0"
+              x-text="sessionCount"
+              class="ml-auto text-[11px] font-semibold bg-[var(--accent-primary)] text-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center leading-none"
+              style="display:none;"></span>
+      </a>
+    </nav>
+
+    <!-- Quick Session List -->
+    <div class="flex-1 overflow-y-auto px-3 py-2 border-t border-[var(--bg-overlay)]" x-data="sidebarSessions()">
+      <div class="flex items-center justify-between px-3 py-2">
+        <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Quick Switch</div>
+        <div class="text-[10px] text-[var(--text-muted)]" x-text="sessions.length ? sessions.length : ''"></div>
+      </div>
+      <template x-if="activeSessions.length > 0">
+        <div>
+          <div class="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Active</div>
+          <template x-for="s in activeSessions" :key="s.name">
+            <a :href="'/sessions/' + s.name"
+               class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150 cursor-pointer no-underline">
+              <span class="status-dot w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    :class="ailyUtils.statusMeta(s.status).dotClass"></span>
+              <span class="font-mono text-xs truncate" x-text="s.name"></span>
+            </a>
+          </template>
+        </div>
+      </template>
+      <template x-if="idleSessions.length > 0">
+        <div>
+          <div class="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Idle</div>
+          <template x-for="s in idleSessions" :key="s.name">
+            <a :href="'/sessions/' + s.name"
+               class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150 cursor-pointer no-underline">
+              <span class="status-dot w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    :class="ailyUtils.statusMeta(s.status).dotClass"></span>
+              <span class="font-mono text-xs truncate" x-text="s.name"></span>
+            </a>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <!-- WebSocket Status -->
+    <div class="px-5 py-3 border-t border-[var(--bg-overlay)]" x-data="wsStatus()">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full flex-shrink-0"
+              :class="{
+                'bg-[var(--status-active)] pulse-active': status === 'connected',
+                'bg-[var(--status-waiting)] pulse-attention': status === 'reconnecting' || status === 'connecting',
+                'bg-[var(--status-error)]': status === 'disconnected',
+              }"></span>
+        <span class="text-xs text-[var(--text-muted)]"
+              x-text="status === 'connected' ? 'Connected' : status === 'connecting' ? 'Connecting...' : status === 'reconnecting' ? 'Reconnecting...' : 'Disconnected'"></span>
+        <button class="ml-auto lg:hidden btn-ghost px-2 py-1 text-xs" @click="sidebarOpen = false">Close</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main id="main" class="flex-1 min-w-0 min-h-screen">
+    <!-- Mobile top bar -->
+    <div class="lg:hidden sticky top-0 z-30 bg-[rgba(13,17,23,0.9)] backdrop-blur border-b border-[var(--bg-overlay)] px-4 py-3 flex items-center gap-3">
+      <button class="btn-secondary px-3 py-2 text-xs font-medium" @click="sidebarOpen = true" aria-label="Open sidebar">
+        Menu
+      </button>
+      <div class="flex items-center gap-2">
+        <span class="font-mono font-semibold text-[var(--accent-primary)]">aily</span>
+        <span class="text-xs text-[var(--text-muted)]">Dashboard</span>
+      </div>
+      <div class="ml-auto" x-data="wsStatus()">
+        <span class="inline-flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full"
+                :class="{
+                  'bg-[var(--status-active)] pulse-active': status === 'connected',
+                  'bg-[var(--status-waiting)] pulse-attention': status === 'reconnecting' || status === 'connecting',
+                  'bg-[var(--status-error)]': status === 'disconnected',
+                }"></span>
+          <span class="text-xs text-[var(--text-muted)]" x-text="status === 'connected' ? 'WS OK' : (status === 'reconnecting' || status === 'connecting') ? 'WS...' : 'WS down'"></span>
+        </span>
+      </div>
+    </div>
+
+    <!-- Disconnected Banner -->
+    <div x-data="wsStatus()" x-show="status === 'disconnected'" x-cloak
+         class="bg-[rgba(245,158,11,0.1)] border-b border-[var(--status-waiting)] px-6 py-2 flex items-center gap-3">
+      <svg class="w-4 h-4 text-[var(--status-waiting)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+      </svg>
+      <span class="text-xs text-[var(--status-waiting)]">Connection lost. Attempting to reconnect...</span>
+      <button @click="window.ailyWS && window.ailyWS.reconnect()"
+              class="ml-auto text-xs text-[var(--status-waiting)] hover:text-[var(--text-primary)] underline">Retry Now</button>
+    </div>
+
+    <div class="p-6 lg:p-8 max-w-[1600px]">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <!-- Custom JS (loaded before Alpine so we can register Alpine components on alpine:init) -->
+  <script defer src="/static/js/ws-client.js"></script>
+  <script defer src="/static/js/app.js"></script>
+  <script defer src="/static/js/alpine.min.js"></script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>
