@@ -1,12 +1,15 @@
 """Session CRUD endpoints and bridge webhook receiver.
 
 Endpoints:
-  GET    /api/sessions          - List sessions with filter/sort/pagination
-  GET    /api/sessions/{name}   - Session detail with message count
-  POST   /api/sessions          - Create tmux session
-  DELETE /api/sessions/{name}   - Kill session + archive threads
-  POST   /api/sessions/{name}/send - Send message to tmux
-  POST   /api/hooks/event       - Bridge webhook receiver (internal, no auth)
+  GET    /api/sessions              - List sessions with filter/sort/pagination
+  GET    /api/sessions/{name}       - Session detail with message count
+  POST   /api/sessions              - Create tmux session
+  DELETE /api/sessions/{name}       - Kill session + archive threads
+  PATCH  /api/sessions/{name}       - Update session metadata
+  POST   /api/sessions/bulk-delete  - Bulk kill sessions
+  POST   /api/sessions/{name}/send  - Send message to tmux
+  POST   /api/sessions/{name}/sync  - Sync messages from platforms
+  POST   /api/hooks/event           - Bridge webhook receiver (internal, no auth)
 """
 
 from __future__ import annotations
@@ -203,6 +206,14 @@ async def create_session(request: web.Request) -> web.Response:
         (name, host, now, now),
     )
 
+    # Update agent_type if provided
+    agent_type = body.get("agent_type", "").strip()
+    if agent_type and agent_type in ("claude", "codex", "gemini", "unknown"):
+        await db.execute(
+            "UPDATE sessions SET agent_type = ? WHERE name = ?",
+            (agent_type, name),
+        )
+
     # Fetch complete record
     session = await db.fetchone(
         "SELECT * FROM sessions WHERE name = ?", (name,)
@@ -263,6 +274,117 @@ async def delete_session(request: web.Request) -> web.Response:
             "threads_archived": archived_platforms,
         }
     )
+
+
+async def update_session(request: web.Request) -> web.Response:
+    """PATCH /api/sessions/{name}
+
+    Update session metadata (agent_type, working_dir).
+    Request body: {"agent_type": "claude", "working_dir": "/path"}
+    Only provided fields are updated.
+    """
+    name = request.match_info["name"]
+
+    session = await db.fetchone(
+        "SELECT * FROM sessions WHERE name = ?", (name,)
+    )
+    if not session:
+        return error_response(404, "NOT_FOUND", f"Session '{name}' not found")
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, Exception):
+        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+
+    updates: list[str] = []
+    params: list[Any] = []
+
+    # Allowed updatable fields
+    if "agent_type" in body:
+        agent_type = str(body["agent_type"]).strip()
+        if agent_type and agent_type not in ("claude", "codex", "gemini", "unknown"):
+            return error_response(
+                400, "INVALID_AGENT_TYPE",
+                "agent_type must be: claude, codex, gemini, unknown"
+            )
+        updates.append("agent_type = ?")
+        params.append(agent_type or None)
+
+    if "working_dir" in body:
+        updates.append("working_dir = ?")
+        params.append(str(body["working_dir"]).strip() or None)
+
+    if not updates:
+        return error_response(400, "NO_UPDATES", "No valid fields to update")
+
+    updates.append("updated_at = ?")
+    params.append(db.now_iso())
+    params.append(name)
+
+    await db.execute(
+        f"UPDATE sessions SET {', '.join(updates)} WHERE name = ?",
+        tuple(params),
+    )
+
+    updated = await db.fetchone(
+        "SELECT * FROM sessions WHERE name = ?", (name,)
+    )
+    return json_ok({"session": dict(updated) if updated else {}})
+
+
+async def bulk_delete_sessions(request: web.Request) -> web.Response:
+    """POST /api/sessions/bulk-delete
+
+    Kill multiple sessions at once.
+    Request body: {"names": ["session-1", "session-2"]}
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, Exception):
+        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+
+    names = body.get("names", [])
+    if not isinstance(names, list) or not names:
+        return error_response(400, "MISSING_NAMES", "names must be a non-empty list")
+
+    if len(names) > 20:
+        return error_response(400, "TOO_MANY", "Maximum 20 sessions per bulk delete")
+
+    session_svc: SessionService = request.app["session_service"]
+    platform_svc: PlatformService = request.app["platform_service"]
+    event_bus: EventBus = request.app["event_bus"]
+
+    results: list[dict[str, Any]] = []
+    now = db.now_iso()
+
+    for name in names:
+        name = str(name).strip()
+        if not name:
+            continue
+
+        session = await db.fetchone(
+            "SELECT * FROM sessions WHERE name = ?", (name,)
+        )
+        if not session:
+            results.append({"name": name, "deleted": False, "error": "not found"})
+            continue
+
+        tmux_killed, _ = await session_svc.kill_session(name)
+        await platform_svc.archive_threads(dict(session))
+
+        await db.execute(
+            """UPDATE sessions SET status = 'closed', closed_at = ?, updated_at = ?
+               WHERE name = ?""",
+            (now, now, name),
+        )
+
+        updated = await db.fetchone("SELECT * FROM sessions WHERE name = ?", (name,))
+        if updated:
+            await event_bus.publish(Event.session_closed(dict(updated)))
+
+        results.append({"name": name, "deleted": True, "tmux_killed": tmux_killed})
+
+    return json_ok({"results": results})
 
 
 async def send_message(request: web.Request) -> web.Response:

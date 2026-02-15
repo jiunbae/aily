@@ -18,6 +18,8 @@ import os
 
 from aiohttp import web
 
+from dashboard import db
+from dashboard.api import preferences as prefs_api
 from dashboard.api import sessions as sessions_api
 from dashboard.api import stats as stats_api
 from dashboard.api import ws as ws_api
@@ -125,6 +127,18 @@ def _setup_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/sessions/{name}/sync", sessions_api.sync_session_messages
     )
+    app.router.add_patch(
+        "/api/sessions/{name}", sessions_api.update_session
+    )
+    app.router.add_post(
+        "/api/sessions/bulk-delete", sessions_api.bulk_delete_sessions
+    )
+
+    # Preferences
+    app.router.add_get("/api/preferences", prefs_api.get_preferences)
+    app.router.add_put("/api/preferences", prefs_api.set_preferences)
+    app.router.add_get("/api/preferences/{key}", prefs_api.get_preference)
+    app.router.add_put("/api/preferences/{key}", prefs_api.set_preference)
 
     # Stats
     app.router.add_get("/api/stats", stats_api.get_stats)
@@ -173,12 +187,26 @@ async def _healthz(request: web.Request) -> web.Response:
     return web.json_response(checks, status=status_code)
 
 
+async def _get_theme() -> str:
+    """Get the current theme preference."""
+    try:
+        row = await db.fetchone(
+            "SELECT value FROM kv WHERE key = ?", ("pref:theme",)
+        )
+        return row["value"] if row else "dark"
+    except Exception:
+        return "dark"
+
+
 async def _index_page(request: web.Request) -> web.Response:
     """GET / - Dashboard home page."""
     try:
         import aiohttp_jinja2
 
-        return aiohttp_jinja2.render_template("index.html", request, {})
+        theme = await _get_theme()
+        return aiohttp_jinja2.render_template(
+            "index.html", request, {"theme": theme}
+        )
     except (ImportError, Exception):
         # Fallback if templates are not available
         return web.json_response(
@@ -195,7 +223,10 @@ async def _sessions_page(request: web.Request) -> web.Response:
     try:
         import aiohttp_jinja2
 
-        return aiohttp_jinja2.render_template("sessions.html", request, {})
+        theme = await _get_theme()
+        return aiohttp_jinja2.render_template(
+            "sessions.html", request, {"theme": theme}
+        )
     except (ImportError, Exception):
         return web.json_response(
             {"redirect": "/api/sessions", "message": "Templates not available"}
@@ -208,8 +239,9 @@ async def _session_detail_page(request: web.Request) -> web.Response:
     try:
         import aiohttp_jinja2
 
+        theme = await _get_theme()
         return aiohttp_jinja2.render_template(
-            "session_detail.html", request, {"session_name": name}
+            "session_detail.html", request, {"session_name": name, "theme": theme}
         )
     except (ImportError, Exception):
         return web.json_response(
