@@ -305,6 +305,57 @@ async def send_message(request: web.Request) -> web.Response:
     return json_ok({"sent": True, "host": host})
 
 
+async def get_session_messages(request: web.Request) -> web.Response:
+    """GET /api/sessions/{name}/messages
+
+    Query params:
+        limit  - Page size (default: 200, max: 500)
+        offset - Pagination offset (default: 0)
+    """
+    name = request.match_info["name"]
+
+    # Check session exists
+    session = await db.fetchone(
+        "SELECT name FROM sessions WHERE name = ?", (name,)
+    )
+    if not session:
+        return error_response(404, "NOT_FOUND", f"Session '{name}' not found")
+
+    params = request.query
+    try:
+        limit = min(int(params.get("limit", "200")), 500)
+    except ValueError:
+        limit = 200
+    try:
+        offset = max(int(params.get("offset", "0")), 0)
+    except ValueError:
+        offset = 0
+
+    # Count total messages
+    count_row = await db.fetchone(
+        "SELECT COUNT(*) as cnt FROM messages WHERE session_name = ?",
+        (name,),
+    )
+    total = count_row["cnt"] if count_row else 0
+
+    # Fetch messages ordered by timestamp
+    messages = await db.fetchall(
+        """SELECT * FROM messages WHERE session_name = ?
+           ORDER BY timestamp ASC
+           LIMIT ? OFFSET ?""",
+        (name, limit, offset),
+    )
+
+    return json_ok(
+        {
+            "messages": messages,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
 async def receive_bridge_event(request: web.Request) -> web.Response:
     """POST /api/hooks/event
 
