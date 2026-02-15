@@ -118,6 +118,9 @@ def _setup_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/sessions/{name}/send", sessions_api.send_message
     )
+    app.router.add_get(
+        "/api/sessions/{name}/messages", sessions_api.get_session_messages
+    )
 
     # Stats
     app.router.add_get("/api/stats", stats_api.get_stats)
