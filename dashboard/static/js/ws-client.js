@@ -14,10 +14,18 @@
       this._maxBackoffMs = 30000;
       this._reconnectTimer = null;
       this._pingTimer = null;
+      this._staleTimer = null;
+      this._staleTimeoutMs = 60000; // Force reconnect if no pong in 60s
 
       this._subscribedSessions = [];
       this._lastHeartbeatAt = null;
+      this._lastPongAt = null;
       this._intentionalClose = false;
+
+      // Browser online/offline awareness
+      this._onlineHandler = null;
+      this._offlineHandler = null;
+      this._setupOnlineOffline();
     }
 
     static defaultUrl() {
@@ -107,6 +115,7 @@
       this._intentionalClose = true;
       this._clearReconnectTimer();
       this._stopPing();
+      this._stopStaleDetection();
       if (this._ws) {
         try {
           this._ws.close(1000, "client_disconnect");
@@ -138,6 +147,51 @@
     subscribe(sessions = []) {
       this._subscribedSessions = Array.isArray(sessions) ? sessions.filter(Boolean) : [];
       this.send({ type: "subscribe", sessions: this._subscribedSessions });
+    }
+
+    /**
+     * Request message history via WebSocket (server may respond with message.history event).
+     * Falls back to REST API if WS is not connected.
+     */
+    fetchHistory(sessionName, limit = 50, offset = 0) {
+      if (!sessionName) return false;
+      return this.send({
+        type: "fetch_history",
+        session_name: sessionName,
+        limit: limit,
+        offset: offset,
+      });
+    }
+
+    /**
+     * Send a typing indicator for a session.
+     */
+    sendTyping(sessionName) {
+      if (!sessionName) return false;
+      return this.send({
+        type: "typing",
+        session_name: sessionName,
+      });
+    }
+
+    _setupOnlineOffline() {
+      this._onlineHandler = () => {
+        // Browser came back online - reconnect if disconnected
+        if (this._status === "disconnected" || this._status === "reconnecting") {
+          this._backoffMs = 1000; // Reset backoff
+          this._clearReconnectTimer();
+          this.connect();
+        }
+      };
+
+      this._offlineHandler = () => {
+        // Browser went offline - emit event but don't disconnect
+        // (the connection will die naturally and reconnect will wait for online)
+        this._emit("connection.offline", { ts: Date.now() });
+      };
+
+      window.addEventListener("online", this._onlineHandler);
+      window.addEventListener("offline", this._offlineHandler);
     }
 
     _emit(eventType, event) {
@@ -178,6 +232,8 @@
       const type = msg.type;
       if (type === "pong") {
         this._lastHeartbeatAt = Date.now();
+        this._lastPongAt = Date.now();
+        this._resetStaleTimer();
         this._emit("pong", msg);
         return;
       }
@@ -223,16 +279,43 @@
 
     _startPing() {
       this._stopPing();
+      this._lastPongAt = Date.now();
       this._pingTimer = window.setInterval(() => {
         if (this._status !== "connected") return;
         this.send({ type: "ping" });
       }, 25000);
+      // Start stale connection detection
+      this._startStaleDetection();
     }
 
     _stopPing() {
       if (!this._pingTimer) return;
       window.clearInterval(this._pingTimer);
       this._pingTimer = null;
+      this._stopStaleDetection();
+    }
+
+    _startStaleDetection() {
+      this._stopStaleDetection();
+      this._staleTimer = window.setInterval(() => {
+        if (this._status !== "connected") return;
+        if (this._lastPongAt && (Date.now() - this._lastPongAt) > this._staleTimeoutMs) {
+          // Connection is stale - force reconnect
+          this._emit("connection.stale", { lastPongAt: this._lastPongAt, ts: Date.now() });
+          this.reconnect();
+        }
+      }, 15000); // Check every 15s
+    }
+
+    _stopStaleDetection() {
+      if (!this._staleTimer) return;
+      window.clearInterval(this._staleTimer);
+      this._staleTimer = null;
+    }
+
+    _resetStaleTimer() {
+      // Reset the last pong timestamp when we receive a pong
+      this._lastPongAt = Date.now();
     }
   }
 
