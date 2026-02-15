@@ -1,10 +1,23 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="{{ theme or 'dark' }}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="{{ theme or 'dark' }}">
   <title>{% block title %}aily Dashboard{% endblock %}</title>
+
+  <!-- FOUC prevention: apply theme class before any paint -->
+  <script>
+    (function() {
+      var theme = localStorage.getItem('aily-theme') || '{{ theme or "dark" }}';
+      if (theme === 'system') {
+        theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.classList.toggle('dark', theme === 'dark');
+      document.documentElement.classList.toggle('light', theme === 'light');
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
 
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -33,16 +46,21 @@
     }
   </script>
 
-  <!-- highlight.js for code blocks -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css">
+  <!-- highlight.js for code blocks (theme managed dynamically by JS) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+  <!-- Markdown rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 
   <!-- Custom CSS -->
   <link rel="stylesheet" href="/static/css/app.css">
 
   {% block head %}{% endblock %}
 </head>
-<body x-data="{ sidebarOpen: false }" class="bg-[var(--bg-base)] text-[var(--text-primary)] font-sans text-sm antialiased min-h-screen flex">
+<body x-data="{
+  sidebarOpen: false,
+  sidebarCollapsed: localStorage.getItem('aily-sidebar-collapsed') === 'true'
+}" class="bg-[var(--bg-base)] text-[var(--text-primary)] font-sans text-sm antialiased min-h-screen flex">
 
   <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:bg-[var(--bg-surface)] focus:border focus:border-[var(--bg-overlay)] focus:text-[var(--text-primary)] focus:px-3 focus:py-2 focus:rounded-md">
     Skip to content
@@ -53,42 +71,63 @@
 
   <!-- Left Sidebar -->
   <aside id="sidebar"
-         class="sidebar w-60 flex-shrink-0 h-screen lg:sticky top-0 flex flex-col border-r border-[var(--bg-overlay)] bg-[var(--bg-surface)] z-50 fixed lg:static inset-y-0 left-0 transform transition-transform duration-200 ease-out"
-         :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'">
+         class="sidebar flex-shrink-0 h-screen lg:sticky top-0 flex flex-col border-r border-[var(--bg-overlay)] bg-[var(--bg-surface)] z-50 fixed lg:static inset-y-0 left-0 transform transition-all duration-200 ease-out"
+         :class="{
+           'w-60': !sidebarCollapsed,
+           'w-16': sidebarCollapsed && !sidebarOpen,
+           '-translate-x-full lg:translate-x-0': !sidebarOpen,
+           'translate-x-0': sidebarOpen,
+           'w-60': sidebarOpen,
+         }">
     <!-- Logo -->
     <div class="px-5 py-5 border-b border-[var(--bg-overlay)]">
-      <a href="/" class="flex items-center gap-2 no-underline">
+      <a href="/" class="flex items-center gap-2 no-underline" :class="sidebarCollapsed && !sidebarOpen ? 'justify-center' : ''">
         <span class="text-xl font-bold text-[var(--accent-primary)] font-mono tracking-tight">aily</span>
-        <span class="text-xs font-medium text-[var(--text-muted)] uppercase tracking-widest">Dashboard</span>
+        <span class="text-xs font-medium text-[var(--text-muted)] uppercase tracking-widest" x-show="!sidebarCollapsed || sidebarOpen">Dashboard</span>
       </a>
     </div>
 
     <!-- Navigation -->
     <nav class="px-3 py-4 space-y-1">
       <a href="/"
-         class="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150 {% block nav_dashboard_active %}{% endblock %}">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+         class="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150 {% block nav_dashboard_active %}{% endblock %}"
+         :class="sidebarCollapsed && !sidebarOpen ? 'justify-center' : ''"
+         :title="sidebarCollapsed && !sidebarOpen ? 'Dashboard' : ''">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
         </svg>
-        <span class="text-[13px] font-medium">Dashboard</span>
+        <span class="text-[13px] font-medium" x-show="!sidebarCollapsed || sidebarOpen">Dashboard</span>
       </a>
       <a href="/sessions"
-         class="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150 {% block nav_sessions_active %}{% endblock %}">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+         class="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150 {% block nav_sessions_active %}{% endblock %}"
+         :class="sidebarCollapsed && !sidebarOpen ? 'justify-center' : ''"
+         :title="sidebarCollapsed && !sidebarOpen ? 'Sessions' : ''">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
         </svg>
-        <span class="text-[13px] font-medium">Sessions</span>
-        <span x-data="wsStatus()" x-show="sessionCount > 0"
+        <span class="text-[13px] font-medium" x-show="!sidebarCollapsed || sidebarOpen">Sessions</span>
+        <span x-data="wsStatus()" x-show="sessionCount > 0 && (!sidebarCollapsed || sidebarOpen)"
               x-text="sessionCount"
               class="ml-auto text-[11px] font-semibold bg-[var(--accent-primary)] text-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center leading-none"
               style="display:none;"></span>
       </a>
     </nav>
 
+    <!-- Collapse toggle (desktop only) -->
+    <button class="hidden lg:flex items-center justify-center w-full py-2 text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+            @click="sidebarCollapsed = !sidebarCollapsed; localStorage.setItem('aily-sidebar-collapsed', sidebarCollapsed)"
+            :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'">
+      <svg class="w-4 h-4 transition-transform duration-200" :class="sidebarCollapsed && 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/>
+      </svg>
+    </button>
+
     <!-- Quick Session List -->
-    <div class="flex-1 overflow-y-auto px-3 py-2 border-t border-[var(--bg-overlay)]" x-data="sidebarSessions()">
+    <div class="flex-1 overflow-y-auto px-3 py-2 border-t border-[var(--bg-overlay)]"
+         x-data="sidebarSessions()"
+         x-show="!sidebarCollapsed || sidebarOpen" x-cloak>
       <div class="flex items-center justify-between px-3 py-2">
         <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Quick Switch</div>
         <div class="text-[10px] text-[var(--text-muted)]" x-text="sessions.length ? sessions.length : ''"></div>
@@ -98,9 +137,12 @@
           <div class="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Active</div>
           <template x-for="s in activeSessions" :key="s.name">
             <a :href="'/sessions/' + s.name"
-               class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150 cursor-pointer no-underline">
+               class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150 cursor-pointer no-underline">
               <span class="status-dot w-1.5 h-1.5 rounded-full flex-shrink-0"
-                    :class="ailyUtils.statusMeta(s.status).dotClass"></span>
+                    :class="[
+                      ailyUtils.statusMeta(s.status).dotClass,
+                      $store.ws.typingIndicators[s.name] ? 'pulse-attention' : ''
+                    ]"></span>
               <span class="font-mono text-xs truncate" x-text="s.name"></span>
             </a>
           </template>
@@ -111,7 +153,7 @@
           <div class="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Idle</div>
           <template x-for="s in idleSessions" :key="s.name">
             <a :href="'/sessions/' + s.name"
-               class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.04)] transition-colors duration-150 cursor-pointer no-underline">
+               class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150 cursor-pointer no-underline">
               <span class="status-dot w-1.5 h-1.5 rounded-full flex-shrink-0"
                     :class="ailyUtils.statusMeta(s.status).dotClass"></span>
               <span class="font-mono text-xs truncate" x-text="s.name"></span>
@@ -121,16 +163,41 @@
       </template>
     </div>
 
+    <!-- Theme Toggle -->
+    <div class="px-5 py-2 border-t border-[var(--bg-overlay)]" x-data="themeToggle()">
+      <button @click="cycle()"
+              class="flex items-center gap-2 w-full px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150"
+              :class="sidebarCollapsed && !sidebarOpen ? 'justify-center' : ''"
+              :title="'Theme: ' + label">
+        <!-- Sun icon -->
+        <svg x-show="icon === 'sun'" x-cloak class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+        </svg>
+        <!-- Moon icon -->
+        <svg x-show="icon === 'moon'" class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+        </svg>
+        <!-- System icon -->
+        <svg x-show="icon === 'system'" x-cloak class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+        </svg>
+        <span class="text-xs font-medium" x-show="!sidebarCollapsed || sidebarOpen" x-text="label"></span>
+      </button>
+    </div>
+
     <!-- WebSocket Status -->
     <div class="px-5 py-3 border-t border-[var(--bg-overlay)]" x-data="wsStatus()">
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2" :class="sidebarCollapsed && !sidebarOpen ? 'justify-center' : ''">
         <span class="w-2 h-2 rounded-full flex-shrink-0"
               :class="{
                 'bg-[var(--status-active)] pulse-active': status === 'connected',
                 'bg-[var(--status-waiting)] pulse-attention': status === 'reconnecting' || status === 'connecting',
                 'bg-[var(--status-error)]': status === 'disconnected',
               }"></span>
-        <span class="text-xs text-[var(--text-muted)]"
+        <span class="text-xs text-[var(--text-muted)]" x-show="!sidebarCollapsed || sidebarOpen"
               x-text="status === 'connected' ? 'Connected' : status === 'connecting' ? 'Connecting...' : status === 'reconnecting' ? 'Reconnecting...' : 'Disconnected'"></span>
         <button class="ml-auto lg:hidden btn-ghost px-2 py-1 text-xs" @click="sidebarOpen = false">Close</button>
       </div>
@@ -140,7 +207,7 @@
   <!-- Main Content -->
   <main id="main" class="flex-1 min-w-0 min-h-screen">
     <!-- Mobile top bar -->
-    <div class="lg:hidden sticky top-0 z-30 bg-[rgba(13,17,23,0.9)] backdrop-blur border-b border-[var(--bg-overlay)] px-4 py-3 flex items-center gap-3">
+    <div class="lg:hidden sticky top-0 z-30 topbar-blur bg-[rgba(13,17,23,0.9)] backdrop-blur border-b border-[var(--bg-overlay)] px-4 py-3 flex items-center gap-3">
       <button class="btn-secondary px-3 py-2 text-xs font-medium" @click="sidebarOpen = true" aria-label="Open sidebar">
         Menu
       </button>
@@ -161,16 +228,40 @@
       </div>
     </div>
 
-    <!-- Disconnected Banner -->
-    <div x-data="wsStatus()" x-show="status === 'disconnected'" x-cloak
-         class="bg-[rgba(245,158,11,0.1)] border-b border-[var(--status-waiting)] px-6 py-2 flex items-center gap-3">
-      <svg class="w-4 h-4 text-[var(--status-waiting)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
-      </svg>
-      <span class="text-xs text-[var(--status-waiting)]">Connection lost. Attempting to reconnect...</span>
-      <button @click="window.ailyWS && window.ailyWS.reconnect()"
-              class="ml-auto text-xs text-[var(--status-waiting)] hover:text-[var(--text-primary)] underline">Retry Now</button>
+    <!-- Disconnected Banner (enhanced) -->
+    <div x-data="wsStatus()" x-cloak>
+      <!-- Reconnecting -->
+      <div x-show="status === 'reconnecting'" x-transition
+           class="bg-[rgba(245,158,11,0.1)] border-b border-[var(--status-waiting)] px-6 py-2 flex items-center gap-3">
+        <svg class="w-4 h-4 text-[var(--status-waiting)] animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <span class="text-xs text-[var(--status-waiting)]">
+          Reconnecting...
+          <span x-show="$store.ws.reconnectCount > 1" x-cloak>
+            (attempt <span x-text="$store.ws.reconnectCount"></span>)
+          </span>
+        </span>
+        <button @click="window.ailyWS && window.ailyWS.reconnect()"
+                class="ml-auto text-xs text-[var(--status-waiting)] hover:text-[var(--text-primary)] underline">
+          Retry Now
+        </button>
+      </div>
+
+      <!-- Fully disconnected -->
+      <div x-show="status === 'disconnected'" x-transition
+           class="bg-[rgba(239,68,68,0.1)] border-b border-[var(--status-error)] px-6 py-2 flex items-center gap-3">
+        <svg class="w-4 h-4 text-[var(--status-error)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+        </svg>
+        <span class="text-xs text-[var(--status-error)]">Connection lost.</span>
+        <button @click="window.ailyWS && window.ailyWS.reconnect()"
+                class="ml-auto text-xs text-[var(--status-error)] hover:text-[var(--text-primary)] underline">
+          Reconnect
+        </button>
+      </div>
     </div>
 
     <div class="p-6 lg:p-8 max-w-[1600px]">

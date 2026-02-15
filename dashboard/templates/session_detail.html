@@ -24,7 +24,7 @@
 
   <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
     <!-- Conversation -->
-    <section class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl overflow-hidden flex flex-col h-[calc(100vh-220px)] min-h-[560px]">
+    <section class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl overflow-hidden flex flex-col h-[calc(100vh-160px)] sm:h-[calc(100vh-180px)] lg:h-[calc(100vh-220px)] min-h-[560px]">
       <!-- Header -->
       <div class="px-5 py-4 border-b border-[var(--bg-overlay)] flex items-start gap-4">
         <div class="min-w-0">
@@ -50,7 +50,12 @@
               <span x-text="agentLabel(session.agent_type)"></span>
             </span>
           </template>
-          <button class="btn-danger px-3 py-2 text-xs font-semibold" @click="killSession()">
+          <!-- Mobile: metadata toggle -->
+          <button class="xl:hidden btn-secondary px-3 py-2 text-xs font-semibold"
+                  @click="showMetadata = !showMetadata">
+            Info
+          </button>
+          <button class="btn-danger px-3 py-2 text-xs font-semibold" @click="confirmDelete()">
             Kill
           </button>
         </div>
@@ -58,7 +63,28 @@
 
       <!-- Messages -->
       <div class="relative flex-1 min-h-0">
-        <div x-ref="msgScroll" class="h-full overflow-y-auto px-4 py-4 space-y-3">
+        <div x-ref="msgScroll" class="h-full overflow-y-auto px-4 py-4 space-y-3" @scroll="onScroll()">
+          <!-- Loading older messages indicator -->
+          <template x-if="loadingOlder">
+            <div class="flex items-center justify-center py-3">
+              <svg class="w-4 h-4 animate-spin text-[var(--text-muted)] mr-2" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              <span class="text-xs text-[var(--text-muted)]">Loading older messages...</span>
+            </div>
+          </template>
+
+          <!-- Load older button (when not auto-loading) -->
+          <template x-if="!loadingOlder && hasOlderMessages && !loading">
+            <div class="flex justify-center py-2">
+              <button class="text-xs text-[var(--accent-primary)] hover:underline px-3 py-1.5 rounded-lg hover:bg-[var(--bg-overlay)] transition-colors"
+                      @click="loadOlderMessages()">
+                Load older messages
+              </button>
+            </div>
+          </template>
+
           <template x-if="loading">
             <div class="space-y-4 py-4">
               <template x-for="i in 6" :key="i">
@@ -89,7 +115,7 @@
           <template x-if="!loading && renderedItems.length > 0">
             <div class="space-y-3">
               <template x-for="item in renderedItems"
-                        :key="item.kind === 'date' ? ('date:' + item.day) : ('msg:' + (item.msg.external_id || item.msg.id || item.msg.timestamp))">
+                        :key="item.kind === 'date' ? ('date:' + item.day) : (item.kind === 'new-divider' ? 'new-divider' : ('msg:' + (item.msg.external_id || item.msg.id || item.msg.timestamp)))">
                 <div>
                   <!-- Date separator -->
                   <template x-if="item.kind === 'date'">
@@ -97,6 +123,15 @@
                       <div class="system-divider">
                         <span class="text-xs text-[var(--text-muted)]" x-text="dateLabel(item.day)"></span>
                       </div>
+                    </div>
+                  </template>
+
+                  <!-- New messages divider -->
+                  <template x-if="item.kind === 'new-divider'">
+                    <div class="flex items-center gap-3 py-2">
+                      <div class="flex-1 h-px bg-[var(--status-error)]"></div>
+                      <span class="text-[11px] font-semibold text-[var(--status-error)] uppercase tracking-wider">New messages</span>
+                      <div class="flex-1 h-px bg-[var(--status-error)]"></div>
                     </div>
                   </template>
 
@@ -164,6 +199,23 @@
         </div>
       </div>
 
+      <!-- Typing indicator -->
+      <div x-show="isAgentTyping" x-cloak
+           class="px-4 py-2 border-t border-[var(--bg-overlay)] bg-[var(--bg-surface)]">
+        <div class="flex items-center gap-2">
+          <div class="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white"
+               :style="'background:' + agentColor(session?.agent_type || '')">
+            AI
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="typing-dot"></span>
+            <span class="typing-dot" style="animation-delay: 0.15s"></span>
+            <span class="typing-dot" style="animation-delay: 0.3s"></span>
+          </div>
+          <span class="text-xs text-[var(--text-muted)]">typing...</span>
+        </div>
+      </div>
+
       <!-- Input -->
       <div class="border-t border-[var(--bg-overlay)] p-3 bg-[var(--bg-surface)]">
         <div class="flex items-end gap-2">
@@ -199,7 +251,8 @@
     </section>
 
     <!-- Metadata -->
-    <aside class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl p-5 xl:sticky xl:top-8 h-fit">
+    <aside class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl p-5 xl:sticky xl:top-8 h-fit hidden xl:block"
+           :class="{ '!block': showMetadata }">
       <div class="space-y-6">
         <!-- Session Info -->
         <section>
@@ -309,7 +362,7 @@
               Jump to Latest
             </button>
             <button class="btn-danger w-full px-4 py-2 text-sm font-semibold"
-                    @click="killSession()">
+                    @click="confirmDelete()">
               Kill Session
             </button>
           </div>
@@ -317,5 +370,26 @@
       </div>
     </aside>
   </div>
+
+  <!-- Delete confirmation dialog -->
+  <template x-if="deleteTarget">
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" @click.self="cancelDelete()">
+      <div class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl p-6 w-full max-w-sm mx-4 shadow-xl">
+        <h3 class="text-lg font-semibold text-[var(--text-primary)] mb-2">Kill Session</h3>
+        <p class="text-sm text-[var(--text-secondary)] mb-1">Are you sure you want to kill this session?</p>
+        <p class="font-mono text-sm text-[var(--text-primary)] mb-4 bg-[var(--bg-elevated)] rounded px-3 py-2 truncate" x-text="deleteTarget.name"></p>
+        <div class="flex items-center justify-end gap-3">
+          <button class="btn-secondary px-4 py-2 text-sm font-medium" @click="cancelDelete()" :disabled="deleting">Cancel</button>
+          <button class="btn-danger px-4 py-2 text-sm font-semibold inline-flex items-center gap-2" @click="confirmKillSession()" :disabled="deleting">
+            <svg x-show="deleting" x-cloak class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            <span x-text="deleting ? 'Killing...' : 'Kill'"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
 </div>
 {% endblock %}
