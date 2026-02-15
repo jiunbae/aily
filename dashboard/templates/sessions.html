@@ -46,12 +46,38 @@
       <option value="archived">Archived</option>
     </select>
 
+    <!-- Bulk mode toggle -->
+    <button @click="toggleSelectMode()"
+            class="btn-ghost px-3 py-2 text-xs font-medium"
+            :class="selectMode ? 'text-[var(--accent-primary)]' : 'text-[var(--text-secondary)]'">
+      <span x-show="!selectMode">Select</span>
+      <span x-show="selectMode">Cancel</span>
+    </button>
+
     <div class="ml-auto text-xs text-[var(--text-muted)]">
       <span x-show="!loading" x-cloak>
         Showing <span class="font-mono" x-text="filtered.length"></span>
       </span>
     </div>
   </div>
+
+  <!-- Bulk action bar -->
+  <template x-if="selectMode && selectedCount > 0">
+    <div class="mb-4 flex items-center gap-3 p-3 rounded-lg bg-[rgba(99,102,241,0.08)] border border-[rgba(99,102,241,0.25)]">
+      <span class="text-xs font-medium text-[var(--accent-primary)]">
+        <span x-text="selectedCount"></span> selected
+      </span>
+      <button @click="selectAll()" class="btn-ghost px-3 py-1.5 text-xs">
+        <span x-text="selectedCount === filtered.length ? 'Deselect all' : 'Select all'"></span>
+      </button>
+      <button @click="bulkDelete()"
+              :disabled="bulkDeleting"
+              class="ml-auto btn-danger px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
+        <span x-show="!bulkDeleting">Kill Selected</span>
+        <span x-show="bulkDeleting" x-cloak>Killing...</span>
+      </button>
+    </div>
+  </template>
 
   <!-- Loading -->
   <template x-if="loading">
@@ -96,10 +122,41 @@
 
   <!-- Table -->
   <template x-if="!loading && filtered.length > 0">
-    <div class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl overflow-hidden">
+    <div>
+    <!-- Card view for mobile (below sm breakpoint) -->
+    <div class="sm:hidden space-y-3 mb-4">
+      <template x-for="s in filtered" :key="'card-' + s.name">
+        <a :href="'/sessions/' + encodeURIComponent(s.name)"
+           class="block rounded-lg p-4 bg-[var(--bg-surface)] border border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] transition-colors no-underline">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="w-2 h-2 rounded-full flex-shrink-0"
+                  :class="ailyUtils.statusMeta(s.status).dotClass"></span>
+            <span class="font-mono font-medium text-[14px] text-[var(--text-primary)] truncate"
+                  x-text="s.name"></span>
+            <span class="ml-auto badge" :class="statusBadgeClass(s.status)">
+              <span class="badge-dot"></span>
+              <span x-text="statusLabel(s.status)"></span>
+            </span>
+          </div>
+          <div class="flex items-center justify-between text-xs text-[var(--text-muted)]">
+            <span x-text="s.host || '-'"></span>
+            <span x-text="timeAgo(s.last_activity || s.updated_at)"></span>
+          </div>
+        </a>
+      </template>
+    </div>
+
+    <!-- Table view for sm+ -->
+    <div class="hidden sm:block bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl overflow-hidden">
       <table class="w-full">
         <thead class="bg-[var(--bg-base)]">
           <tr class="border-b border-[var(--bg-overlay)]">
+            <th class="px-4 py-3 w-10" x-show="selectMode" x-cloak>
+              <input type="checkbox"
+                     :checked="selectedCount === filtered.length && filtered.length > 0"
+                     @change="selectAll()"
+                     class="accent-[var(--accent-primary)] w-4 h-4 rounded cursor-pointer">
+            </th>
             <th class="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] cursor-pointer select-none"
                 @click="setSort('name')">
               <div class="flex items-center gap-2">
@@ -139,6 +196,12 @@
           <template x-for="s in filtered" :key="s.name">
             <tr class="border-b border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] transition-colors duration-100 cursor-pointer"
                 @click="window.location.href = '/sessions/' + encodeURIComponent(s.name)">
+              <td class="px-4 py-3 w-10" x-show="selectMode" x-cloak @click.stop>
+                <input type="checkbox"
+                       :checked="selectedSessions.has(s.name)"
+                       @change="toggleSelect(s.name)"
+                       class="accent-[var(--accent-primary)] w-4 h-4 rounded cursor-pointer">
+              </td>
               <td class="px-4 py-3">
                 <div class="flex items-center gap-2 min-w-0">
                   <span class="w-2 h-2 rounded-full flex-shrink-0"
@@ -166,7 +229,7 @@
                     Open
                   </a>
                   <button class="btn-danger px-3 py-2 text-xs font-semibold"
-                          @click="killSession(s.name)">
+                          @click="confirmDelete(s.name)">
                     Kill
                   </button>
                 </div>
@@ -176,15 +239,19 @@
         </tbody>
       </table>
     </div>
+    </div>
   </template>
 
-  <!-- New Session Modal -->
+  <!-- New Session Modal (enhanced) -->
   <template x-if="showNewSessionModal">
     <div class="fixed inset-0 z-50 flex items-center justify-center" @keydown.escape.window="showNewSessionModal = false">
       <div class="absolute inset-0 bg-black/60" @click="showNewSessionModal = false"></div>
-      <div class="relative bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl shadow-xl w-full max-w-[480px] p-6 modal-enter">
+      <div class="relative bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl shadow-xl w-full max-w-[480px] p-6 modal-enter"
+           @click.stop>
+
         <h3 class="text-lg font-semibold text-[var(--text-primary)] mb-4">Create New Session</h3>
 
+        <!-- Session Name -->
         <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Session Name</label>
         <input type="text" x-model="newSession.name"
                placeholder="my-session-name"
@@ -194,26 +261,89 @@
                autocomplete="off">
         <p class="text-[11px] text-[var(--text-muted)] mb-4">Letters, numbers, hyphens, and underscores only</p>
 
+        <!-- Host -->
         <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Host</label>
-        <input type="text" x-model="newSession.host"
-               placeholder="dev-1"
-               class="input-field w-full mb-4"
-               autocomplete="off">
+        <template x-if="configuredHosts.length > 0">
+          <select x-model="newSession.host" class="input-field w-full mb-4">
+            <option value="">Select a host...</option>
+            <template x-for="h in configuredHosts" :key="h">
+              <option :value="h" x-text="h"></option>
+            </template>
+          </select>
+        </template>
+        <template x-if="configuredHosts.length === 0">
+          <input type="text" x-model="newSession.host"
+                 placeholder="dev-1"
+                 class="input-field w-full mb-4"
+                 autocomplete="off">
+        </template>
 
+        <!-- Agent Type -->
+        <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Agent Type</label>
+        <div class="flex gap-2 mb-4">
+          <template x-for="at in ['claude', 'codex', 'gemini']" :key="at">
+            <button type="button"
+                    class="flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition-all duration-150"
+                    :class="newSession.agent_type === at
+                      ? 'border-[var(--accent-primary)] bg-[var(--accent-primary-subtle)] text-[var(--text-primary)]'
+                      : 'border-[var(--bg-overlay)] text-[var(--text-secondary)] hover:border-[#484f58]'"
+                    @click="newSession.agent_type = newSession.agent_type === at ? '' : at">
+              <span x-text="at === 'claude' ? 'Claude Code' : at === 'codex' ? 'Codex' : 'Gemini'"></span>
+            </button>
+          </template>
+        </div>
+
+        <!-- Error -->
         <template x-if="createError">
           <div class="mb-4 text-xs text-[var(--status-error)]" x-text="createError"></div>
         </template>
 
+        <!-- Actions -->
         <div class="flex justify-end gap-2">
           <button @click="showNewSessionModal = false"
-                  class="btn-secondary px-4 py-2 text-sm font-medium">
-            Cancel
-          </button>
+                  class="btn-secondary px-4 py-2 text-sm font-medium">Cancel</button>
           <button @click="createSession()"
                   :disabled="!isValidSessionName || creating"
                   class="btn-primary px-4 py-2 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed">
             <span x-show="!creating">Create Session</span>
             <span x-show="creating" x-cloak>Creating...</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- Delete Confirmation Dialog -->
+  <template x-if="deleteTarget">
+    <div class="fixed inset-0 z-50 flex items-center justify-center"
+         @keydown.escape.window="cancelDelete()">
+      <div class="absolute inset-0 bg-black/60" @click="cancelDelete()"></div>
+      <div class="relative bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl shadow-xl w-full max-w-[400px] p-6 modal-enter"
+           @click.stop>
+        <div class="flex items-start gap-3 mb-4">
+          <div class="w-10 h-10 rounded-full bg-[rgba(239,68,68,0.15)] flex items-center justify-center flex-shrink-0">
+            <svg class="w-5 h-5 text-[var(--status-error)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+            </svg>
+          </div>
+          <div>
+            <h3 class="text-base font-semibold text-[var(--text-primary)]">Kill Session</h3>
+            <p class="text-sm text-[var(--text-secondary)] mt-1">
+              Are you sure you want to kill
+              <span class="font-mono font-medium text-[var(--text-primary)]" x-text="deleteTarget.name"></span>?
+              This will archive platform threads where possible.
+            </p>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2">
+          <button @click="cancelDelete()"
+                  class="btn-secondary px-4 py-2 text-sm font-medium">Cancel</button>
+          <button @click="confirmKillSession()"
+                  :disabled="deleting"
+                  class="btn-danger px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            <span x-show="!deleting">Kill Session</span>
+            <span x-show="deleting" x-cloak>Killing...</span>
           </button>
         </div>
       </div>
