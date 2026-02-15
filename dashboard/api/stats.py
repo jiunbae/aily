@@ -62,11 +62,15 @@ async def get_stats(request: web.Request) -> web.Response:
         "slack": bool(config and config.slack_bot_token),
     }
 
+    # All configured SSH hosts (not just active ones)
+    all_hosts = config.ssh_hosts if config else []
+
     return json_ok(
         {
             "sessions": {"total": total_sessions, **status_counts},
             "messages": {"total": total_messages, "last_24h": recent_messages},
             "hosts": hosts,
+            "configured_hosts": all_hosts,
             "platforms": platforms,
         }
     )
