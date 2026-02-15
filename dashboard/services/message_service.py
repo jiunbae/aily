@@ -67,9 +67,27 @@ class MessageService:
             "timestamp": "2026-02-13T10:30:00Z"
         }
 
+        Also handles typing indicator events:
+        {
+            "type": "typing.start",
+            "session_name": "my-session",
+            "platform": "discord"
+        }
+
         Args:
             event_data: The parsed JSON body from the bridge webhook.
         """
+        # Handle typing indicator events
+        event_type = event_data.get("type", "")
+        if event_type in ("typing.start", "typing.stop"):
+            session_name = event_data.get("session_name", "").strip()
+            if session_name:
+                if event_type == "typing.start":
+                    await self.event_bus.publish(Event.typing_start(session_name))
+                else:
+                    await self.event_bus.publish(Event.typing_stop(session_name))
+            return  # Don't process further as a message
+
         session_name = event_data.get("session_name", "").strip()
         if not session_name:
             logger.warning("Bridge event missing session_name, ignoring")
@@ -135,14 +153,16 @@ class MessageService:
                 session_name,
                 source,
             )
-            # Publish event for WebSocket clients
+            # Publish event for WebSocket clients (full content)
             await self.event_bus.publish(
                 Event.message_new(
                     {
                         "session_name": session_name,
                         "role": role,
-                        "content": content[:200],
+                        "content": content,
                         "source": source,
+                        "source_id": source_id,
+                        "source_author": source_author,
                         "timestamp": timestamp,
                     }
                 )
@@ -158,6 +178,86 @@ class MessageService:
                 "created_at": db.now_iso(),
             },
         )
+
+    async def ingest_slack_messages(
+        self,
+        session_name: str,
+        slack_messages: list[dict],
+        bot_user_id: str = "",
+    ) -> int:
+        """Ingest messages fetched from a Slack thread.
+
+        Converts Slack message format to our unified message schema.
+        Bot messages (from aily relay) are treated as role=assistant,
+        human messages as role=user.
+
+        Args:
+            session_name: The tmux session name.
+            slack_messages: List of Slack message dicts from conversations.replies.
+            bot_user_id: The Slack bot's user ID (to identify assistant messages).
+
+        Returns:
+            Number of new messages ingested.
+        """
+        ingested = 0
+        for msg in slack_messages:
+            content = msg.get("text", "").strip()
+            if not content:
+                continue
+
+            msg_ts = msg.get("ts", "")
+            user_id = msg.get("user", "")
+            # Slack bot messages have bot_id or subtype=bot_message
+            is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+
+            # Determine role
+            if is_bot and (not bot_user_id or user_id == bot_user_id):
+                role = "assistant"
+            elif is_bot:
+                role = "system"
+            else:
+                role = "user"
+
+            # Convert Slack ts to ISO 8601
+            try:
+                ts_float = float(msg_ts)
+                timestamp = datetime.fromtimestamp(
+                    ts_float, tz=timezone.utc
+                ).isoformat()
+            except (ValueError, TypeError):
+                timestamp = db.now_iso()
+
+            # Author name -- Slack doesn't include username in replies by default
+            author_name = msg.get("username", "") or user_id
+
+            dedup_hash = compute_dedup_hash(
+                session_name, "slack", msg_ts, content
+            )
+
+            cursor = await db.insert_or_ignore(
+                "messages",
+                {
+                    "session_name": session_name,
+                    "role": role,
+                    "content": content,
+                    "source": "slack",
+                    "source_id": msg_ts,
+                    "source_author": author_name,
+                    "timestamp": timestamp,
+                    "ingested_at": db.now_iso(),
+                    "dedup_hash": dedup_hash,
+                },
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                ingested += 1
+
+        if ingested > 0:
+            logger.info(
+                "Ingested %d Slack messages for session '%s'",
+                ingested, session_name,
+            )
+
+        return ingested
 
     async def ingest_discord_messages(
         self,

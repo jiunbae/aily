@@ -54,56 +54,95 @@ async def _sync_once(
     event_bus: EventBus,
 ) -> None:
     """Execute one sync cycle across all sessions with platform threads."""
-    if not platform_svc.has_discord:
-        return
-
-    # Get bot user ID for role detection
-    bot_user_id = await _get_discord_bot_user_id(platform_svc)
-
-    # Find all active sessions with discord threads
-    sessions = await db.fetchall(
-        """SELECT name, discord_thread_id FROM sessions
-           WHERE discord_thread_id IS NOT NULL
-             AND discord_thread_id != ''
-             AND status = 'active'"""
-    )
-
-    if not sessions:
-        return
-
     total_ingested = 0
-    for session in sessions:
-        session_name = session["name"]
-        thread_id = session["discord_thread_id"]
 
-        try:
-            # Get the last message source_id we already have for this session
-            last_msg = await db.fetchone(
-                """SELECT source_id FROM messages
-                   WHERE session_name = ? AND source = 'discord'
-                   ORDER BY timestamp DESC LIMIT 1""",
-                (session_name,),
-            )
-            after = last_msg["source_id"] if last_msg else None
+    # --- Discord sync ---
+    if platform_svc.has_discord:
+        # Get bot user ID for role detection
+        bot_user_id = await _get_discord_bot_user_id(platform_svc)
 
-            # Fetch new messages from Discord
-            messages = await platform_svc.fetch_all_discord_thread_messages(
-                thread_id, after=after
-            )
+        # Find all active sessions with discord threads
+        sessions = await db.fetchall(
+            """SELECT name, discord_thread_id FROM sessions
+               WHERE discord_thread_id IS NOT NULL
+                 AND discord_thread_id != ''
+                 AND status = 'active'"""
+        )
 
-            if messages:
-                ingested = await message_svc.ingest_discord_messages(
-                    session_name, messages, bot_user_id=bot_user_id
+        for session in sessions:
+            session_name = session["name"]
+            thread_id = session["discord_thread_id"]
+
+            try:
+                # Get the last message source_id we already have
+                last_msg = await db.fetchone(
+                    """SELECT source_id FROM messages
+                       WHERE session_name = ? AND source = 'discord'
+                       ORDER BY timestamp DESC LIMIT 1""",
+                    (session_name,),
                 )
-                total_ingested += ingested
+                after = last_msg["source_id"] if last_msg else None
 
-        except Exception:
-            logger.exception(
-                "Failed to sync messages for session '%s'", session_name
-            )
+                # Fetch new messages from Discord
+                messages = await platform_svc.fetch_all_discord_thread_messages(
+                    thread_id, after=after
+                )
 
-        # Small delay between sessions to avoid rate limits
-        await asyncio.sleep(1)
+                if messages:
+                    ingested = await message_svc.ingest_discord_messages(
+                        session_name, messages, bot_user_id=bot_user_id
+                    )
+                    total_ingested += ingested
+
+            except Exception:
+                logger.exception(
+                    "Failed to sync Discord messages for session '%s'",
+                    session_name,
+                )
+
+            # Small delay between sessions to avoid rate limits
+            await asyncio.sleep(1)
+
+    # --- Slack sync ---
+    if platform_svc.has_slack:
+        slack_bot_user_id = await platform_svc.get_slack_bot_user_id()
+        slack_sessions = await db.fetchall(
+            """SELECT name, slack_thread_ts, slack_channel_id FROM sessions
+               WHERE slack_thread_ts IS NOT NULL
+                 AND slack_thread_ts != ''
+                 AND status = 'active'"""
+        )
+
+        for session in slack_sessions:
+            session_name = session["name"]
+            thread_ts = session["slack_thread_ts"]
+            channel_id = session["slack_channel_id"] or platform_svc.slack_channel_id
+
+            try:
+                # Get last known Slack message ts
+                last_msg = await db.fetchone(
+                    """SELECT source_id FROM messages
+                       WHERE session_name = ? AND source = 'slack'
+                       ORDER BY timestamp DESC LIMIT 1""",
+                    (session_name,),
+                )
+                after_ts = last_msg["source_id"] if last_msg else None
+
+                messages = await platform_svc.fetch_all_slack_thread_messages(
+                    channel_id, thread_ts, after_ts=after_ts
+                )
+                if messages:
+                    ingested = await message_svc.ingest_slack_messages(
+                        session_name, messages, bot_user_id=slack_bot_user_id
+                    )
+                    total_ingested += ingested
+            except Exception:
+                logger.exception(
+                    "Failed to sync Slack messages for session '%s'",
+                    session_name,
+                )
+
+            await asyncio.sleep(1)
 
     if total_ingested > 0:
         logger.info("Message sync complete: %d new messages", total_ingested)

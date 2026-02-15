@@ -2,19 +2,28 @@
 
 GET /ws upgrades to a WebSocket connection. Events from the EventBus
 are fanned out to all connected clients. Supports session filtering
-via subscribe messages and heartbeat keepalives.
+via subscribe messages, heartbeat keepalives, message history fetch,
+and typing indicators.
 
 Protocol:
   Server -> Client:
     {"type": "session.created", "payload": {...}, "timestamp": ...}
     {"type": "session.updated", "payload": {...}, "timestamp": ...}
     {"type": "session.closed", "payload": {...}, "timestamp": ...}
+    {"type": "session.status_changed", "payload": {...}, "timestamp": ...}
     {"type": "message.new", "payload": {...}, "timestamp": ...}
+    {"type": "typing.start", "payload": {...}, "timestamp": ...}
+    {"type": "typing.stop", "payload": {...}, "timestamp": ...}
+    {"type": "typing.user", "payload": {...}, "timestamp": ...}
+    {"type": "sync.complete", "payload": {...}, "timestamp": ...}
+    {"type": "history", "payload": {...}}
     {"type": "heartbeat", "payload": {}, "timestamp": ...}
 
   Client -> Server:
-    {"type": "subscribe", "sessions": ["fix-auth"]}  // filter events
-    {"type": "ping"}                                   // keepalive
+    {"type": "subscribe", "sessions": ["fix-auth"]}   // filter events
+    {"type": "ping"}                                    // keepalive
+    {"type": "fetch_history", "session": "...", "limit": 50, "offset": 0}
+    {"type": "typing", "session": "..."}               // user typing
 """
 
 from __future__ import annotations
@@ -122,6 +131,51 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                             subscriber_id,
                             subscribed_sessions or "all",
                         )
+                    elif msg_type == "fetch_history":
+                        # Fetch message history and send back over WS
+                        session_name = data.get("session", "")
+                        limit = min(int(data.get("limit", 50)), 200)
+                        offset = max(int(data.get("offset", 0)), 0)
+
+                        if session_name:
+                            from dashboard import db as _db
+
+                            messages = await _db.fetchall(
+                                """SELECT * FROM messages
+                                   WHERE session_name = ?
+                                   ORDER BY timestamp ASC
+                                   LIMIT ? OFFSET ?""",
+                                (session_name, limit, offset),
+                            )
+                            count_row = await _db.fetchone(
+                                """SELECT COUNT(*) as cnt FROM messages
+                                   WHERE session_name = ?""",
+                                (session_name,),
+                            )
+                            total = count_row["cnt"] if count_row else 0
+
+                            response = {
+                                "type": "history",
+                                "payload": {
+                                    "session": session_name,
+                                    "messages": messages,
+                                    "total": total,
+                                    "limit": limit,
+                                    "offset": offset,
+                                },
+                            }
+                            if not ws.closed:
+                                await ws.send_json(response)
+                    elif msg_type == "typing":
+                        # Relay typing indicator to other subscribers
+                        session_name = data.get("session", "")
+                        if session_name:
+                            await event_bus.publish(
+                                Event(
+                                    type="typing.user",
+                                    payload={"session_name": session_name},
+                                )
+                            )
                 except (json.JSONDecodeError, Exception):
                     pass  # Ignore malformed messages
 
