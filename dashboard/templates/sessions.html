@@ -96,7 +96,32 @@
 
   <!-- Table -->
   <template x-if="!loading && filtered.length > 0">
-    <div class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl overflow-hidden">
+    <div>
+    <!-- Card view for mobile (below sm breakpoint) -->
+    <div class="sm:hidden space-y-3 mb-4">
+      <template x-for="s in filtered" :key="'card-' + s.name">
+        <a :href="'/sessions/' + encodeURIComponent(s.name)"
+           class="block rounded-lg p-4 bg-[var(--bg-surface)] border border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] transition-colors no-underline">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="w-2 h-2 rounded-full flex-shrink-0"
+                  :class="ailyUtils.statusMeta(s.status).dotClass"></span>
+            <span class="font-mono font-medium text-[14px] text-[var(--text-primary)] truncate"
+                  x-text="s.name"></span>
+            <span class="ml-auto badge" :class="statusBadgeClass(s.status)">
+              <span class="badge-dot"></span>
+              <span x-text="statusLabel(s.status)"></span>
+            </span>
+          </div>
+          <div class="flex items-center justify-between text-xs text-[var(--text-muted)]">
+            <span x-text="s.host || '-'"></span>
+            <span x-text="timeAgo(s.last_activity || s.updated_at)"></span>
+          </div>
+        </a>
+      </template>
+    </div>
+
+    <!-- Table view for sm+ -->
+    <div class="hidden sm:block bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl overflow-hidden">
       <table class="w-full">
         <thead class="bg-[var(--bg-base)]">
           <tr class="border-b border-[var(--bg-overlay)]">
@@ -175,6 +200,7 @@
           </template>
         </tbody>
       </table>
+    </div>
     </div>
   </template>
 
