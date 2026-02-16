@@ -305,8 +305,8 @@
             <label class="block mb-2 text-xs font-medium text-[var(--text-secondary)]">Quick Setup (clone + init)</label>
             <div class="flex items-center gap-2">
               <code class="flex-1 block px-3 py-2.5 rounded-lg bg-[var(--bg-base)] border border-[var(--bg-overlay)] font-mono text-xs text-[var(--text-primary)] overflow-x-auto whitespace-nowrap"
-                    x-text="hooks.git_clone_command || 'git clone https://github.com/jiunbae/aily && cd aily && ./aily init'"></code>
-              <button @click="copyToClipboard(hooks.git_clone_command || 'git clone https://github.com/jiunbae/aily && cd aily && ./aily init')"
+                    x-text="hooks.git_clone_command || ''"></code>
+              <button @click="copyToClipboard(hooks.git_clone_command || '')"
                       class="btn-secondary px-3 py-2 text-xs font-medium flex-shrink-0">
                 Copy
               </button>
@@ -397,9 +397,9 @@
 
             <div class="flex items-center justify-between">
               <span class="text-xs text-[var(--text-secondary)]">GitHub</span>
-              <a href="https://github.com/jiunbae/aily" target="_blank" rel="noopener noreferrer"
-                 class="text-xs font-mono text-[var(--text-link)] hover:underline">
-                jiunbae/aily
+              <a :href="'https://github.com/' + (githubRepo || 'jiunbae/aily')" target="_blank" rel="noopener noreferrer"
+                 class="text-xs font-mono text-[var(--text-link)] hover:underline"
+                 x-text="githubRepo || 'jiunbae/aily'">
               </a>
             </div>
 

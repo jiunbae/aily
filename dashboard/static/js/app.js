@@ -1574,6 +1574,7 @@
       showToken: false,
       aboutStats: null,
       authToken: "",
+      githubRepo: "",
 
       get tokenDisplay() {
         if (!this.authToken) return "(not set)";
@@ -1599,6 +1600,7 @@
           this.settings = settingsResp?.settings || {};
           this.hooks = hooksResp || {};
           this.aboutStats = statsResp;
+          this.githubRepo = this.settings.github_repo || "";
 
           // Attempt to read auth token from config (it's visible in the response headers context)
           // The token is not exposed via API for security; show placeholder

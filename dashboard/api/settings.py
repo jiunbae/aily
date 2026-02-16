@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Default settings schema
 DEFAULTS: dict[str, str] = {
-    "dashboard_url": "https://aily.jiun.dev",
+    "dashboard_url": "",
     "ssh_hosts": "",
     "discord_configured": "",
     "slack_configured": "",
@@ -53,6 +53,31 @@ READONLY_KEYS = frozenset({
 })
 
 SETTING_PREFIX = "setting:"
+
+
+async def _resolve_dashboard_url(request: web.Request) -> str:
+    """Resolve dashboard URL from stored settings, config, or request host."""
+    row = await db.fetchone(
+        "SELECT value FROM kv WHERE key = ?",
+        (f"{SETTING_PREFIX}dashboard_url",),
+    )
+    if row and row["value"]:
+        return row["value"]
+
+    config = request.app.get("config")
+    if config and config.dashboard_url:
+        return config.dashboard_url
+
+    # Derive from request
+    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.host)
+    return f"{scheme}://{host}"
+
+
+def _get_github_repo(request: web.Request) -> str:
+    """Get GitHub repo from config."""
+    config = request.app.get("config")
+    return config.github_repo if config else "jiunbae/aily"
 
 
 def _get_runtime_settings(request: web.Request) -> dict[str, str]:
@@ -101,6 +126,7 @@ async def get_settings(request: web.Request) -> web.Response:
     settings["jsonl_scan_interval"] = (
         str(config.jsonl_scan_interval) if config else "60"
     )
+    settings["github_repo"] = _get_github_repo(request)
 
     return json_ok({"settings": settings})
 
@@ -140,19 +166,11 @@ async def get_hooks(request: web.Request) -> web.Response:
 
     Returns hook installation instructions and commands.
     """
-    config = request.app.get("config")
-    dashboard_url = "https://aily.jiun.dev"
+    dashboard_url = await _resolve_dashboard_url(request)
+    github_repo = _get_github_repo(request)
 
-    # Try to get from stored settings
-    row = await db.fetchone(
-        "SELECT value FROM kv WHERE key = ?",
-        (f"{SETTING_PREFIX}dashboard_url",),
-    )
-    if row and row["value"]:
-        dashboard_url = row["value"]
-
-    install_script = f"curl -sSL {dashboard_url}/api/settings/hooks/install.sh | bash"
-    git_clone = "git clone https://github.com/jiunbae/aily && cd aily && ./aily init"
+    install_script = f"curl -sSL {dashboard_url}/api/install.sh | bash"
+    git_clone = f"git clone https://github.com/{github_repo} && cd aily && ./aily init"
 
     hooks = [
         {
@@ -231,15 +249,7 @@ async def _test_dashboard(request: web.Request) -> dict:
     """Test dashboard health endpoint."""
     import aiohttp
 
-    config = request.app.get("config")
-    dashboard_url = "https://aily.jiun.dev"
-
-    row = await db.fetchone(
-        "SELECT value FROM kv WHERE key = ?",
-        (f"{SETTING_PREFIX}dashboard_url",),
-    )
-    if row and row["value"]:
-        dashboard_url = row["value"]
+    dashboard_url = await _resolve_dashboard_url(request)
 
     start = time.monotonic()
     try:
@@ -437,23 +447,17 @@ async def get_install_script(request: web.Request) -> web.Response:
 
     Returns a self-contained installer script that downloads and sets up
     the aily CLI tool. Can be piped to bash:
-        curl -sSL https://aily.jiun.dev/api/install.sh | bash
+        curl -sSL <dashboard_url>/api/install.sh | bash
     """
-    # Determine dashboard URL from settings or request
-    dashboard_url = "https://aily.jiun.dev"
-    row = await db.fetchone(
-        "SELECT value FROM kv WHERE key = ?",
-        (f"{SETTING_PREFIX}dashboard_url",),
-    )
-    if row and row["value"]:
-        dashboard_url = row["value"]
+    dashboard_url = await _resolve_dashboard_url(request)
+    github_repo = _get_github_repo(request)
 
     script = f'''#!/bin/bash
 # aily CLI installer
 # Usage: curl -sSL {dashboard_url}/api/install.sh | bash
 set -euo pipefail
 
-REPO="https://raw.githubusercontent.com/jiunbae/aily/main"
+REPO="https://raw.githubusercontent.com/{github_repo}/main"
 INSTALL_DIR="${{AILY_INSTALL_DIR:-$HOME/.local/bin}}"
 HOOKS_DIR="$HOME/.claude/hooks"
 

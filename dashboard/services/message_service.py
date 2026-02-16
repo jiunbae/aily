@@ -63,7 +63,7 @@ class MessageService:
             "content": "...",
             "role": "user",
             "source_id": "123456789",
-            "source_author": "jiun",
+            "source_author": "user",
             "timestamp": "2026-02-13T10:30:00Z"
         }
 
