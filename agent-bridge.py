@@ -22,8 +22,43 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 
 import aiohttp
+
+# Dashboard webhook URL (optional — if not set, events are silently skipped)
+DASHBOARD_URL: str = os.environ.get("AILY_DASHBOARD_URL", "")
+
+# Shared aiohttp session for dashboard POSTs (set in main)
+_dashboard_http: aiohttp.ClientSession | None = None
+
+
+async def emit_dashboard_event(event: dict):
+    """POST an event to the aily dashboard webhook. Non-blocking, fire-and-forget."""
+    if not DASHBOARD_URL or _dashboard_http is None:
+        return
+    url = f"{DASHBOARD_URL.rstrip('/')}/api/hooks/event"
+    try:
+        async with _dashboard_http.post(url, json=event, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                print(f"[dashboard] POST {resp.status}: {body[:200]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[dashboard] POST failed: {e}", file=sys.stderr)
+
+
+def _fire_dashboard_event(event: dict):
+    """Schedule a dashboard event from sync or async context without awaiting."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(emit_dashboard_event(event))
+    except RuntimeError:
+        pass  # No running loop — skip silently
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 # Discord gateway intents
 INTENT_GUILDS = 1 << 0
@@ -424,6 +459,18 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
     await post_message(http, token, channel_id,
         f"Forwarding to `{session_name}` on `{host}`...")
 
+    # Emit dashboard event: user message relayed to tmux
+    _fire_dashboard_event({
+        "type": "message.relayed",
+        "session_name": session_name,
+        "platform": "discord",
+        "content": user_message,
+        "role": "user",
+        "source_id": message.get("id", ""),
+        "source_author": user_name,
+        "timestamp": _now_iso(),
+    })
+
     await asyncio.to_thread(send_to_tmux, host, session_name, user_message)
 
 
@@ -516,7 +563,7 @@ async def heartbeat_loop(ws, interval: float, get_sequence):
 
 
 async def main():
-    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST
+    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, DASHBOARD_URL, _dashboard_http
 
     env_path = os.environ.get("AGENT_BRIDGE_ENV",
         os.path.expanduser("~/.claude/hooks/.notify-env"))
@@ -528,6 +575,10 @@ async def main():
     env = load_env(env_path)
     token = env.get("DISCORD_BOT_TOKEN")
     CHANNEL_ID = env.get("DISCORD_CHANNEL_ID", "")
+
+    # Dashboard URL from env var (K8s) or .notify-env file
+    if not DASHBOARD_URL:
+        DASHBOARD_URL = env.get("AILY_DASHBOARD_URL", "")
 
     # SSH hosts from env (comma-separated) or defaults
     hosts_str = env.get("SSH_HOSTS", "")
@@ -548,14 +599,23 @@ async def main():
     print(f"[bridge] SSH hosts: {SSH_HOSTS}")
     print(f"[bridge] Channel: {CHANNEL_ID}")
     print(f"[bridge] Thread prefix: '{AGENT_PREFIX}'")
+    if DASHBOARD_URL:
+        print(f"[bridge] Dashboard: {DASHBOARD_URL}")
+    else:
+        print("[bridge] Dashboard: not configured (AILY_DASHBOARD_URL not set)")
 
-    while True:
-        try:
-            await gateway_connect(token)
-        except Exception as e:
-            print(f"[bridge] Connection error: {e}, reconnecting in 5s...",
-                  file=sys.stderr)
-        await asyncio.sleep(5)
+    # Create a shared aiohttp session for dashboard POSTs
+    _dashboard_http = aiohttp.ClientSession()
+    try:
+        while True:
+            try:
+                await gateway_connect(token)
+            except Exception as e:
+                print(f"[bridge] Connection error: {e}, reconnecting in 5s...",
+                      file=sys.stderr)
+            await asyncio.sleep(5)
+    finally:
+        await _dashboard_http.close()
 
 
 if __name__ == "__main__":
