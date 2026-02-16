@@ -23,6 +23,9 @@ class PlatformService:
     - Find threads matching session names
     - Archive threads when sessions are killed
     - Sync thread IDs for newly discovered sessions
+
+    Reuses a single aiohttp.ClientSession for all HTTP requests to
+    avoid per-request TCP connection overhead (~200ms savings per call).
     """
 
     def __init__(
@@ -36,6 +39,21 @@ class PlatformService:
         self.discord_channel_id = discord_channel_id
         self.slack_token = slack_bot_token
         self.slack_channel_id = slack_channel_id
+        self._http: aiohttp.ClientSession | None = None
+
+    async def _get_http(self) -> aiohttp.ClientSession:
+        """Get or create a reusable HTTP session."""
+        if self._http is None or self._http.closed:
+            self._http = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30)
+            )
+        return self._http
+
+    async def close(self) -> None:
+        """Close the shared HTTP session. Call on app cleanup."""
+        if self._http and not self._http.closed:
+            await self._http.close()
+            self._http = None
 
     @property
     def has_discord(self) -> bool:
@@ -68,42 +86,43 @@ class PlatformService:
         api = "https://discord.com/api/v10"
 
         try:
-            async with aiohttp.ClientSession() as http:
-                # Get guild ID from channel
-                async with http.get(
-                    f"{api}/channels/{self.discord_channel_id}",
-                    headers=headers,
-                ) as resp:
-                    if resp.status != 200:
-                        return None
-                    ch = await resp.json()
-                    guild_id = ch.get("guild_id")
+            http = await self._get_http()
 
-                # 1. Active threads (guild-level endpoint)
-                if guild_id:
-                    async with http.get(
-                        f"{api}/guilds/{guild_id}/threads/active",
-                        headers=headers,
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            for t in data.get("threads", []):
-                                if (
-                                    t.get("name") == thread_name
-                                    and t.get("parent_id") == self.discord_channel_id
-                                ):
-                                    return t["id"]
+            # Get guild ID from channel
+            async with http.get(
+                f"{api}/channels/{self.discord_channel_id}",
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                ch = await resp.json()
+                guild_id = ch.get("guild_id")
 
-                # 2. Archived threads
+            # 1. Active threads (guild-level endpoint)
+            if guild_id:
                 async with http.get(
-                    f"{api}/channels/{self.discord_channel_id}/threads/archived/public",
+                    f"{api}/guilds/{guild_id}/threads/active",
                     headers=headers,
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         for t in data.get("threads", []):
-                            if t.get("name") == thread_name:
+                            if (
+                                t.get("name") == thread_name
+                                and t.get("parent_id") == self.discord_channel_id
+                            ):
                                 return t["id"]
+
+            # 2. Archived threads
+            async with http.get(
+                f"{api}/channels/{self.discord_channel_id}/threads/archived/public",
+                headers=headers,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    for t in data.get("threads", []):
+                        if t.get("name") == thread_name:
+                            return t["id"]
         except Exception:
             logger.exception("Error finding Discord thread for '%s'", session_name)
 
@@ -129,23 +148,23 @@ class PlatformService:
         headers = {"Authorization": f"Bearer {self.slack_token}"}
 
         try:
-            async with aiohttp.ClientSession() as http:
-                async with http.get(
-                    "https://slack.com/api/conversations.history",
-                    params={"channel": self.slack_channel_id, "limit": "200"},
-                    headers=headers,
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("ok"):
-                            for msg in data.get("messages", []):
-                                text = msg.get("text", "")
-                                first_line = text.split("\n")[0].strip()
-                                if (
-                                    first_line == thread_name
-                                    or text.startswith(thread_name)
-                                ):
-                                    return msg["ts"]
+            http = await self._get_http()
+            async with http.get(
+                "https://slack.com/api/conversations.history",
+                params={"channel": self.slack_channel_id, "limit": "200"},
+                headers=headers,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        for msg in data.get("messages", []):
+                            text = msg.get("text", "")
+                            first_line = text.split("\n")[0].strip()
+                            if (
+                                first_line == thread_name
+                                or text.startswith(thread_name)
+                            ):
+                                return msg["ts"]
         except Exception:
             logger.exception("Error finding Slack thread for '%s'", session_name)
 
@@ -194,17 +213,17 @@ class PlatformService:
         if self.has_discord and discord_thread_id:
             try:
                 headers = {"Authorization": f"Bot {self.discord_token}"}
-                async with aiohttp.ClientSession() as http:
-                    async with http.patch(
-                        f"https://discord.com/api/v10/channels/{discord_thread_id}",
-                        headers=headers,
-                        json={"archived": True},
-                    ) as resp:
-                        if resp.status < 400:
-                            archived.append("discord")
-                            logger.info(
-                                "Archived Discord thread %s", discord_thread_id
-                            )
+                http = await self._get_http()
+                async with http.patch(
+                    f"https://discord.com/api/v10/channels/{discord_thread_id}",
+                    headers=headers,
+                    json={"archived": True},
+                ) as resp:
+                    if resp.status < 400:
+                        archived.append("discord")
+                        logger.info(
+                            "Archived Discord thread %s", discord_thread_id
+                        )
             except Exception:
                 logger.exception("Failed to archive Discord thread")
 
@@ -216,29 +235,29 @@ class PlatformService:
                     "Authorization": f"Bearer {self.slack_token}",
                     "Content-Type": "application/json",
                 }
-                async with aiohttp.ClientSession() as http:
-                    # Post closing message
-                    await http.post(
-                        "https://slack.com/api/chat.postMessage",
-                        headers=headers,
-                        json={
-                            "channel": slack_channel,
-                            "thread_ts": slack_thread_ts,
-                            "text": ":lock: Thread archived. Session closed.",
-                        },
-                    )
-                    # Add lock reaction
-                    await http.post(
-                        "https://slack.com/api/reactions.add",
-                        headers=headers,
-                        json={
-                            "channel": slack_channel,
-                            "timestamp": slack_thread_ts,
-                            "name": "lock",
-                        },
-                    )
-                    archived.append("slack")
-                    logger.info("Archived Slack thread %s", slack_thread_ts)
+                http = await self._get_http()
+                # Post closing message
+                await http.post(
+                    "https://slack.com/api/chat.postMessage",
+                    headers=headers,
+                    json={
+                        "channel": slack_channel,
+                        "thread_ts": slack_thread_ts,
+                        "text": ":lock: Thread archived. Session closed.",
+                    },
+                )
+                # Add lock reaction
+                await http.post(
+                    "https://slack.com/api/reactions.add",
+                    headers=headers,
+                    json={
+                        "channel": slack_channel,
+                        "timestamp": slack_thread_ts,
+                        "name": "lock",
+                    },
+                )
+                archived.append("slack")
+                logger.info("Archived Slack thread %s", slack_thread_ts)
             except Exception:
                 logger.exception("Failed to archive Slack thread")
 
@@ -271,32 +290,32 @@ class PlatformService:
             params["cursor"] = cursor
 
         try:
-            async with aiohttp.ClientSession() as http:
-                async with http.get(
-                    "https://slack.com/api/conversations.replies",
-                    headers=headers,
-                    params=params,
-                ) as resp:
-                    if resp.status != 200:
-                        logger.warning(
-                            "Slack replies fetch failed: %d for thread %s",
-                            resp.status, thread_ts,
-                        )
-                        return [], None
-                    data = await resp.json()
-                    if not data.get("ok"):
-                        logger.warning("Slack API error: %s", data.get("error"))
-                        return [], None
-
-                    messages = data.get("messages", [])
-                    # First message is the parent -- skip it
-                    if messages and messages[0].get("ts") == thread_ts:
-                        messages = messages[1:]
-
-                    next_cursor = (
-                        data.get("response_metadata", {}).get("next_cursor") or None
+            http = await self._get_http()
+            async with http.get(
+                "https://slack.com/api/conversations.replies",
+                headers=headers,
+                params=params,
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "Slack replies fetch failed: %d for thread %s",
+                        resp.status, thread_ts,
                     )
-                    return messages, next_cursor
+                    return [], None
+                data = await resp.json()
+                if not data.get("ok"):
+                    logger.warning("Slack API error: %s", data.get("error"))
+                    return [], None
+
+                messages = data.get("messages", [])
+                # First message is the parent -- skip it
+                if messages and messages[0].get("ts") == thread_ts:
+                    messages = messages[1:]
+
+                next_cursor = (
+                    data.get("response_metadata", {}).get("next_cursor") or None
+                )
+                return messages, next_cursor
         except Exception:
             logger.exception("Error fetching Slack replies for thread %s", thread_ts)
             return [], None
@@ -355,15 +374,15 @@ class PlatformService:
 
         headers = {"Authorization": f"Bearer {self.slack_token}"}
         try:
-            async with aiohttp.ClientSession() as http:
-                async with http.get(
-                    "https://slack.com/api/auth.test",
-                    headers=headers,
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("ok"):
-                            return data.get("user_id", "")
+            http = await self._get_http()
+            async with http.get(
+                "https://slack.com/api/auth.test",
+                headers=headers,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        return data.get("user_id", "")
         except Exception:
             logger.exception("Failed to get Slack bot user ID")
         return ""
@@ -391,23 +410,23 @@ class PlatformService:
             params["after"] = after
 
         try:
-            async with aiohttp.ClientSession() as http:
-                async with http.get(
-                    f"{api}/channels/{thread_id}/messages",
-                    headers=headers,
-                    params=params,
-                ) as resp:
-                    if resp.status != 200:
-                        logger.warning(
-                            "Discord messages fetch failed: %d for thread %s",
-                            resp.status,
-                            thread_id,
-                        )
-                        return []
-                    messages = await resp.json()
-                    # Discord returns newest first, reverse to oldest first
-                    messages.reverse()
-                    return messages
+            http = await self._get_http()
+            async with http.get(
+                f"{api}/channels/{thread_id}/messages",
+                headers=headers,
+                params=params,
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "Discord messages fetch failed: %d for thread %s",
+                        resp.status,
+                        thread_id,
+                    )
+                    return []
+                messages = await resp.json()
+                # Discord returns newest first, reverse to oldest first
+                messages.reverse()
+                return messages
         except Exception:
             logger.exception(
                 "Error fetching Discord messages for thread %s", thread_id

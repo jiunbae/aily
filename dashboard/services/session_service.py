@@ -43,7 +43,8 @@ class SessionService:
     async def find_host(self, session_name: str) -> str | None:
         """Find which SSH host has a tmux session with this name.
 
-        Same linear scan as find_session_host in both bridges.
+        Queries all hosts in parallel using asyncio.gather for faster
+        lookup when multiple hosts are configured.
 
         Args:
             session_name: tmux session name to search for.
@@ -51,9 +52,24 @@ class SessionService:
         Returns:
             The hostname, or None if not found on any host.
         """
-        for host in self.ssh_hosts:
-            if await ssh.has_session(host, session_name):
-                return host
+        if len(self.ssh_hosts) <= 1:
+            # Single host — no need for parallel overhead
+            for host in self.ssh_hosts:
+                if await ssh.has_session(host, session_name):
+                    return host
+            return None
+
+        # Parallel query all hosts
+        async def check(host: str) -> str | None:
+            return host if await ssh.has_session(host, session_name) else None
+
+        results = await asyncio.gather(
+            *(check(h) for h in self.ssh_hosts),
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, str):
+                return r
         return None
 
     async def list_all_sessions(self) -> dict[str, list[str]]:
