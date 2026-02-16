@@ -3,6 +3,7 @@
 GET  /api/settings           -- Get all system settings
 PUT  /api/settings           -- Update system settings (merge)
 GET  /api/settings/hooks     -- Get hook installation instructions
+GET  /api/install.sh         -- Downloadable installer script
 POST /api/settings/test      -- Test connectivity (dashboard, platforms, SSH)
 
 Settings are stored in the kv table with a "setting:" key prefix.
@@ -431,9 +432,96 @@ async def _test_ssh(host: str) -> dict:
         }
 
 
+async def get_install_script(request: web.Request) -> web.Response:
+    """GET /api/install.sh
+
+    Returns a self-contained installer script that downloads and sets up
+    the aily CLI tool. Can be piped to bash:
+        curl -sSL https://aily.jiun.dev/api/install.sh | bash
+    """
+    # Determine dashboard URL from settings or request
+    dashboard_url = "https://aily.jiun.dev"
+    row = await db.fetchone(
+        "SELECT value FROM kv WHERE key = ?",
+        (f"{SETTING_PREFIX}dashboard_url",),
+    )
+    if row and row["value"]:
+        dashboard_url = row["value"]
+
+    script = f'''#!/bin/bash
+# aily CLI installer
+# Usage: curl -sSL {dashboard_url}/api/install.sh | bash
+set -euo pipefail
+
+REPO="https://raw.githubusercontent.com/jiunbae/aily/main"
+INSTALL_DIR="${{AILY_INSTALL_DIR:-$HOME/.local/bin}}"
+HOOKS_DIR="$HOME/.claude/hooks"
+
+echo "=== aily CLI Installer ==="
+echo ""
+
+# Check dependencies
+for cmd in curl jq; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: $cmd is required but not found. Install it first."
+    exit 1
+  fi
+done
+
+# Create directories
+mkdir -p "$INSTALL_DIR" "$HOOKS_DIR"
+
+# Download aily CLI
+echo "Downloading aily CLI..."
+curl -sSL "$REPO/aily" -o "$INSTALL_DIR/aily"
+chmod +x "$INSTALL_DIR/aily"
+echo "  Installed: $INSTALL_DIR/aily"
+
+# Download hook files
+echo "Downloading hooks..."
+for hook in post.sh discord-post.sh discord-lib.sh slack-post.sh slack-lib.sh \\
+            thread-sync.sh discord-thread-sync.sh notify-claude.sh notify-codex.py \\
+            notify-codex-wrapper.sh notify-gemini.sh extract-last-message.py \\
+            format-question.py ask-question-notify.sh; do
+  curl -sSL "$REPO/hooks/$hook" -o "$HOOKS_DIR/$hook" 2>/dev/null && \\
+    chmod +x "$HOOKS_DIR/$hook" && \\
+    echo "  $hook" || true
+done
+
+# Download install.sh and .env.example
+curl -sSL "$REPO/install.sh" -o "$INSTALL_DIR/aily-install.sh"
+chmod +x "$INSTALL_DIR/aily-install.sh"
+curl -sSL "$REPO/.env.example" -o "$HOOKS_DIR/.env.example" 2>/dev/null || true
+
+# Check PATH
+if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
+  echo ""
+  echo "Add to your shell profile:"
+  echo "  export PATH=\\"$INSTALL_DIR:\\$PATH\\""
+  echo ""
+fi
+
+echo ""
+echo "=== Installed! ==="
+echo ""
+echo "Run setup wizard:"
+echo "  aily init"
+echo ""
+echo "Or with dashboard URL pre-configured:"
+echo "  AILY_DASHBOARD_URL={dashboard_url} aily init"
+echo ""
+'''
+    return web.Response(
+        text=script,
+        content_type="text/plain",
+        headers={"Content-Disposition": 'attachment; filename="install.sh"'},
+    )
+
+
 def setup_routes(app: web.Application) -> None:
     """Register settings API routes on the application."""
     app.router.add_get("/api/settings", get_settings)
     app.router.add_put("/api/settings", put_settings)
     app.router.add_get("/api/settings/hooks", get_hooks)
+    app.router.add_get("/api/install.sh", get_install_script)
     app.router.add_post("/api/settings/test", test_connection)

@@ -1,0 +1,20 @@
+# Python / Dashboard (server-side only)
+dashboard/
+agent-bridge.py
+slack-bridge.py
+requirements.txt
+Dockerfile
+.dockerignore
+
+# Dev / CI
+.git/
+.gitea/
+.github/
+.context/
+__pycache__/
+*.pyc
+
+# Docs (README is included via files)
+docs/
+SETUP-DISCORD.md
+SETUP-SLACK.md
