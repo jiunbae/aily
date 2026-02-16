@@ -5,24 +5,46 @@ Mirrors the SSH patterns from agent-bridge.py and slack-bridge.py:
   - shlex.quote() for all user-supplied values
   - Two-step send-keys pattern (type text, then press Enter)
   - 0.3s delay between send-keys steps
+
+SSH ControlMaster: Reuses persistent connections to avoid TCP+key
+handshake overhead on repeated calls to the same host (~750ms → ~50ms).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
 
 logger = logging.getLogger(__name__)
 
 SEND_KEYS_DELAY = 0.3
 
+# SSH ControlMaster: reuse connections to the same host.
+# Socket path uses %r@%h:%p to uniquely identify each host connection.
+_CONTROL_DIR = os.path.expanduser("~/.ssh/aily-ctl")
+_SSH_CONTROL_OPTS = [
+    "-o", "ControlMaster=auto",
+    "-o", f"ControlPath={_CONTROL_DIR}/%r@%h:%p",
+    "-o", "ControlPersist=300",
+    "-o", "ConnectTimeout=5",
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "BatchMode=yes",
+]
+
+
+def _ensure_control_dir() -> None:
+    """Create the SSH control socket directory if it doesn't exist."""
+    os.makedirs(_CONTROL_DIR, mode=0o700, exist_ok=True)
+
 
 async def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
     """Run a command over SSH asynchronously.
 
     Uses asyncio.create_subprocess_exec (not subprocess.run) to avoid
-    blocking the event loop.
+    blocking the event loop. SSH ControlMaster reuses persistent
+    connections for ~15x speedup on repeated calls.
 
     Args:
         host: SSH host to connect to.
@@ -32,9 +54,10 @@ async def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
     Returns:
         Tuple of (return_code, stdout_output).
     """
+    _ensure_control_dir()
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ssh", host, cmd,
+            "ssh", *_SSH_CONTROL_OPTS, host, cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

@@ -343,6 +343,10 @@ async def _on_cleanup(app: web.Application) -> None:
         except asyncio.CancelledError:
             pass
 
+    # Close shared HTTP session
+    platform_svc: PlatformService = app["platform_service"]
+    await platform_svc.close()
+
     # Close database
     await close_db()
     logger.info("Dashboard shutdown complete")
