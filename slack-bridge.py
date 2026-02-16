@@ -22,11 +22,48 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+
+import aiohttp
 
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
+
+# Dashboard webhook URL (optional — if not set, events are silently skipped)
+DASHBOARD_URL: str = os.environ.get("AILY_DASHBOARD_URL", "")
+
+# Shared aiohttp session for dashboard POSTs (set in main)
+_dashboard_http: aiohttp.ClientSession | None = None
+
+
+async def emit_dashboard_event(event: dict):
+    """POST an event to the aily dashboard webhook. Non-blocking, fire-and-forget."""
+    if not DASHBOARD_URL or _dashboard_http is None:
+        return
+    url = f"{DASHBOARD_URL.rstrip('/')}/api/hooks/event"
+    try:
+        async with _dashboard_http.post(url, json=event, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                print(f"[dashboard] POST {resp.status}: {body[:200]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[dashboard] POST failed: {e}", file=sys.stderr)
+
+
+def _fire_dashboard_event(event: dict):
+    """Schedule a dashboard event from sync or async context without awaiting."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(emit_dashboard_event(event))
+    except RuntimeError:
+        pass  # No running loop — skip silently
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 AGENT_PREFIX = "[agent] "
 SEND_KEYS_DELAY = 0.3
@@ -559,6 +596,18 @@ async def handle_socket_event(
         thread_ts=thread_ts,
     )
 
+    # Emit dashboard event: user message relayed to tmux
+    _fire_dashboard_event({
+        "type": "message.relayed",
+        "session_name": session_name,
+        "platform": "slack",
+        "content": text,
+        "role": "user",
+        "source_id": event.get("client_msg_id", event.get("ts", "")),
+        "source_author": user_id,
+        "timestamp": _now_iso(),
+    })
+
     await asyncio.to_thread(send_to_tmux, host, session_name, text)
 
 
@@ -567,6 +616,7 @@ async def handle_socket_event(
 
 async def main():
     global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, BOT_USER_ID
+    global DASHBOARD_URL, _dashboard_http
 
     env_path = os.environ.get(
         "AGENT_BRIDGE_ENV", os.path.expanduser("~/.claude/hooks/.notify-env")
@@ -580,6 +630,10 @@ async def main():
     bot_token = env.get("SLACK_BOT_TOKEN")
     app_token = env.get("SLACK_APP_TOKEN")
     CHANNEL_ID = env.get("SLACK_CHANNEL_ID", "")
+
+    # Dashboard URL from env var (K8s) or .notify-env file
+    if not DASHBOARD_URL:
+        DASHBOARD_URL = env.get("AILY_DASHBOARD_URL", "")
 
     # SSH hosts from env (comma-separated) or defaults
     hosts_str = env.get("SSH_HOSTS", "")
@@ -608,6 +662,13 @@ async def main():
     print(f"[slack-bridge] Channel: {CHANNEL_ID}")
     print(f"[slack-bridge] SSH hosts: {SSH_HOSTS}")
     print(f"[slack-bridge] Thread prefix: '{AGENT_PREFIX}'")
+    if DASHBOARD_URL:
+        print(f"[slack-bridge] Dashboard: {DASHBOARD_URL}")
+    else:
+        print("[slack-bridge] Dashboard: not configured (AILY_DASHBOARD_URL not set)")
+
+    # Create a shared aiohttp session for dashboard POSTs
+    _dashboard_http = aiohttp.ClientSession()
 
     socket_client = SocketModeClient(app_token=app_token, web_client=web_client)
     socket_client.socket_mode_request_listeners.append(handle_socket_event)
@@ -616,8 +677,11 @@ async def main():
     await socket_client.connect()
 
     # Keep alive
-    while True:
-        await asyncio.sleep(1)
+    try:
+        while True:
+            await asyncio.sleep(1)
+    finally:
+        await _dashboard_http.close()
 
 
 if __name__ == "__main__":
