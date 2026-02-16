@@ -1,12 +1,14 @@
 """Bearer token authentication middleware.
 
 Checks Authorization: Bearer <token> header against DASHBOARD_TOKEN.
-Skips auth for health checks, internal hook endpoints, WebSocket, and static files.
+Skips auth for health checks, internal hook endpoints, and static files.
+WebSocket auth uses ?token= query param.
 If DASHBOARD_TOKEN is not set, all requests are allowed (dev mode).
 """
 
 from __future__ import annotations
 
+import hmac
 import logging
 
 from aiohttp import web
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 _NO_AUTH_PREFIXES = (
     "/healthz",
     "/api/hooks/",
-    "/ws",
+    "/api/install.sh",
     "/static/",
 )
 
@@ -44,11 +46,22 @@ async def auth_middleware(
         if path.startswith(prefix):
             return await handler(request)
 
-    # Check Authorization header
+    # WebSocket: check ?token= query param
+    if path == "/ws":
+        token = request.query.get("token", "")
+        if token and hmac.compare_digest(token, config.dashboard_token):
+            return await handler(request)
+        logger.warning("Unauthorized WebSocket: %s", path)
+        return web.json_response(
+            {"error": {"code": "UNAUTHORIZED", "message": "Missing or invalid token"}},
+            status=401,
+        )
+
+    # Check Authorization header (timing-safe comparison)
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        if token == config.dashboard_token:
+        if hmac.compare_digest(token, config.dashboard_token):
             return await handler(request)
 
     logger.warning("Unauthorized request: %s %s", request.method, path)

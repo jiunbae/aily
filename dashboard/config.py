@@ -40,6 +40,10 @@ class Config:
     # Auth
     dashboard_token: str = ""
 
+    # Public URLs (used in templates and install scripts)
+    dashboard_url: str = ""
+    github_repo: str = "jiunbae/aily"
+
     # Worker intervals (seconds)
     poll_interval: int = 30
     ingest_interval: int = 15
@@ -84,6 +88,10 @@ class Config:
 
         # Auth
         config.dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
+
+        # Public URLs
+        config.dashboard_url = os.environ.get("DASHBOARD_URL", "")
+        config.github_repo = os.environ.get("GITHUB_REPO", config.github_repo)
 
         # Worker intervals
         config.poll_interval = int(

@@ -216,15 +216,22 @@ async def _get_theme() -> str:
         return "dark"
 
 
+async def _page_context(request: web.Request, **extra: str) -> dict:
+    """Build common template context for page handlers."""
+    ctx: dict = {"theme": await _get_theme(), **extra}
+    config = request.app.get("config")
+    if config and config.dashboard_token:
+        ctx["ws_token"] = config.dashboard_token
+    return ctx
+
+
 async def _index_page(request: web.Request) -> web.Response:
     """GET / - Dashboard home page."""
     try:
         import aiohttp_jinja2
 
-        theme = await _get_theme()
-        return aiohttp_jinja2.render_template(
-            "index.html", request, {"theme": theme}
-        )
+        ctx = await _page_context(request)
+        return aiohttp_jinja2.render_template("index.html", request, ctx)
     except (ImportError, Exception):
         # Fallback if templates are not available
         return web.json_response(
@@ -241,10 +248,8 @@ async def _sessions_page(request: web.Request) -> web.Response:
     try:
         import aiohttp_jinja2
 
-        theme = await _get_theme()
-        return aiohttp_jinja2.render_template(
-            "sessions.html", request, {"theme": theme}
-        )
+        ctx = await _page_context(request)
+        return aiohttp_jinja2.render_template("sessions.html", request, ctx)
     except (ImportError, Exception):
         return web.json_response(
             {"redirect": "/api/sessions", "message": "Templates not available"}
@@ -257,9 +262,9 @@ async def _session_detail_page(request: web.Request) -> web.Response:
     try:
         import aiohttp_jinja2
 
-        theme = await _get_theme()
+        ctx = await _page_context(request, session_name=name)
         return aiohttp_jinja2.render_template(
-            "session_detail.html", request, {"session_name": name, "theme": theme}
+            "session_detail.html", request, ctx
         )
     except (ImportError, Exception):
         return web.json_response(
@@ -275,10 +280,8 @@ async def _settings_page(request: web.Request) -> web.Response:
     try:
         import aiohttp_jinja2
 
-        theme = await _get_theme()
-        return aiohttp_jinja2.render_template(
-            "settings.html", request, {"theme": theme}
-        )
+        ctx = await _page_context(request)
+        return aiohttp_jinja2.render_template("settings.html", request, ctx)
     except (ImportError, Exception):
         return web.json_response(
             {"redirect": "/api/settings", "message": "Templates not available"}

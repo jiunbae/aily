@@ -30,7 +30,11 @@
 
     static defaultUrl() {
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      return `${proto}://${window.location.host}/ws`;
+      let url = `${proto}://${window.location.host}/ws`;
+      // Pass auth token via query param if available
+      const token = document.querySelector('meta[name="ws-token"]')?.content;
+      if (token) url += `?token=${encodeURIComponent(token)}`;
+      return url;
     }
 
     get status() {
