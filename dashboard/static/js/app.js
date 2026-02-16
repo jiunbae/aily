@@ -1559,6 +1559,122 @@
   }
 
   // ------------------------------------
+  // Settings page component
+  // ------------------------------------
+
+  function settingsPage() {
+    return {
+      loading: true,
+      settings: {},
+      hooks: {},
+      testResults: {},
+      testing: {},
+      error: "",
+      saveSuccess: false,
+      showToken: false,
+      aboutStats: null,
+      authToken: "",
+
+      get tokenDisplay() {
+        if (!this.authToken) return "(not set)";
+        if (this.showToken) return this.authToken;
+        return this.authToken.slice(0, 4) + "****" + this.authToken.slice(-4);
+      },
+
+      get sshHosts() {
+        var hosts = String(this.settings.ssh_hosts || "");
+        if (!hosts) return [];
+        return hosts.split(",").map(function(h) { return h.trim(); }).filter(Boolean);
+      },
+
+      async load() {
+        this.loading = true;
+        this.error = "";
+        try {
+          var [settingsResp, hooksResp, statsResp] = await Promise.all([
+            apiJson("/api/settings"),
+            apiJson("/api/settings/hooks"),
+            apiJson("/api/stats").catch(function() { return null; }),
+          ]);
+          this.settings = settingsResp?.settings || {};
+          this.hooks = hooksResp || {};
+          this.aboutStats = statsResp;
+
+          // Attempt to read auth token from config (it's visible in the response headers context)
+          // The token is not exposed via API for security; show placeholder
+          this.authToken = "";
+        } catch (e) {
+          this.error = e?.message || "Failed to load settings";
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      async save() {
+        this.error = "";
+        this.saveSuccess = false;
+        try {
+          await apiJson("/api/settings", {
+            method: "PUT",
+            body: this.settings,
+          });
+          this.saveSuccess = true;
+          setTimeout(() => { this.saveSuccess = false; }, 3000);
+        } catch (e) {
+          this.error = e?.message || "Failed to save settings";
+        }
+      },
+
+      async testConnection(type, host) {
+        var key = type === "ssh" ? host : type;
+        this.testing[key] = true;
+        this.testing = { ...this.testing };
+
+        try {
+          var body = { type: type };
+          if (host) body.host = host;
+          var resp = await apiJson("/api/settings/test", {
+            method: "POST",
+            body: body,
+          });
+          var result = resp?.result || {};
+          this.testResults[key] = result;
+          this.testResults = { ...this.testResults };
+        } catch (e) {
+          this.testResults[key] = {
+            type: type,
+            status: "error",
+            message: e?.message || "Test failed",
+            details: {},
+          };
+          this.testResults = { ...this.testResults };
+        } finally {
+          this.testing[key] = false;
+          this.testing = { ...this.testing };
+        }
+      },
+
+      copyToClipboard(text) {
+        if (!text) return;
+        navigator.clipboard?.writeText(text).then(
+          function() {},
+          function() {
+            // Fallback: create a temporary textarea
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.left = "-9999px";
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand("copy"); } catch (e) { /* ignore */ }
+            document.body.removeChild(ta);
+          }
+        );
+      },
+    };
+  }
+
+  // ------------------------------------
   // Theme toggle component
   // ------------------------------------
 
@@ -1640,5 +1756,6 @@
     Alpine.data("dashboardHome", dashboardHome);
     Alpine.data("sessionList", sessionList);
     Alpine.data("sessionDetail", sessionDetail);
+    Alpine.data("settingsPage", settingsPage);
   });
 })();

@@ -1,20 +1,82 @@
 #!/bin/bash
-# aily — CLI for managing AI agent notification relay.
+# aily -- CLI for managing AI agent notification relay.
+# Single self-contained tool: setup wizard, diagnostics, dashboard API,
+# thread management, and platform configuration.
+#
 # Usage:
-#   aily start [name]     Create thread for current/named tmux session
-#   aily stop [name]      Archive thread for current/named tmux session
-#   aily auto [on|off]    Toggle auto thread sync (or show status)
-#   aily sessions         List all tmux sessions across hosts
-#   aily status           Show which platforms are configured
-#   aily help             Show this help
+#   aily init              Interactive setup wizard
+#   aily status            Show configuration and connectivity status
+#   aily sessions          List active sessions from dashboard
+#   aily sync [name]       Trigger message sync for a session
+#   aily logs [name]       Fetch recent messages for a session
+#   aily config ...        Show/edit configuration
+#   aily doctor            Diagnose common issues
+#   aily start [name]      Create thread for tmux session
+#   aily stop [name]       Archive thread for tmux session
+#   aily auto [on|off]     Toggle auto thread sync
+#   aily uninstall         Remove aily hooks and configuration
+#   aily help              Show this help
 
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${AILY_ENV:-$HOME/.claude/hooks/.notify-env}"
 HOOKS_DIR="$(dirname "$ENV_FILE")"
+VERSION="1.0.0"
 
-# --- helpers ---
+# ---------------------------------------------------------------------------
+# Colors & formatting
+# ---------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  C_RESET="\033[0m"
+  C_BOLD="\033[1m"
+  C_DIM="\033[2m"
+  C_RED="\033[31m"
+  C_GREEN="\033[32m"
+  C_YELLOW="\033[33m"
+  C_BLUE="\033[34m"
+  C_CYAN="\033[36m"
+  C_MAGENTA="\033[35m"
+else
+  C_RESET="" C_BOLD="" C_DIM="" C_RED="" C_GREEN=""
+  C_YELLOW="" C_BLUE="" C_CYAN="" C_MAGENTA=""
+fi
 
+ok()   { printf "  ${C_GREEN}✓${C_RESET} %s\n" "$*"; }
+warn() { printf "  ${C_YELLOW}⚠️${C_RESET}  %s\n" "$*"; }
+err()  { printf "  ${C_RED}✗${C_RESET} %s\n" "$*" >&2; }
+info() { printf "  ${C_CYAN}·${C_RESET} %s\n" "$*"; }
+hdr()  { printf "\n${C_BOLD}=== %s ===${C_RESET}\n" "$*"; }
+
+# ---------------------------------------------------------------------------
+# Dependency check
+# ---------------------------------------------------------------------------
+require_cmd() {
+  local cmd="$1" hint="${2:-}"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    err "$cmd not found${hint:+ ($hint)}"
+    return 1
+  fi
+  return 0
+}
+
+require_deps() {
+  local missing=0
+  require_cmd curl   "install via your package manager" || missing=1
+  require_cmd jq     "install via: brew install jq / apt install jq" || missing=1
+  if [[ $missing -ne 0 ]]; then
+    echo "" >&2
+    err "Missing required dependencies. Install them and retry."
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
 env_get() {
   local key="$1" default="${2:-}"
   if [[ -f "$ENV_FILE" ]]; then
@@ -29,10 +91,12 @@ env_get() {
 env_set() {
   local key="$1" value="$2"
   if [[ ! -f "$ENV_FILE" ]]; then
-    echo "  Error: $ENV_FILE not found" >&2
-    exit 1
+    mkdir -p "$(dirname "$ENV_FILE")"
+    touch "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
   fi
   if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    # Use python3 for safe in-place edit (matches install.sh style)
     python3 -c "
 import re, sys
 path = sys.argv[1]
@@ -44,11 +108,72 @@ with open(path, 'w') as f:
     f.write(text)
 " "$ENV_FILE" "$key" "$value"
   else
-    echo "" >> "$ENV_FILE"
+    # Append with a blank separator if the file doesn't end with a newline
+    if [[ -s "$ENV_FILE" ]] && [[ "$(tail -c1 "$ENV_FILE")" != "" ]]; then
+      echo "" >> "$ENV_FILE"
+    fi
     echo "${key}=\"${value}\"" >> "$ENV_FILE"
   fi
 }
 
+load_env() {
+  if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+  fi
+}
+
+redact() {
+  local val="$1" show="${2:-4}"
+  if [[ ${#val} -le $((show + 4)) ]]; then
+    echo "****"
+  else
+    echo "${val:0:$show}...${val: -4}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Dashboard API helpers
+# ---------------------------------------------------------------------------
+dashboard_url() {
+  env_get "AILY_DASHBOARD_URL" "https://aily.jiun.dev"
+}
+
+dashboard_token() {
+  env_get "AILY_AUTH_TOKEN" ""
+}
+
+api_call() {
+  local method="$1" path="$2"
+  shift 2
+  local url
+  url="$(dashboard_url)${path}"
+  local token
+  token="$(dashboard_token)"
+
+  local auth_header=""
+  if [[ -n "$token" ]]; then
+    auth_header="Authorization: Bearer ${token}"
+  fi
+
+  if [[ "$method" == "GET" ]]; then
+    if [[ -n "$auth_header" ]]; then
+      curl -sf -H "$auth_header" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
+    else
+      curl -sf -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
+    fi
+  else
+    if [[ -n "$auth_header" ]]; then
+      curl -sf -X "$method" -H "$auth_header" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
+    else
+      curl -sf -X "$method" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# tmux helpers
+# ---------------------------------------------------------------------------
 detect_tmux_session() {
   local TMUX_BIN="/opt/homebrew/bin/tmux"
   if [[ ! -x "$TMUX_BIN" ]]; then
@@ -62,6 +187,9 @@ detect_tmux_session() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Platform loaders (sourced from hooks dir)
+# ---------------------------------------------------------------------------
 load_discord_env() {
   if [[ ! -f "$ENV_FILE" ]]; then return 1; fi
   # shellcheck source=/dev/null
@@ -86,15 +214,940 @@ load_slack_env() {
   return 0
 }
 
-# --- commands ---
+# ---------------------------------------------------------------------------
+# Prompt helpers (for init wizard)
+# ---------------------------------------------------------------------------
+prompt_value() {
+  local label="$1" default="${2:-}" secret="${3:-false}"
+  local value
+  if [[ "$secret" == "true" ]]; then
+    printf "  %s" "$label"
+    if [[ -n "$default" ]]; then
+      printf " [%s]" "$(redact "$default")"
+    fi
+    printf ": "
+    read -rs value
+    echo ""
+  else
+    printf "  %s" "$label"
+    if [[ -n "$default" ]]; then
+      printf " [%s]" "$default"
+    fi
+    printf ": "
+    read -r value
+  fi
+  echo "${value:-$default}"
+}
 
+prompt_yn() {
+  local label="$1" default="${2:-y}"
+  local hint="Y/n"
+  if [[ "$default" == "n" ]]; then
+    hint="y/N"
+  fi
+  printf "  %s (%s): " "$label" "$hint"
+  local answer
+  read -r answer
+  answer="${answer:-$default}"
+  [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]
+}
+
+# ===================================================================
+# COMMANDS
+# ===================================================================
+
+# -------------------------------------------------------------------
+# aily init
+# -------------------------------------------------------------------
+cmd_init() {
+  local non_interactive=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --non-interactive) non_interactive=true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  require_deps
+
+  hdr "aily setup wizard"
+  echo ""
+
+  # -- 1. Dashboard URL --
+  printf "  ${C_BOLD}1) Dashboard URL${C_RESET}\n"
+  local url
+  if [[ "$non_interactive" == "true" ]]; then
+    url="${AILY_DASHBOARD_URL:-https://aily.jiun.dev}"
+  else
+    url=$(prompt_value "Dashboard URL" "$(env_get AILY_DASHBOARD_URL "https://aily.jiun.dev")")
+  fi
+  # Strip trailing slash
+  url="${url%/}"
+
+  # Test connectivity
+  printf "  Testing connectivity... "
+  local health
+  if health=$(curl -sf --connect-timeout 5 "${url}/healthz" 2>/dev/null); then
+    printf "${C_GREEN}OK${C_RESET}\n"
+  else
+    printf "${C_RED}FAILED${C_RESET}\n"
+    warn "Could not reach ${url}/healthz"
+    if [[ "$non_interactive" == "false" ]]; then
+      if ! prompt_yn "Continue anyway?" "n"; then
+        echo "  Aborted."
+        exit 1
+      fi
+    fi
+  fi
+  echo ""
+
+  # -- 2. Auth token --
+  printf "  ${C_BOLD}2) Auth token${C_RESET}\n"
+  local token
+  if [[ "$non_interactive" == "true" ]]; then
+    token="${AILY_AUTH_TOKEN:-}"
+  else
+    token=$(prompt_value "Auth token" "$(env_get AILY_AUTH_TOKEN "")" true)
+  fi
+
+  if [[ -n "$token" ]]; then
+    printf "  Validating token... "
+    local stats_resp
+    if stats_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bearer ${token}" "${url}/api/stats" 2>/dev/null); then
+      printf "${C_GREEN}OK${C_RESET}\n"
+    else
+      printf "${C_YELLOW}WARN${C_RESET} (could not validate — dashboard may be unavailable)\n"
+    fi
+  else
+    info "No auth token set (dashboard access may be limited)"
+  fi
+  echo ""
+
+  # -- 3. Platform setup --
+  printf "  ${C_BOLD}3) Platform setup${C_RESET}\n"
+  local discord_token="" discord_channel=""
+  local slack_token="" slack_app_token="" slack_channel=""
+
+  if [[ "$non_interactive" == "true" ]]; then
+    discord_token="${DISCORD_BOT_TOKEN:-$(env_get DISCORD_BOT_TOKEN "")}"
+    discord_channel="${DISCORD_CHANNEL_ID:-$(env_get DISCORD_CHANNEL_ID "")}"
+    slack_token="${SLACK_BOT_TOKEN:-$(env_get SLACK_BOT_TOKEN "")}"
+    slack_app_token="${SLACK_APP_TOKEN:-$(env_get SLACK_APP_TOKEN "")}"
+    slack_channel="${SLACK_CHANNEL_ID:-$(env_get SLACK_CHANNEL_ID "")}"
+  else
+    # Discord
+    if prompt_yn "Enable Discord?" "$(if [[ -n "$(env_get DISCORD_BOT_TOKEN "")" ]]; then echo y; else echo n; fi)"; then
+      discord_token=$(prompt_value "Discord bot token" "$(env_get DISCORD_BOT_TOKEN "")" true)
+      discord_channel=$(prompt_value "Discord channel ID" "$(env_get DISCORD_CHANNEL_ID "")")
+
+      if [[ -n "$discord_token" && -n "$discord_channel" ]]; then
+        printf "  Validating Discord... "
+        local discord_resp
+        discord_resp=$(curl -sf -H "Authorization: Bot ${discord_token}" \
+          "https://discord.com/api/v10/channels/${discord_channel}" 2>/dev/null || echo "")
+        if [[ -n "$discord_resp" ]] && echo "$discord_resp" | jq -e '.id' >/dev/null 2>&1; then
+          local chan_name
+          chan_name=$(echo "$discord_resp" | jq -r '.name // "unknown"')
+          printf "${C_GREEN}OK${C_RESET} (channel: %s)\n" "$chan_name"
+        else
+          printf "${C_RED}FAILED${C_RESET}\n"
+          warn "Could not validate Discord credentials"
+        fi
+      fi
+    fi
+    echo ""
+
+    # Slack
+    if prompt_yn "Enable Slack?" "$(if [[ -n "$(env_get SLACK_BOT_TOKEN "")" ]]; then echo y; else echo n; fi)"; then
+      slack_token=$(prompt_value "Slack bot token (xoxb-...)" "$(env_get SLACK_BOT_TOKEN "")" true)
+      slack_app_token=$(prompt_value "Slack app token (xapp-...)" "$(env_get SLACK_APP_TOKEN "")" true)
+      slack_channel=$(prompt_value "Slack channel ID" "$(env_get SLACK_CHANNEL_ID "")")
+
+      if [[ -n "$slack_token" && -n "$slack_channel" ]]; then
+        printf "  Validating Slack... "
+        local slack_resp
+        slack_resp=$(curl -sf -H "Authorization: Bearer ${slack_token}" \
+          "https://slack.com/api/conversations.info?channel=${slack_channel}" 2>/dev/null || echo "")
+        if [[ -n "$slack_resp" ]] && echo "$slack_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
+          local chan_name
+          chan_name=$(echo "$slack_resp" | jq -r '.channel.name // "unknown"')
+          printf "${C_GREEN}OK${C_RESET} (channel: #%s)\n" "$chan_name"
+        else
+          printf "${C_RED}FAILED${C_RESET}\n"
+          warn "Could not validate Slack credentials"
+        fi
+      fi
+    fi
+  fi
+  echo ""
+
+  # -- 4. SSH hosts --
+  printf "  ${C_BOLD}4) SSH hosts${C_RESET}\n"
+  local ssh_hosts
+  if [[ "$non_interactive" == "true" ]]; then
+    ssh_hosts="${SSH_HOSTS:-$(env_get SSH_HOSTS "localhost")}"
+  else
+    ssh_hosts=$(prompt_value "SSH hosts (comma-separated)" "$(env_get SSH_HOSTS "localhost")")
+  fi
+
+  if [[ "$non_interactive" == "false" && -n "$ssh_hosts" && "$ssh_hosts" != "localhost" ]]; then
+    IFS=',' read -ra host_list <<< "$ssh_hosts"
+    for host in "${host_list[@]}"; do
+      host=$(echo "$host" | tr -d ' ')
+      printf "  Testing SSH to %s... " "$host"
+      if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "echo ok" >/dev/null 2>&1; then
+        printf "${C_GREEN}OK${C_RESET}\n"
+      else
+        printf "${C_RED}FAILED${C_RESET}\n"
+      fi
+    done
+  fi
+  echo ""
+
+  # -- 5. Write config --
+  printf "  ${C_BOLD}5) Writing configuration${C_RESET}\n"
+  mkdir -p "$(dirname "$ENV_FILE")"
+
+  # Build the config file content
+  local config_content=""
+  config_content+="# aily configuration — generated by aily init\n"
+  config_content+="# $(date '+%Y-%m-%d %H:%M:%S')\n"
+  config_content+="\n"
+  config_content+="# --- Dashboard ---\n"
+  config_content+="AILY_DASHBOARD_URL=\"${url}\"\n"
+  if [[ -n "$token" ]]; then
+    config_content+="AILY_AUTH_TOKEN=\"${token}\"\n"
+  fi
+  config_content+="\n"
+  config_content+="# --- Discord ---\n"
+  if [[ -n "$discord_token" ]]; then
+    config_content+="DISCORD_BOT_TOKEN=\"${discord_token}\"\n"
+    config_content+="DISCORD_CHANNEL_ID=\"${discord_channel}\"\n"
+  else
+    config_content+="# DISCORD_BOT_TOKEN=\"\"\n"
+    config_content+="# DISCORD_CHANNEL_ID=\"\"\n"
+  fi
+  config_content+="\n"
+  config_content+="# --- Slack ---\n"
+  if [[ -n "$slack_token" ]]; then
+    config_content+="SLACK_BOT_TOKEN=\"${slack_token}\"\n"
+    config_content+="SLACK_APP_TOKEN=\"${slack_app_token}\"\n"
+    config_content+="SLACK_CHANNEL_ID=\"${slack_channel}\"\n"
+  else
+    config_content+="# SLACK_BOT_TOKEN=\"\"\n"
+    config_content+="# SLACK_APP_TOKEN=\"\"\n"
+    config_content+="# SLACK_CHANNEL_ID=\"\"\n"
+  fi
+  config_content+="\n"
+  config_content+="# --- General ---\n"
+  config_content+="SSH_HOSTS=\"${ssh_hosts}\"\n"
+  config_content+="TMUX_THREAD_SYNC=\"true\"\n"
+
+  # Preserve any extra keys from existing config
+  printf '%b' "$config_content" > "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  ok "Saved to ${ENV_FILE} (chmod 600)"
+  echo ""
+
+  # -- 6. Install hooks --
+  printf "  ${C_BOLD}6) Installing hooks${C_RESET}\n"
+  if [[ -x "${SCRIPT_DIR}/install.sh" ]]; then
+    bash "${SCRIPT_DIR}/install.sh" 2>&1 | while IFS= read -r line; do
+      echo "  $line"
+    done
+  else
+    warn "install.sh not found at ${SCRIPT_DIR}/install.sh"
+    info "Run install.sh manually to set up hooks"
+  fi
+  echo ""
+
+  # -- 7. Test notification --
+  printf "  ${C_BOLD}7) Test notification${C_RESET}\n"
+  if [[ "$non_interactive" == "false" ]]; then
+    if prompt_yn "Send a test notification?" "y"; then
+      _send_test_notification
+    else
+      info "Skipped"
+    fi
+  fi
+
+  echo ""
+  hdr "Setup complete"
+  echo ""
+  info "Run 'aily status' to verify configuration"
+  info "Run 'aily doctor' to diagnose issues"
+  echo ""
+}
+
+_send_test_notification() {
+  local timestamp
+  timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  local hostname_short
+  hostname_short=$(hostname -s 2>/dev/null || hostname)
+  local message="Test notification from aily CLI on ${hostname_short} at ${timestamp}"
+  local any_ok=false
+
+  if [[ -f "${HOOKS_DIR}/post.sh" ]]; then
+    bash "${HOOKS_DIR}/post.sh" "aily" "$message" 2>/dev/null && any_ok=true
+  fi
+
+  if [[ "$any_ok" == "true" ]]; then
+    ok "Test notification sent"
+  else
+    warn "Could not send test notification"
+  fi
+}
+
+# -------------------------------------------------------------------
+# aily status
+# -------------------------------------------------------------------
+cmd_status() {
+  require_deps
+  load_env
+
+  hdr "aily status"
+
+  # Dashboard
+  printf "\n  ${C_BOLD}Dashboard${C_RESET}\n"
+  local url
+  url=$(dashboard_url)
+  info "URL: ${url}"
+  printf "  Connectivity: "
+  if curl -sf --connect-timeout 3 "${url}/healthz" >/dev/null 2>&1; then
+    printf "${C_GREEN}reachable${C_RESET}\n"
+  else
+    printf "${C_RED}unreachable${C_RESET}\n"
+  fi
+
+  local token
+  token=$(dashboard_token)
+  if [[ -n "$token" ]]; then
+    printf "  Auth token: ${C_GREEN}set${C_RESET} ($(redact "$token"))\n"
+  else
+    printf "  Auth token: ${C_DIM}not set${C_RESET}\n"
+  fi
+
+  # Platforms
+  printf "\n  ${C_BOLD}Platforms${C_RESET}\n"
+
+  # Discord
+  if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
+    printf "  Discord: "
+    local discord_resp
+    discord_resp=$(curl -sf --connect-timeout 3 -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
+      "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}" 2>/dev/null || echo "")
+    if [[ -n "$discord_resp" ]] && echo "$discord_resp" | jq -e '.id' >/dev/null 2>&1; then
+      local chan_name
+      chan_name=$(echo "$discord_resp" | jq -r '.name // "unknown"')
+      printf "${C_GREEN}connected${C_RESET} (#%s)\n" "$chan_name"
+    else
+      printf "${C_YELLOW}configured but unreachable${C_RESET}\n"
+    fi
+  else
+    printf "  Discord: ${C_DIM}not configured${C_RESET}\n"
+  fi
+
+  # Slack
+  if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
+    printf "  Slack: "
+    local slack_resp
+    slack_resp=$(curl -sf --connect-timeout 3 -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+      "https://slack.com/api/conversations.info?channel=${SLACK_CHANNEL_ID}" 2>/dev/null || echo "")
+    if [[ -n "$slack_resp" ]] && echo "$slack_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
+      local chan_name
+      chan_name=$(echo "$slack_resp" | jq -r '.channel.name // "unknown"')
+      printf "${C_GREEN}connected${C_RESET} (#%s)\n" "$chan_name"
+    else
+      printf "${C_YELLOW}configured but unreachable${C_RESET}\n"
+    fi
+  else
+    printf "  Slack: ${C_DIM}not configured${C_RESET}\n"
+  fi
+
+  # SSH hosts
+  printf "\n  ${C_BOLD}SSH hosts${C_RESET}\n"
+  local hosts_str
+  hosts_str=$(env_get "SSH_HOSTS" "localhost")
+  IFS=',' read -ra hosts <<< "$hosts_str"
+  for host in "${hosts[@]}"; do
+    host=$(echo "$host" | tr -d ' ')
+    printf "  %s: " "$host"
+    if [[ "$host" == "localhost" ]]; then
+      printf "${C_GREEN}local${C_RESET}\n"
+    elif ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "echo ok" >/dev/null 2>&1; then
+      printf "${C_GREEN}reachable${C_RESET}\n"
+    else
+      printf "${C_RED}unreachable${C_RESET}\n"
+    fi
+  done
+
+  # Hooks
+  printf "\n  ${C_BOLD}Installed hooks${C_RESET}\n"
+  local hook_files=(notify-claude.sh notify-gemini.sh notify-codex.py post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
+  for hf in "${hook_files[@]}"; do
+    local target="${HOOKS_DIR}/${hf}"
+    if [[ -L "$target" ]]; then
+      ok "$hf (symlink)"
+    elif [[ -f "$target" ]]; then
+      ok "$hf (file)"
+    else
+      printf "  ${C_DIM}· %s (missing)${C_RESET}\n" "$hf"
+    fi
+  done
+
+  # Agent integrations
+  printf "\n  ${C_BOLD}Agent integrations${C_RESET}\n"
+  local claude_settings="$HOME/.claude/settings.json"
+  if [[ -f "$claude_settings" ]] && grep -q "notify-clawdia\|notify-claude" "$claude_settings" 2>/dev/null; then
+    ok "Claude Code (settings.json)"
+  else
+    printf "  ${C_DIM}· Claude Code (not configured)${C_RESET}\n"
+  fi
+
+  local codex_config="$HOME/.codex/config.toml"
+  if [[ -f "$codex_config" ]] && grep -q "notify-codex" "$codex_config" 2>/dev/null; then
+    ok "Codex CLI (config.toml)"
+  else
+    printf "  ${C_DIM}· Codex CLI (not configured)${C_RESET}\n"
+  fi
+
+  local gemini_settings="$HOME/.gemini/settings.json"
+  if [[ -f "$gemini_settings" ]] && grep -q "notify-gemini" "$gemini_settings" 2>/dev/null; then
+    ok "Gemini CLI (settings.json)"
+  else
+    printf "  ${C_DIM}· Gemini CLI (not configured)${C_RESET}\n"
+  fi
+
+  # tmux
+  printf "\n  ${C_BOLD}tmux${C_RESET}\n"
+  local sync_status
+  sync_status=$(env_get "TMUX_THREAD_SYNC" "true")
+  info "Thread sync: ${sync_status}"
+  if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
+    local session_count
+    session_count=$(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')
+    info "Active tmux sessions: ${session_count}"
+  else
+    info "tmux: not running"
+  fi
+
+  echo ""
+}
+
+# -------------------------------------------------------------------
+# aily sessions
+# -------------------------------------------------------------------
+cmd_sessions() {
+  require_deps
+
+  local json_output=false
+  local source="dashboard"  # default: try dashboard first, fall back to ssh
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json_output=true; shift ;;
+      --ssh)  source="ssh"; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  if [[ "$source" == "ssh" ]]; then
+    _sessions_ssh "$json_output"
+    return
+  fi
+
+  # Try dashboard API first
+  local resp
+  resp=$(api_call GET "/api/sessions?status=active" 2>/dev/null || echo "")
+
+  if [[ -n "$resp" ]] && echo "$resp" | jq -e '.' >/dev/null 2>&1; then
+    if [[ "$json_output" == "true" ]]; then
+      echo "$resp" | jq .
+      return
+    fi
+
+    local count
+    count=$(echo "$resp" | jq 'if type == "array" then length else (.sessions // []) | length end')
+    if [[ "$count" == "0" || "$count" == "null" ]]; then
+      info "No active sessions"
+      return
+    fi
+
+    hdr "Active sessions (${count})"
+    echo ""
+    printf "  ${C_BOLD}%-24s %-16s %-10s %-10s %s${C_RESET}\n" "NAME" "HOST" "STATUS" "AGENT" "UPDATED"
+    printf "  %-24s %-16s %-10s %-10s %s\n" "------------------------" "----------------" "----------" "----------" "-------------------"
+
+    # Handle both array and object-with-sessions response formats
+    echo "$resp" | jq -r '
+      (if type == "array" then . else (.sessions // []) end)[]
+      | [
+          (.name // "-"),
+          (.host // "-"),
+          (.status // "-"),
+          (.agent_type // "-"),
+          (.updated_at // "-" | split("T") | if length > 1 then .[0] + " " + (.[1] | split(".")[0]) else .[0] end)
+        ]
+      | @tsv
+    ' 2>/dev/null | while IFS=$'\t' read -r name host status agent updated; do
+      local status_color="$C_RESET"
+      case "$status" in
+        active)   status_color="$C_GREEN" ;;
+        idle)     status_color="$C_YELLOW" ;;
+        closed)   status_color="$C_DIM" ;;
+      esac
+      printf "  %-24s %-16s ${status_color}%-10s${C_RESET} %-10s %s\n" \
+        "$name" "$host" "$status" "$agent" "$updated"
+    done
+    echo ""
+  else
+    # Fall back to SSH-based session listing
+    info "Dashboard unavailable, falling back to SSH..."
+    _sessions_ssh "$json_output"
+  fi
+}
+
+_sessions_ssh() {
+  local json_output="${1:-false}"
+  load_env
+
+  local hosts_str
+  hosts_str=$(env_get "SSH_HOSTS" "localhost")
+  IFS=',' read -ra hosts <<< "$hosts_str"
+
+  if [[ "$json_output" == "true" ]]; then
+    echo "["
+    local first=true
+    for host in "${hosts[@]}"; do
+      host=$(echo "$host" | tr -d ' ')
+      local sessions
+      if [[ "$host" == "localhost" ]]; then
+        sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
+      else
+        sessions=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
+          "tmux list-sessions -F '#{session_name}' 2>/dev/null" 2>/dev/null || echo "")
+      fi
+      while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        if [[ "$first" == "true" ]]; then first=false; else echo ","; fi
+        printf '  {"name": "%s", "host": "%s"}' "$name" "$host"
+      done <<< "$sessions"
+    done
+    echo ""
+    echo "]"
+    return
+  fi
+
+  hdr "tmux sessions (via SSH)"
+  echo ""
+
+  for host in "${hosts[@]}"; do
+    host=$(echo "$host" | tr -d ' ')
+    local sessions
+    if [[ "$host" == "localhost" ]]; then
+      sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
+    else
+      sessions=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
+        "tmux list-sessions -F '#{session_name}' 2>/dev/null" 2>/dev/null || echo "")
+    fi
+    if [[ -n "$sessions" ]]; then
+      printf "  ${C_BOLD}%s${C_RESET}\n" "$host"
+      while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        echo "    $name"
+      done <<< "$sessions"
+      echo ""
+    else
+      printf "  ${C_DIM}%s (no sessions)${C_RESET}\n" "$host"
+    fi
+  done
+}
+
+# -------------------------------------------------------------------
+# aily sync [session-name]
+# -------------------------------------------------------------------
+cmd_sync() {
+  require_deps
+
+  local session_name="${1:-}"
+  if [[ -z "$session_name" ]]; then
+    session_name=$(detect_tmux_session)
+  fi
+  if [[ -z "$session_name" ]]; then
+    err "No session name provided and not inside tmux"
+    echo "  Usage: aily sync <session-name>" >&2
+    exit 1
+  fi
+
+  printf "  Syncing session '%s'... " "$session_name"
+  local resp
+  resp=$(api_call POST "/api/sessions/${session_name}/sync" 2>/dev/null || echo "")
+
+  if [[ -n "$resp" ]]; then
+    local count
+    count=$(echo "$resp" | jq -r '.synced_messages // .count // "unknown"' 2>/dev/null)
+    printf "${C_GREEN}OK${C_RESET}\n"
+    info "Synced messages: ${count}"
+  else
+    printf "${C_RED}FAILED${C_RESET}\n"
+    err "Could not sync session. Is the dashboard reachable?"
+  fi
+}
+
+# -------------------------------------------------------------------
+# aily logs [session-name]
+# -------------------------------------------------------------------
+cmd_logs() {
+  require_deps
+
+  local session_name="" limit=20 json_output=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)    json_output=true; shift ;;
+      --limit)   limit="$2"; shift 2 ;;
+      -n)        limit="$2"; shift 2 ;;
+      -*)        shift ;;
+      *)
+        if [[ -z "$session_name" ]]; then
+          session_name="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$session_name" ]]; then
+    session_name=$(detect_tmux_session)
+  fi
+  if [[ -z "$session_name" ]]; then
+    err "No session name provided and not inside tmux"
+    echo "  Usage: aily logs <session-name>" >&2
+    exit 1
+  fi
+
+  local resp
+  resp=$(api_call GET "/api/sessions/${session_name}/messages?limit=${limit}" 2>/dev/null || echo "")
+
+  if [[ -z "$resp" ]]; then
+    err "Could not fetch messages. Is the dashboard reachable?"
+    exit 1
+  fi
+
+  if [[ "$json_output" == "true" ]]; then
+    echo "$resp" | jq .
+    return
+  fi
+
+  local count
+  count=$(echo "$resp" | jq 'if type == "array" then length else (.messages // []) | length end' 2>/dev/null)
+
+  if [[ "$count" == "0" || "$count" == "null" || -z "$count" ]]; then
+    info "No messages for session '${session_name}'"
+    return
+  fi
+
+  hdr "Messages for ${session_name} (${count})"
+  echo ""
+
+  echo "$resp" | jq -r '
+    (if type == "array" then . else (.messages // []) end)[]
+    | "\(.role // "unknown")\t\(.content // "")\t\(.created_at // "-")"
+  ' 2>/dev/null | while IFS=$'\t' read -r role content timestamp; do
+    local role_color="$C_RESET"
+    local role_label="$role"
+    case "$role" in
+      user|human)     role_color="$C_BLUE"; role_label="user" ;;
+      assistant|ai)   role_color="$C_GREEN"; role_label="assistant" ;;
+      system)         role_color="$C_MAGENTA"; role_label="system" ;;
+      tool)           role_color="$C_CYAN"; role_label="tool" ;;
+    esac
+
+    local ts_short
+    ts_short=$(echo "$timestamp" | sed 's/T/ /; s/\..*//')
+    printf "  ${C_DIM}%s${C_RESET} ${role_color}${C_BOLD}[%s]${C_RESET} %s\n" \
+      "$ts_short" "$role_label" "$content"
+  done
+  echo ""
+}
+
+# -------------------------------------------------------------------
+# aily config
+# -------------------------------------------------------------------
+cmd_config() {
+  local subcmd="${1:-show}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    show)
+      _config_show
+      ;;
+    set)
+      _config_set "$@"
+      ;;
+    dashboard-url)
+      local new_url="${1:-}"
+      if [[ -z "$new_url" ]]; then
+        err "Usage: aily config dashboard-url <URL>"
+        exit 1
+      fi
+      env_set "AILY_DASHBOARD_URL" "$new_url"
+      ok "AILY_DASHBOARD_URL = ${new_url}"
+      ;;
+    *)
+      err "Unknown config subcommand: ${subcmd}"
+      echo "  Usage:" >&2
+      echo "    aily config show                  Show current configuration" >&2
+      echo "    aily config set KEY VALUE         Set a configuration key" >&2
+      echo "    aily config dashboard-url URL     Shortcut for dashboard URL" >&2
+      exit 1
+      ;;
+  esac
+}
+
+_config_show() {
+  if [[ ! -f "$ENV_FILE" ]]; then
+    err "No configuration file found at ${ENV_FILE}"
+    info "Run 'aily init' to create one"
+    exit 1
+  fi
+
+  hdr "Configuration (${ENV_FILE})"
+  echo ""
+
+  # Read and redact sensitive values
+  local secret_keys="DISCORD_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN AILY_AUTH_TOKEN TELEGRAM_BOT_TOKEN"
+  while IFS= read -r line; do
+    # Skip empty lines and comments — print as-is
+    if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
+      echo "  $line"
+      continue
+    fi
+    if [[ "$line" =~ ^([A-Z_]+)=(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local val="${BASH_REMATCH[2]}"
+      # Strip quotes
+      val="${val#\"}"
+      val="${val%\"}"
+      val="${val#\'}"
+      val="${val%\'}"
+
+      if [[ " $secret_keys " == *" $key "* && -n "$val" ]]; then
+        printf "  ${C_CYAN}%s${C_RESET}=%s\n" "$key" "$(redact "$val")"
+      else
+        printf "  ${C_CYAN}%s${C_RESET}=%s\n" "$key" "$val"
+      fi
+    else
+      echo "  $line"
+    fi
+  done < "$ENV_FILE"
+  echo ""
+}
+
+_config_set() {
+  local key="${1:-}" value="${2:-}"
+  if [[ -z "$key" || -z "$value" ]]; then
+    err "Usage: aily config set KEY VALUE"
+    exit 1
+  fi
+  # Normalize key to uppercase
+  key=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+  env_set "$key" "$value"
+  ok "${key} updated"
+}
+
+# -------------------------------------------------------------------
+# aily doctor
+# -------------------------------------------------------------------
+cmd_doctor() {
+  require_deps
+
+  hdr "aily doctor"
+  local issues=0
+
+  # Dependencies
+  printf "\n  ${C_BOLD}Dependencies${C_RESET}\n"
+  for cmd in curl jq tmux ssh python3; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      local ver
+      case "$cmd" in
+        curl)    ver=$(curl --version 2>/dev/null | head -1 | awk '{print $2}') ;;
+        jq)      ver=$(jq --version 2>/dev/null | tr -d 'jq-') ;;
+        tmux)    ver=$(tmux -V 2>/dev/null | awk '{print $2}') ;;
+        ssh)     ver=$(ssh -V 2>&1 | awk '{print $1}') ;;
+        python3) ver=$(python3 --version 2>/dev/null | awk '{print $2}') ;;
+      esac
+      ok "$cmd (${ver:-installed})"
+    else
+      if [[ "$cmd" == "curl" || "$cmd" == "jq" ]]; then
+        err "$cmd NOT FOUND (required)"
+        issues=$((issues + 1))
+      else
+        warn "$cmd not found (optional)"
+      fi
+    fi
+  done
+
+  # Config file
+  printf "\n  ${C_BOLD}Configuration${C_RESET}\n"
+  if [[ -f "$ENV_FILE" ]]; then
+    ok ".notify-env exists at ${ENV_FILE}"
+    local perms
+    perms=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null || echo "unknown")
+    if [[ "$perms" == "600" ]]; then
+      ok "Permissions: ${perms}"
+    else
+      warn "Permissions: ${perms} (expected 600)"
+      issues=$((issues + 1))
+    fi
+  else
+    err ".notify-env not found at ${ENV_FILE}"
+    info "Run 'aily init' to create it"
+    issues=$((issues + 1))
+  fi
+
+  # Dashboard
+  printf "\n  ${C_BOLD}Dashboard${C_RESET}\n"
+  local url
+  url=$(dashboard_url)
+  printf "  Checking %s... " "$url"
+  if curl -sf --connect-timeout 5 "${url}/healthz" >/dev/null 2>&1; then
+    printf "${C_GREEN}OK${C_RESET}\n"
+  else
+    printf "${C_RED}UNREACHABLE${C_RESET}\n"
+    issues=$((issues + 1))
+  fi
+
+  local token
+  token=$(dashboard_token)
+  if [[ -n "$token" ]]; then
+    printf "  Checking auth... "
+    if curl -sf --connect-timeout 5 -H "Authorization: Bearer ${token}" "${url}/api/stats" >/dev/null 2>&1; then
+      printf "${C_GREEN}OK${C_RESET}\n"
+    else
+      printf "${C_YELLOW}FAILED${C_RESET} (token may be invalid or dashboard unavailable)\n"
+      issues=$((issues + 1))
+    fi
+  else
+    info "No auth token configured"
+  fi
+
+  # Platform APIs
+  printf "\n  ${C_BOLD}Platform APIs${C_RESET}\n"
+  load_env
+
+  if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
+    printf "  Discord API... "
+    local discord_resp
+    discord_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
+      "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}" 2>/dev/null || echo "")
+    if [[ -n "$discord_resp" ]] && echo "$discord_resp" | jq -e '.id' >/dev/null 2>&1; then
+      printf "${C_GREEN}OK${C_RESET}\n"
+    else
+      printf "${C_RED}FAILED${C_RESET}\n"
+      issues=$((issues + 1))
+    fi
+  else
+    info "Discord: not configured"
+  fi
+
+  if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
+    printf "  Slack API... "
+    local slack_resp
+    slack_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+      "https://slack.com/api/auth.test" 2>/dev/null || echo "")
+    if [[ -n "$slack_resp" ]] && echo "$slack_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
+      printf "${C_GREEN}OK${C_RESET}\n"
+    else
+      printf "${C_RED}FAILED${C_RESET}\n"
+      issues=$((issues + 1))
+    fi
+  else
+    info "Slack: not configured"
+  fi
+
+  # Hook symlinks
+  printf "\n  ${C_BOLD}Hook symlinks${C_RESET}\n"
+  local expected_hooks=(notify-claude.sh notify-gemini.sh notify-codex.py post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
+  for hf in "${expected_hooks[@]}"; do
+    local target="${HOOKS_DIR}/${hf}"
+    if [[ -L "$target" ]]; then
+      local link_target
+      link_target=$(readlink "$target" 2>/dev/null || echo "unknown")
+      if [[ -f "$link_target" ]]; then
+        ok "$hf -> $link_target"
+      else
+        err "$hf -> $link_target (BROKEN symlink)"
+        issues=$((issues + 1))
+      fi
+    elif [[ -f "$target" ]]; then
+      ok "$hf (regular file)"
+    else
+      warn "$hf (missing)"
+    fi
+  done
+
+  # Agent configurations
+  printf "\n  ${C_BOLD}Agent configurations${C_RESET}\n"
+
+  # Claude Code
+  local claude_settings="$HOME/.claude/settings.json"
+  if [[ -f "$claude_settings" ]]; then
+    if grep -q "notify-clawdia\|notify-claude" "$claude_settings" 2>/dev/null; then
+      ok "Claude Code: hook configured in settings.json"
+    else
+      warn "Claude Code: settings.json exists but no aily hook found"
+      issues=$((issues + 1))
+    fi
+  else
+    info "Claude Code: settings.json not found"
+  fi
+
+  # Codex CLI
+  local codex_config="$HOME/.codex/config.toml"
+  if [[ -f "$codex_config" ]]; then
+    if grep -q "notify-codex" "$codex_config" 2>/dev/null; then
+      ok "Codex CLI: hook configured in config.toml"
+    else
+      warn "Codex CLI: config.toml exists but no aily hook found"
+      issues=$((issues + 1))
+    fi
+  else
+    info "Codex CLI: config.toml not found"
+  fi
+
+  # Gemini CLI
+  local gemini_settings="$HOME/.gemini/settings.json"
+  if [[ -f "$gemini_settings" ]]; then
+    if grep -q "notify-gemini" "$gemini_settings" 2>/dev/null; then
+      ok "Gemini CLI: hook configured in settings.json"
+    else
+      warn "Gemini CLI: settings.json exists but no aily hook found"
+      issues=$((issues + 1))
+    fi
+  else
+    info "Gemini CLI: settings.json not found"
+  fi
+
+  # Summary
+  echo ""
+  if [[ $issues -eq 0 ]]; then
+    printf "  ${C_GREEN}${C_BOLD}No issues found.${C_RESET}\n"
+  else
+    printf "  ${C_YELLOW}${C_BOLD}Found %d issue(s).${C_RESET}\n" "$issues"
+  fi
+  echo ""
+}
+
+# -------------------------------------------------------------------
+# aily start [name]
+# -------------------------------------------------------------------
 cmd_start() {
   local session_name="${1:-}"
   if [[ -z "$session_name" ]]; then
     session_name=$(detect_tmux_session)
   fi
   if [[ -z "$session_name" ]]; then
-    echo "  Error: not inside tmux. Provide a session name: aily start <name>" >&2
+    err "Not inside tmux. Provide a session name: aily start <name>"
     exit 1
   fi
 
@@ -105,17 +1158,17 @@ cmd_start() {
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
   local any_ok=false
 
-  echo "  Starting thread for ${session_name}..."
+  info "Starting thread for ${session_name}..."
 
   if load_discord_env 2>/dev/null; then
     local thread_id
     thread_id=$(discord_ensure_thread "$thread_name" "tmux session: ${thread_name} (${hostname_short})")
     if [[ -n "$thread_id" ]]; then
       discord_post_to_thread "$thread_id" "Session \`${session_name}\` started on \`${hostname_short}\` · ${timestamp}"
-      echo "  [discord] Thread ready"
+      ok "[discord] Thread ready"
       any_ok=true
     else
-      echo "  [discord] Failed to create thread" >&2
+      err "[discord] Failed to create thread"
     fi
   fi
 
@@ -124,26 +1177,29 @@ cmd_start() {
     thread_ts=$(slack_ensure_thread "$thread_name" "tmux session: ${thread_name} (${hostname_short})")
     if [[ -n "$thread_ts" ]]; then
       slack_post_to_thread "$thread_ts" "Session \`${session_name}\` started on \`${hostname_short}\` · ${timestamp}"
-      echo "  [slack] Thread ready"
+      ok "[slack] Thread ready"
       any_ok=true
     else
-      echo "  [slack] Failed to create thread" >&2
+      err "[slack] Failed to create thread"
     fi
   fi
 
   if [[ "$any_ok" == false ]]; then
-    echo "  No platforms configured. Check $ENV_FILE" >&2
+    err "No platforms configured. Check ${ENV_FILE}"
     exit 1
   fi
 }
 
+# -------------------------------------------------------------------
+# aily stop [name]
+# -------------------------------------------------------------------
 cmd_stop() {
   local session_name="${1:-}"
   if [[ -z "$session_name" ]]; then
     session_name=$(detect_tmux_session)
   fi
   if [[ -z "$session_name" ]]; then
-    echo "  Error: not inside tmux. Provide a session name: aily stop <name>" >&2
+    err "Not inside tmux. Provide a session name: aily stop <name>"
     exit 1
   fi
 
@@ -153,7 +1209,7 @@ cmd_stop() {
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
-  echo "  Stopping thread for ${session_name}..."
+  info "Stopping thread for ${session_name}..."
 
   if load_discord_env 2>/dev/null; then
     local thread_id
@@ -161,9 +1217,9 @@ cmd_stop() {
     if [[ -n "$thread_id" ]]; then
       discord_post_to_thread "$thread_id" "Session \`${session_name}\` stopped on \`${hostname_short}\` · ${timestamp}"
       discord_archive_thread "$thread_id"
-      echo "  [discord] Thread archived"
+      ok "[discord] Thread archived"
     else
-      echo "  [discord] No thread found"
+      info "[discord] No thread found"
     fi
   fi
 
@@ -173,114 +1229,240 @@ cmd_stop() {
     if [[ -n "$thread_ts" ]]; then
       slack_post_to_thread "$thread_ts" "Session \`${session_name}\` stopped on \`${hostname_short}\` · ${timestamp}"
       slack_archive_thread "$thread_ts"
-      echo "  [slack] Thread archived"
+      ok "[slack] Thread archived"
     else
-      echo "  [slack] No thread found"
+      info "[slack] No thread found"
     fi
   fi
 }
 
+# -------------------------------------------------------------------
+# aily auto [on|off]
+# -------------------------------------------------------------------
 cmd_auto() {
   local action="${1:-}"
   case "$action" in
     on)
       env_set "TMUX_THREAD_SYNC" "true"
-      echo "  Auto thread sync: ON"
+      ok "Auto thread sync: ON"
       ;;
     off)
       env_set "TMUX_THREAD_SYNC" "false"
-      echo "  Auto thread sync: OFF"
+      ok "Auto thread sync: OFF"
       ;;
     "")
       local current
       current=$(env_get "TMUX_THREAD_SYNC" "true")
       if [[ "$current" == "false" ]]; then
-        echo "  Auto thread sync: OFF"
+        info "Auto thread sync: OFF"
       else
-        echo "  Auto thread sync: ON"
+        info "Auto thread sync: ON"
       fi
       ;;
     *)
-      echo "Usage: aily auto [on|off]"
+      echo "Usage: aily auto [on|off]" >&2
       exit 1
       ;;
   esac
 }
 
-cmd_sessions() {
-  local hosts_str
-  hosts_str=$(env_get "SSH_HOSTS" "localhost")
-  IFS=',' read -ra hosts <<< "$hosts_str"
-  echo "  Checking sessions..."
+# -------------------------------------------------------------------
+# aily uninstall
+# -------------------------------------------------------------------
+cmd_uninstall() {
+  hdr "aily uninstall"
   echo ""
 
-  for host in "${hosts[@]}"; do
-    local sessions
-    sessions=$(ssh "$host" "tmux list-sessions -F '#{session_name}' 2>/dev/null" 2>/dev/null || echo "")
-    if [[ -n "$sessions" ]]; then
-      echo "  $host:"
-      while IFS= read -r name; do
-        echo "    $name"
-      done <<< "$sessions"
-      echo ""
-    fi
-  done
-}
-
-cmd_status() {
-  echo "  Platforms:"
-  if [[ -f "$ENV_FILE" ]]; then
-    # shellcheck source=/dev/null
-    source "$ENV_FILE"
-    if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
-      echo "    discord: configured"
-    else
-      echo "    discord: not configured"
-    fi
-    if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
-      echo "    slack: configured"
-    else
-      echo "    slack: not configured"
-    fi
-    echo ""
-    echo "  Thread sync: $(env_get 'TMUX_THREAD_SYNC' 'true')"
-    local hosts
-    hosts=$(env_get "SSH_HOSTS" "localhost")
-    echo "  SSH hosts: ${hosts}"
-  else
-    echo "    No .notify-env found at $ENV_FILE"
+  # Confirm
+  printf "  This will remove aily hook symlinks and agent configurations.\n"
+  printf "  Your .notify-env credentials will NOT be deleted.\n"
+  echo ""
+  printf "  ${C_BOLD}Continue? (y/N):${C_RESET} "
+  local answer
+  read -r answer
+  if [[ "${answer,,}" != "y" && "${answer,,}" != "yes" ]]; then
+    echo "  Aborted."
+    exit 0
   fi
+  echo ""
+
+  # 1. Remove hook symlinks
+  printf "  ${C_BOLD}Removing hook symlinks${C_RESET}\n"
+  local hook_files
+  hook_files=$(find "$HOOKS_DIR" -maxdepth 1 -type l 2>/dev/null || true)
+  if [[ -n "$hook_files" ]]; then
+    while IFS= read -r link; do
+      local link_target
+      link_target=$(readlink "$link" 2>/dev/null || echo "")
+      # Only remove symlinks pointing to our hooks directory
+      if [[ "$link_target" == *"/hooks/"* ]]; then
+        rm -f "$link"
+        ok "Removed $(basename "$link")"
+      fi
+    done <<< "$hook_files"
+  else
+    info "No hook symlinks found"
+  fi
+
+  # 2. Remove from Claude Code settings.json
+  printf "\n  ${C_BOLD}Cleaning agent configurations${C_RESET}\n"
+  local claude_settings="$HOME/.claude/settings.json"
+  if [[ -f "$claude_settings" ]] && grep -q "notify-clawdia\|notify-claude" "$claude_settings" 2>/dev/null; then
+    warn "Claude Code: Remove the aily hook from ${claude_settings} manually"
+  else
+    info "Claude Code: no aily hook found"
+  fi
+
+  # Codex config.toml
+  local codex_config="$HOME/.codex/config.toml"
+  if [[ -f "$codex_config" ]] && grep -q "notify-codex" "$codex_config" 2>/dev/null; then
+    # Remove the notify line
+    python3 -c "
+import re, sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+text = re.sub(r'^notify\s*=.*notify-codex.*\n?', '', text, flags=re.MULTILINE)
+with open(path, 'w') as f:
+    f.write(text)
+" "$codex_config" 2>/dev/null && ok "Codex CLI: removed notify hook" || warn "Codex CLI: failed to update config"
+  else
+    info "Codex CLI: no aily hook found"
+  fi
+
+  # Gemini settings.json
+  local gemini_settings="$HOME/.gemini/settings.json"
+  if [[ -f "$gemini_settings" ]] && grep -q "notify-gemini" "$gemini_settings" 2>/dev/null; then
+    python3 -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    settings = json.load(f)
+hooks = settings.get('hooks', {})
+after_agent = hooks.get('AfterAgent', [])
+if isinstance(after_agent, list):
+    new_groups = []
+    for group in after_agent:
+        if isinstance(group, dict):
+            group_hooks = group.get('hooks', [])
+            group_hooks = [h for h in group_hooks
+                          if not (isinstance(h, dict) and
+                                  (h.get('name') == 'discord-notify' or
+                                   str(h.get('command', '')).endswith('notify-gemini.sh')))]
+            if group_hooks:
+                group['hooks'] = group_hooks
+                new_groups.append(group)
+        else:
+            new_groups.append(group)
+    hooks['AfterAgent'] = new_groups
+    settings['hooks'] = hooks
+with open(path, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+" "$gemini_settings" 2>/dev/null && ok "Gemini CLI: removed notify hook" || warn "Gemini CLI: failed to update config"
+  else
+    info "Gemini CLI: no aily hook found"
+  fi
+
+  # 3. Remove tmux hooks
+  printf "\n  ${C_BOLD}Removing tmux hooks${C_RESET}\n"
+  if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
+    tmux set-hook -gu session-created 2>/dev/null && ok "Removed session-created hook" || info "No session-created hook"
+    tmux set-hook -gu session-closed 2>/dev/null && ok "Removed session-closed hook" || info "No session-closed hook"
+  else
+    info "tmux not running"
+  fi
+
+  # 4. Remove CLI symlink
+  printf "\n  ${C_BOLD}Removing CLI symlink${C_RESET}\n"
+  local aily_link="$HOME/.local/bin/aily"
+  if [[ -L "$aily_link" ]]; then
+    rm -f "$aily_link"
+    ok "Removed ${aily_link}"
+  else
+    info "No CLI symlink found"
+  fi
+
+  echo ""
+  warn "Credentials file NOT deleted: ${ENV_FILE}"
+  info "Delete it manually if you no longer need it:"
+  info "  rm ${ENV_FILE}"
+  echo ""
+  ok "Uninstall complete"
+  echo ""
 }
 
+# -------------------------------------------------------------------
+# aily help / version
+# -------------------------------------------------------------------
 cmd_help() {
-  echo "aily — AI agent notification relay"
+  printf "${C_BOLD}aily${C_RESET} v${VERSION} -- AI agent notification relay\n"
   echo ""
-  echo "Usage:"
-  echo "  aily start [name]     Create thread (default: current tmux session)"
-  echo "  aily stop [name]      Archive thread (default: current tmux session)"
-  echo "  aily auto [on|off]    Toggle auto thread sync (or show status)"
-  echo "  aily sessions         List tmux sessions across hosts"
-  echo "  aily status           Show which platforms are configured"
-  echo "  aily help             Show this help"
+  printf "${C_BOLD}Usage:${C_RESET}\n"
+  echo "  aily <command> [options]"
   echo ""
-  echo "Supported platforms: Discord, Slack"
-  echo "Configure in: $ENV_FILE"
+  printf "${C_BOLD}Setup & diagnostics:${C_RESET}\n"
+  echo "  init                      Interactive setup wizard"
+  echo "    --non-interactive         Read from env vars instead of prompting"
+  echo "  status                    Show configuration and connectivity"
+  echo "  doctor                    Diagnose common issues"
+  echo "  uninstall                 Remove hooks and agent configurations"
+  echo ""
+  printf "${C_BOLD}Dashboard:${C_RESET}\n"
+  echo "  sessions                  List active sessions from dashboard"
+  echo "    --json                    Output raw JSON"
+  echo "    --ssh                     List via SSH instead of dashboard API"
+  echo "  sync [session-name]       Trigger message sync for a session"
+  echo "  logs [session-name]       Fetch recent messages for a session"
+  echo "    --json                    Output raw JSON"
+  echo "    -n, --limit N             Number of messages (default: 20)"
+  echo ""
+  printf "${C_BOLD}Configuration:${C_RESET}\n"
+  echo "  config show               Show current config (tokens redacted)"
+  echo "  config set KEY VALUE      Update a config key"
+  echo "  config dashboard-url URL  Shortcut: set dashboard URL"
+  echo ""
+  printf "${C_BOLD}Thread management:${C_RESET}\n"
+  echo "  start [name]              Create thread (default: current tmux session)"
+  echo "  stop [name]               Archive thread (default: current tmux session)"
+  echo "  auto [on|off]             Toggle auto thread sync (or show status)"
+  echo ""
+  printf "${C_BOLD}General:${C_RESET}\n"
+  echo "  help, -h, --help          Show this help"
+  echo "  version, -v, --version    Show version"
+  echo ""
+  echo "Config file: ${ENV_FILE}"
+  echo "Dashboard:   $(dashboard_url)"
+  echo ""
 }
 
-# --- main ---
+cmd_version() {
+  echo "aily v${VERSION}"
+}
+
+# ===================================================================
+# MAIN
+# ===================================================================
 
 CMD="${1:-help}"
 shift 2>/dev/null || true
 
 case "$CMD" in
-  start)    cmd_start "$@" ;;
-  stop)     cmd_stop "$@" ;;
-  auto)     cmd_auto "$@" ;;
-  sessions) cmd_sessions "$@" ;;
-  status)   cmd_status "$@" ;;
+  init)       cmd_init "$@" ;;
+  status)     cmd_status "$@" ;;
+  sessions)   cmd_sessions "$@" ;;
+  sync)       cmd_sync "$@" ;;
+  logs)       cmd_logs "$@" ;;
+  config)     cmd_config "$@" ;;
+  doctor)     cmd_doctor "$@" ;;
+  start)      cmd_start "$@" ;;
+  stop)       cmd_stop "$@" ;;
+  auto)       cmd_auto "$@" ;;
+  uninstall)  cmd_uninstall "$@" ;;
   help|-h|--help) cmd_help ;;
+  version|-v|--version) cmd_version ;;
   *)
-    echo "Unknown command: $CMD"
+    err "Unknown command: ${CMD}"
     echo ""
     cmd_help
     exit 1

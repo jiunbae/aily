@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - aily Dashboard{% endblock %}
+
+{% block nav_settings_active %}is-active{% endblock %}
+
+{% block content %}
+<div x-data="settingsPage()" x-init="load()">
+
+  <!-- Page Header -->
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-lg font-semibold text-[var(--text-primary)]">Settings</h1>
+      <p class="text-xs text-[var(--text-secondary)] mt-1">System configuration and connectivity</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button @click="load()" class="btn-ghost px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Error Banner -->
+  <template x-if="error">
+    <div class="mb-6 bg-[rgba(239,68,68,0.10)] border border-[rgba(239,68,68,0.35)] rounded-lg p-4 text-sm text-[var(--text-secondary)]">
+      <span class="text-[var(--status-error)] font-semibold">Error:</span>
+      <span x-text="error"></span>
+    </div>
+  </template>
+
+  <!-- Success Banner -->
+  <template x-if="saveSuccess">
+    <div class="mb-6 bg-[rgba(16,185,129,0.10)] border border-[rgba(16,185,129,0.35)] rounded-lg p-4 text-sm text-[var(--text-secondary)]"
+         x-transition>
+      <span class="text-[var(--status-active)] font-semibold">Saved</span>
+      <span>Settings updated successfully.</span>
+    </div>
+  </template>
+
+  <!-- Loading Skeleton -->
+  <template x-if="loading">
+    <div class="space-y-6">
+      <template x-for="i in 4" :key="i">
+        <div class="skeleton-card rounded-xl p-6">
+          <div class="skeleton-line w-1/4 h-4 mb-4"></div>
+          <div class="skeleton-line w-full h-3 mb-3"></div>
+          <div class="skeleton-line w-3/4 h-3 mb-3"></div>
+          <div class="skeleton-line w-1/2 h-3"></div>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <!-- Settings Content -->
+  <template x-if="!loading">
+    <div class="space-y-6">
+
+      <!-- Section 1: General -->
+      <section class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-6">
+        <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-4">General</h2>
+
+        <div class="space-y-4">
+          <!-- Dashboard URL -->
+          <div>
+            <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Dashboard URL</label>
+            <div class="flex items-center gap-2">
+              <input type="text" :value="settings.dashboard_url || ''"
+                     class="input-field flex-1 font-mono text-xs bg-[var(--bg-base)] opacity-70 cursor-default"
+                     readonly>
+              <button @click="copyToClipboard(settings.dashboard_url || '')"
+                      class="btn-secondary px-3 py-2 text-xs font-medium flex-shrink-0">
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <!-- Auth Token -->
+          <div>
+            <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Auth Token</label>
+            <div class="flex items-center gap-2">
+              <input :type="showToken ? 'text' : 'password'"
+                     :value="tokenDisplay"
+                     class="input-field flex-1 font-mono text-xs bg-[var(--bg-base)] opacity-70 cursor-default"
+                     readonly>
+              <button @click="showToken = !showToken"
+                      class="btn-secondary px-3 py-2 text-xs font-medium flex-shrink-0"
+                      x-text="showToken ? 'Hide' : 'Show'">
+              </button>
+              <button @click="copyToClipboard(authToken)"
+                      class="btn-secondary px-3 py-2 text-xs font-medium flex-shrink-0">
+                Copy
+              </button>
+            </div>
+            <p class="text-[11px] text-[var(--text-muted)] mt-1">Used for API authentication (Bearer token)</p>
+          </div>
+
+          <!-- Session Poller -->
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--text-secondary)]">Session Poller</div>
+              <div class="text-[11px] text-[var(--text-muted)]">Periodically polls SSH hosts for tmux sessions</div>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-[var(--text-muted)]"
+                    x-text="settings.enable_session_poller === 'true' ? 'Enabled' : 'Disabled'"></span>
+              <span class="w-2 h-2 rounded-full"
+                    :class="settings.enable_session_poller === 'true' ? 'bg-[var(--status-active)]' : 'bg-[var(--text-muted)]'"></span>
+            </div>
+          </div>
+
+          <!-- Poll Interval -->
+          <template x-if="settings.enable_session_poller === 'true'">
+            <div class="pl-4 border-l-2 border-[var(--bg-overlay)]">
+              <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">
+                Poll Interval: <span class="font-mono text-[var(--text-primary)]" x-text="settings.poll_interval + 's'"></span>
+              </label>
+              <p class="text-[11px] text-[var(--text-muted)]">How often to check SSH hosts for session changes</p>
+            </div>
+          </template>
+
+          <!-- JSONL Ingester -->
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--text-secondary)]">JSONL Ingester</div>
+              <div class="text-[11px] text-[var(--text-muted)]">Ingests JSONL conversation logs from agent sessions</div>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-[var(--text-muted)]"
+                    x-text="settings.enable_jsonl_ingester === 'true' ? 'Enabled' : 'Disabled'"></span>
+              <span class="w-2 h-2 rounded-full"
+                    :class="settings.enable_jsonl_ingester === 'true' ? 'bg-[var(--status-active)]' : 'bg-[var(--text-muted)]'"></span>
+            </div>
+          </div>
+
+          <!-- JSONL Scan Interval -->
+          <template x-if="settings.enable_jsonl_ingester === 'true'">
+            <div class="pl-4 border-l-2 border-[var(--bg-overlay)]">
+              <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">
+                Scan Interval: <span class="font-mono text-[var(--text-primary)]" x-text="settings.jsonl_scan_interval + 's'"></span>
+              </label>
+              <p class="text-[11px] text-[var(--text-muted)]">How often to scan for new JSONL data</p>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <!-- Section 2: SSH Hosts -->
+      <section class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-6">
+        <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-4">SSH Hosts</h2>
+
+        <template x-if="sshHosts.length === 0">
+          <div class="text-sm text-[var(--text-secondary)] py-4 text-center">
+            No SSH hosts configured. Set <code class="font-mono text-xs px-1.5 py-0.5 rounded bg-[var(--bg-base)] border border-[var(--bg-overlay)]">SSH_HOSTS</code> environment variable.
+          </div>
+        </template>
+
+        <div class="space-y-3">
+          <template x-for="host in sshHosts" :key="host">
+            <div class="flex items-center gap-3 px-4 py-3 rounded-lg border border-[var(--bg-overlay)] bg-[var(--bg-base)]">
+              <!-- Status indicator -->
+              <span class="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                    :class="{
+                      'bg-[var(--status-active)] pulse-active': testResults[host]?.status === 'ok',
+                      'bg-[var(--status-error)]': testResults[host]?.status === 'error',
+                      'bg-[var(--text-muted)]': !testResults[host] || testResults[host]?.status === 'unknown',
+                    }"></span>
+
+              <!-- Host info -->
+              <div class="flex-1 min-w-0">
+                <div class="font-mono text-sm text-[var(--text-primary)]" x-text="host"></div>
+                <div class="text-[11px] text-[var(--text-muted)]"
+                     x-text="testResults[host]?.message || 'Not tested'"></div>
+                <template x-if="testResults[host]?.details?.tmux_sessions !== undefined">
+                  <div class="text-[11px] text-[var(--text-secondary)]">
+                    <span x-text="testResults[host].details.tmux_sessions"></span> tmux sessions
+                  </div>
+                </template>
+              </div>
+
+              <!-- Response time -->
+              <template x-if="testResults[host]?.details?.response_ms">
+                <span class="text-[11px] text-[var(--text-muted)] flex-shrink-0"
+                      x-text="testResults[host].details.response_ms + 'ms'"></span>
+              </template>
+
+              <!-- Test button -->
+              <button @click="testConnection('ssh', host)"
+                      :disabled="testing[host]"
+                      class="btn-secondary px-3 py-1.5 text-xs font-medium flex-shrink-0 disabled:opacity-50">
+                <span x-show="!testing[host]">Test</span>
+                <span x-show="testing[host]" x-cloak>Testing...</span>
+              </button>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <!-- Section 3: Platforms -->
+      <section class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-6">
+        <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-4">Platforms</h2>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Discord Card -->
+          <div class="rounded-lg border border-[var(--bg-overlay)] bg-[var(--bg-base)] p-4">
+            <div class="flex items-center gap-3 mb-3">
+              <span class="w-3 h-3 rounded-full bg-[var(--platform-discord)]"></span>
+              <span class="text-sm font-medium text-[var(--text-primary)]">Discord</span>
+              <span class="ml-auto badge text-[10px]"
+                    :class="settings.discord_configured === 'true' ? 'badge-active' : 'badge-archived'">
+                <span class="badge-dot"></span>
+                <span x-text="settings.discord_configured === 'true' ? 'Configured' : 'Not configured'"></span>
+              </span>
+            </div>
+
+            <!-- Discord details -->
+            <template x-if="testResults.discord?.details">
+              <div class="space-y-1 mb-3">
+                <template x-if="testResults.discord.details.bot_name">
+                  <div class="text-xs text-[var(--text-secondary)]">
+                    Bot: <span class="font-mono text-[var(--text-primary)]" x-text="testResults.discord.details.bot_name"></span>
+                  </div>
+                </template>
+                <template x-if="testResults.discord.details.channel_id">
+                  <div class="text-xs text-[var(--text-secondary)]">
+                    Channel: <span class="font-mono text-[var(--text-primary)]" x-text="testResults.discord.details.channel_id"></span>
+                  </div>
+                </template>
+                <template x-if="testResults.discord.details.response_ms">
+                  <div class="text-[11px] text-[var(--text-muted)]"
+                       x-text="testResults.discord.details.response_ms + 'ms'"></div>
+                </template>
+              </div>
+            </template>
+
+            <template x-if="testResults.discord?.message && !testResults.discord?.details">
+              <div class="text-xs text-[var(--text-secondary)] mb-3" x-text="testResults.discord.message"></div>
+            </template>
+
+            <button @click="testConnection('discord')"
+                    :disabled="testing.discord"
+                    class="btn-secondary w-full px-3 py-2 text-xs font-medium disabled:opacity-50">
+              <span x-show="!testing.discord">Test Connection</span>
+              <span x-show="testing.discord" x-cloak>Testing...</span>
+            </button>
+          </div>
+
+          <!-- Slack Card -->
+          <div class="rounded-lg border border-[var(--bg-overlay)] bg-[var(--bg-base)] p-4">
+            <div class="flex items-center gap-3 mb-3">
+              <span class="w-3 h-3 rounded-full bg-[var(--platform-slack)]"></span>
+              <span class="text-sm font-medium text-[var(--text-primary)]">Slack</span>
+              <span class="ml-auto badge text-[10px]"
+                    :class="settings.slack_configured === 'true' ? 'badge-active' : 'badge-archived'">
+                <span class="badge-dot"></span>
+                <span x-text="settings.slack_configured === 'true' ? 'Configured' : 'Not configured'"></span>
+              </span>
+            </div>
+
+            <!-- Slack details -->
+            <template x-if="testResults.slack?.details">
+              <div class="space-y-1 mb-3">
+                <template x-if="testResults.slack.details.bot_name">
+                  <div class="text-xs text-[var(--text-secondary)]">
+                    Bot: <span class="font-mono text-[var(--text-primary)]" x-text="testResults.slack.details.bot_name"></span>
+                  </div>
+                </template>
+                <template x-if="testResults.slack.details.team">
+                  <div class="text-xs text-[var(--text-secondary)]">
+                    Team: <span class="font-mono text-[var(--text-primary)]" x-text="testResults.slack.details.team"></span>
+                  </div>
+                </template>
+                <template x-if="testResults.slack.details.channel_id">
+                  <div class="text-xs text-[var(--text-secondary)]">
+                    Channel: <span class="font-mono text-[var(--text-primary)]" x-text="testResults.slack.details.channel_id"></span>
+                  </div>
+                </template>
+                <template x-if="testResults.slack.details.response_ms">
+                  <div class="text-[11px] text-[var(--text-muted)]"
+                       x-text="testResults.slack.details.response_ms + 'ms'"></div>
+                </template>
+              </div>
+            </template>
+
+            <template x-if="testResults.slack?.message && !testResults.slack?.details">
+              <div class="text-xs text-[var(--text-secondary)] mb-3" x-text="testResults.slack.message"></div>
+            </template>
+
+            <button @click="testConnection('slack')"
+                    :disabled="testing.slack"
+                    class="btn-secondary w-full px-3 py-2 text-xs font-medium disabled:opacity-50">
+              <span x-show="!testing.slack">Test Connection</span>
+              <span x-show="testing.slack" x-cloak>Testing...</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 4: Hooks & Client Setup -->
+      <section class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-6">
+        <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-4">Hooks & Client Setup</h2>
+
+        <div class="space-y-4">
+          <!-- Quick setup command -->
+          <div>
+            <label class="block mb-2 text-xs font-medium text-[var(--text-secondary)]">Quick Setup (clone + init)</label>
+            <div class="flex items-center gap-2">
+              <code class="flex-1 block px-3 py-2.5 rounded-lg bg-[var(--bg-base)] border border-[var(--bg-overlay)] font-mono text-xs text-[var(--text-primary)] overflow-x-auto whitespace-nowrap"
+                    x-text="hooks.git_clone_command || 'git clone https://github.com/jiunbae/aily && cd aily && ./aily init'"></code>
+              <button @click="copyToClipboard(hooks.git_clone_command || 'git clone https://github.com/jiunbae/aily && cd aily && ./aily init')"
+                      class="btn-secondary px-3 py-2 text-xs font-medium flex-shrink-0">
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <!-- One-liner install -->
+          <div>
+            <label class="block mb-2 text-xs font-medium text-[var(--text-secondary)]">One-liner Install</label>
+            <div class="flex items-center gap-2">
+              <code class="flex-1 block px-3 py-2.5 rounded-lg bg-[var(--bg-base)] border border-[var(--bg-overlay)] font-mono text-xs text-[var(--text-primary)] overflow-x-auto whitespace-nowrap"
+                    x-text="hooks.install_command || ''"></code>
+              <button @click="copyToClipboard(hooks.install_command || '')"
+                      class="btn-secondary px-3 py-2 text-xs font-medium flex-shrink-0">
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <!-- Hook files table -->
+          <div>
+            <label class="block mb-2 text-xs font-medium text-[var(--text-secondary)]">Hook Files</label>
+            <div class="rounded-lg border border-[var(--bg-overlay)] overflow-hidden">
+              <table class="w-full text-xs">
+                <thead>
+                  <tr class="bg-[var(--bg-base)] text-[var(--text-muted)]">
+                    <th class="text-left px-4 py-2 font-medium">File</th>
+                    <th class="text-left px-4 py-2 font-medium">Description</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-[var(--bg-overlay)]">
+                  <template x-for="hook in hooks.hooks || []" :key="hook.name">
+                    <tr class="hover:bg-[var(--bg-base)] transition-colors">
+                      <td class="px-4 py-2">
+                        <span class="font-mono text-[var(--text-primary)]" x-text="hook.name"></span>
+                      </td>
+                      <td class="px-4 py-2 text-[var(--text-secondary)]" x-text="hook.description"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 5: About -->
+      <section class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-6">
+        <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)] mb-4">About</h2>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Dashboard Status -->
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-[var(--text-secondary)]">Dashboard</span>
+              <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full"
+                      :class="{
+                        'bg-[var(--status-active)] pulse-active': testResults.dashboard?.status === 'ok',
+                        'bg-[var(--status-error)]': testResults.dashboard?.status === 'error',
+                        'bg-[var(--text-muted)]': !testResults.dashboard || testResults.dashboard?.status === 'unknown',
+                      }"></span>
+                <span class="text-xs text-[var(--text-muted)]"
+                      x-text="testResults.dashboard?.message || 'Not tested'"></span>
+              </div>
+            </div>
+
+            <button @click="testConnection('dashboard')"
+                    :disabled="testing.dashboard"
+                    class="btn-secondary px-3 py-1.5 text-xs font-medium disabled:opacity-50">
+              <span x-show="!testing.dashboard">Test Dashboard</span>
+              <span x-show="testing.dashboard" x-cloak>Testing...</span>
+            </button>
+          </div>
+
+          <!-- Stats & Links -->
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-[var(--text-secondary)]">Database</span>
+              <template x-if="aboutStats">
+                <span class="text-xs font-mono text-[var(--text-primary)]"
+                      x-text="aboutStats.sessions.total + ' sessions, ' + aboutStats.messages.total + ' messages'"></span>
+              </template>
+              <template x-if="!aboutStats">
+                <span class="text-xs text-[var(--text-muted)]">-</span>
+              </template>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-[var(--text-secondary)]">GitHub</span>
+              <a href="https://github.com/jiunbae/aily" target="_blank" rel="noopener noreferrer"
+                 class="text-xs font-mono text-[var(--text-link)] hover:underline">
+                jiunbae/aily
+              </a>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-[var(--text-secondary)]">SSH Hosts</span>
+              <span class="text-xs font-mono text-[var(--text-primary)]" x-text="sshHosts.length + ' configured'"></span>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-[var(--text-secondary)]">Platforms</span>
+              <div class="flex items-center gap-2">
+                <template x-if="settings.discord_configured === 'true'">
+                  <span class="inline-flex items-center gap-1 text-[11px] text-[var(--text-secondary)]">
+                    <span class="w-2 h-2 rounded-full bg-[var(--platform-discord)]"></span>
+                    Discord
+                  </span>
+                </template>
+                <template x-if="settings.slack_configured === 'true'">
+                  <span class="inline-flex items-center gap-1 text-[11px] text-[var(--text-secondary)]">
+                    <span class="w-2 h-2 rounded-full bg-[var(--platform-slack)]"></span>
+                    Slack
+                  </span>
+                </template>
+                <template x-if="settings.discord_configured !== 'true' && settings.slack_configured !== 'true'">
+                  <span class="text-xs text-[var(--text-muted)]">None</span>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </template>
+
+</div>
+{% endblock %}

@@ -21,6 +21,7 @@ from aiohttp import web
 from dashboard import db
 from dashboard.api import preferences as prefs_api
 from dashboard.api import sessions as sessions_api
+from dashboard.api import settings as settings_api
 from dashboard.api import stats as stats_api
 from dashboard.api import ws as ws_api
 from dashboard.auth import auth_middleware
@@ -164,6 +165,9 @@ def _setup_routes(app: web.Application) -> None:
         "/api/hooks/event", sessions_api.receive_bridge_event
     )
 
+    # Settings
+    settings_api.setup_routes(app)
+
     # Health check (no auth)
     app.router.add_get("/healthz", _healthz)
 
@@ -177,6 +181,7 @@ def _setup_page_routes(app: web.Application) -> None:
     app.router.add_get("/", _index_page)
     app.router.add_get("/sessions", _sessions_page)
     app.router.add_get("/sessions/{name}", _session_detail_page)
+    app.router.add_get("/settings", _settings_page)
 
 
 async def _healthz(request: web.Request) -> web.Response:
@@ -262,6 +267,21 @@ async def _session_detail_page(request: web.Request) -> web.Response:
                 "redirect": f"/api/sessions/{name}",
                 "message": "Templates not available",
             }
+        )
+
+
+async def _settings_page(request: web.Request) -> web.Response:
+    """GET /settings - Settings page."""
+    try:
+        import aiohttp_jinja2
+
+        theme = await _get_theme()
+        return aiohttp_jinja2.render_template(
+            "settings.html", request, {"theme": theme}
+        )
+    except (ImportError, Exception):
+        return web.json_response(
+            {"redirect": "/api/settings", "message": "Templates not available"}
         )
 
 
