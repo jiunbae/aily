@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "CLI for aily — AI agent notification relay for Discord and Slack",
   "bin": {
-    "aily": "./aily"
+    "aily": "aily",
+    "aily-cli": "aily"
   },
   "files": [
     "aily",
@@ -16,7 +17,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jiunbae/aily.git"
+    "url": "git+https://github.com/jiunbae/aily.git"
   },
   "homepage": "https://aily.jiun.dev",
   "keywords": [
