@@ -281,14 +281,14 @@
         <!-- Agent Type -->
         <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Agent Type</label>
         <div class="flex gap-2 mb-4">
-          <template x-for="at in ['claude', 'codex', 'gemini']" :key="at">
+          <template x-for="at in ['claude', 'codex', 'gemini', 'opencode']" :key="at">
             <button type="button"
                     class="flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition-all duration-150"
                     :class="newSession.agent_type === at
                       ? 'border-[var(--accent-primary)] bg-[var(--accent-primary-subtle)] text-[var(--text-primary)]'
                       : 'border-[var(--bg-overlay)] text-[var(--text-secondary)] hover:border-[#484f58]'"
                     @click="newSession.agent_type = newSession.agent_type === at ? '' : at">
-              <span x-text="at === 'claude' ? 'Claude Code' : at === 'codex' ? 'Codex' : 'Gemini'"></span>
+              <span x-text="at === 'claude' ? 'Claude Code' : at === 'codex' ? 'Codex' : at === 'gemini' ? 'Gemini' : 'OpenCode'"></span>
             </button>
           </template>
         </div>

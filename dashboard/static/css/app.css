@@ -36,6 +36,7 @@
   --agent-claude: #d97706;
   --agent-codex: #10b981;
   --agent-gemini: #6366f1;
+  --agent-opencode: #ec4899;
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -609,6 +610,7 @@ a:hover {
   --agent-claude: #b45309;
   --agent-codex: #15803d;
   --agent-gemini: #4f46e5;
+  --agent-opencode: #db2777;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);

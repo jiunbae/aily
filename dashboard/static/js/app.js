@@ -104,6 +104,7 @@
     if (a.includes("claude")) return "Claude Code";
     if (a.includes("codex")) return "Codex";
     if (a.includes("gemini")) return "Gemini";
+    if (a.includes("opencode")) return "OpenCode";
     return agentType;
   }
 
@@ -112,6 +113,7 @@
     if (a.includes("claude")) return "var(--agent-claude)";
     if (a.includes("codex")) return "var(--agent-codex)";
     if (a.includes("gemini")) return "var(--agent-gemini)";
+    if (a.includes("opencode")) return "var(--agent-opencode)";
     return "var(--text-muted)";
   }
 

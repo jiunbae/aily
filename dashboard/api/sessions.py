@@ -208,7 +208,7 @@ async def create_session(request: web.Request) -> web.Response:
 
     # Update agent_type if provided
     agent_type = body.get("agent_type", "").strip()
-    if agent_type and agent_type in ("claude", "codex", "gemini", "unknown"):
+    if agent_type and agent_type in ("claude", "codex", "gemini", "opencode", "unknown"):
         await db.execute(
             "UPDATE sessions SET agent_type = ? WHERE name = ?",
             (agent_type, name),
@@ -302,10 +302,10 @@ async def update_session(request: web.Request) -> web.Response:
     # Allowed updatable fields
     if "agent_type" in body:
         agent_type = str(body["agent_type"]).strip()
-        if agent_type and agent_type not in ("claude", "codex", "gemini", "unknown"):
+        if agent_type and agent_type not in ("claude", "codex", "gemini", "opencode", "unknown"):
             return error_response(
                 400, "INVALID_AGENT_TYPE",
-                "agent_type must be: claude, codex, gemini, unknown"
+                "agent_type must be: claude, codex, gemini, opencode, unknown"
             )
         updates.append("agent_type = ?")
         params.append(agent_type or None)
