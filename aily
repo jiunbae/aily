@@ -583,7 +583,7 @@ cmd_status() {
 
   # Hooks
   printf "\n  ${C_BOLD}Installed hooks${C_RESET}\n"
-  local hook_files=(notify-claude.sh notify-gemini.sh notify-codex.py post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
+  local hook_files=(notify-claude.sh notify-gemini.sh notify-codex.py notify-opencode.mjs post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
   for hf in "${hook_files[@]}"; do
     local target="${HOOKS_DIR}/${hf}"
     if [[ -L "$target" ]]; then
@@ -616,6 +616,13 @@ cmd_status() {
     ok "Gemini CLI (settings.json)"
   else
     printf "  ${C_DIM}· Gemini CLI (not configured)${C_RESET}\n"
+  fi
+
+  local opencode_plugins="$HOME/.config/opencode/plugins"
+  if [[ -d "$opencode_plugins" ]] && find "$opencode_plugins" -maxdepth 1 \( -name "aily*" -o -name "notify-opencode*" \) -print -quit | grep -q .; then
+    ok "OpenCode (plugin)"
+  else
+    printf "  ${C_DIM}· OpenCode (not configured)${C_RESET}\n"
   fi
 
   # tmux
@@ -1067,7 +1074,7 @@ cmd_doctor() {
 
   # Hook symlinks
   printf "\n  ${C_BOLD}Hook symlinks${C_RESET}\n"
-  local expected_hooks=(notify-claude.sh notify-gemini.sh notify-codex.py post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
+  local expected_hooks=(notify-claude.sh notify-gemini.sh notify-codex.py notify-opencode.mjs post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
   for hf in "${expected_hooks[@]}"; do
     local target="${HOOKS_DIR}/${hf}"
     if [[ -L "$target" ]]; then
@@ -1126,6 +1133,18 @@ cmd_doctor() {
     fi
   else
     info "Gemini CLI: settings.json not found"
+  fi
+
+  # OpenCode
+  local opencode_plugins="$HOME/.config/opencode/plugins"
+  if [[ -d "$opencode_plugins" ]]; then
+    if find "$opencode_plugins" -maxdepth 1 \( -name "aily*" -o -name "notify-opencode*" \) -print -quit | grep -q .; then
+      ok "OpenCode: plugin installed"
+    else
+      warn "OpenCode: plugins dir exists but no aily plugin found"
+    fi
+  else
+    info "OpenCode: plugins dir not found"
   fi
 
   # Summary
@@ -1362,6 +1381,23 @@ with open(path, 'w') as f:
 " "$gemini_settings" 2>/dev/null && ok "Gemini CLI: removed notify hook" || warn "Gemini CLI: failed to update config"
   else
     info "Gemini CLI: no aily hook found"
+  fi
+
+  # OpenCode plugins
+  local opencode_plugins="$HOME/.config/opencode/plugins"
+  if [[ -d "$opencode_plugins" ]]; then
+    local oc_found=false
+    for f in "$opencode_plugins"/aily-notify* "$opencode_plugins"/notify-opencode*; do
+      if [[ -e "$f" ]]; then
+        rm -f "$f" && ok "OpenCode: removed $(basename "$f")" || warn "OpenCode: failed to remove $(basename "$f")"
+        oc_found=true
+      fi
+    done
+    if [[ "$oc_found" == "false" ]]; then
+      info "OpenCode: no aily plugin found"
+    fi
+  else
+    info "OpenCode: plugins dir not found"
   fi
 
   # 3. Remove tmux hooks
