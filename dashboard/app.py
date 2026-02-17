@@ -24,9 +24,11 @@ from dashboard.api import sessions as sessions_api
 from dashboard.api import settings as settings_api
 from dashboard.api import stats as stats_api
 from dashboard.api import ws as ws_api
+from dashboard.access_log import access_log_middleware
 from dashboard.auth import auth_middleware
 from dashboard.config import Config
 from dashboard.db import close_db, init_db
+from dashboard.rate_limit import rate_limit_middleware
 from dashboard.services.event_bus import EventBus
 from dashboard.services.message_service import MessageService
 from dashboard.services.platform_service import PlatformService
@@ -39,11 +41,6 @@ logger = logging.getLogger(__name__)
 
 async def create_app() -> web.Application:
     """Create and configure the aiohttp application."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[dashboard] %(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
     config = Config.from_env()
     logger.info("Configuration loaded")
     logger.info("  SSH hosts: %s", config.ssh_hosts)
@@ -76,8 +73,14 @@ async def create_app() -> web.Application:
         max_content_length=config.jsonl_max_content_length,
     )
 
-    # Create app with auth middleware
-    app = web.Application(middlewares=[auth_middleware])
+    # Create app with middleware
+    app = web.Application(
+        middlewares=[
+            access_log_middleware,
+            rate_limit_middleware,
+            auth_middleware,
+        ]
+    )
 
     # Store config and services on the app for handler access
     app["config"] = config
@@ -86,6 +89,7 @@ async def create_app() -> web.Application:
     app["platform_service"] = platform_svc
     app["message_service"] = message_svc
     app["jsonl_service"] = jsonl_svc
+    app["ws_clients"] = set()
 
     # Setup Jinja2 templates (if available)
     template_dir = os.path.join(os.path.dirname(__file__), "templates")
@@ -337,7 +341,7 @@ async def _on_startup(app: web.Application) -> None:
 
 
 async def _on_cleanup(app: web.Application) -> None:
-    """Stop background workers and close database on shutdown."""
+    """Stop background workers, drain WebSockets, and close database on shutdown."""
     # Cancel workers
     for task in app.get("_worker_tasks", []):
         task.cancel()
@@ -345,6 +349,15 @@ async def _on_cleanup(app: web.Application) -> None:
             await task
         except asyncio.CancelledError:
             pass
+
+    # Close all WebSocket connections gracefully
+    ws_clients: set = app.get("ws_clients", set())
+    if ws_clients:
+        logger.info("Closing %d WebSocket connections", len(ws_clients))
+        close_tasks = []
+        for ws in list(ws_clients):
+            close_tasks.append(ws.close(code=1001, message=b"Server shutting down"))
+        await asyncio.gather(*close_tasks, return_exceptions=True)
 
     # Close shared HTTP session
     platform_svc: PlatformService = app["platform_service"]

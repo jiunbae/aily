@@ -55,6 +55,10 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     """
     ws = web.WebSocketResponse(heartbeat=HEARTBEAT_INTERVAL)
     await ws.prepare(request)
+    ws_clients: set[web.WebSocketResponse] = request.app.setdefault(
+        "ws_clients", set()
+    )
+    ws_clients.add(ws)
 
     event_bus: EventBus = request.app["event_bus"]
     queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
@@ -192,6 +196,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             pass
 
     finally:
+        ws_clients.discard(ws)
         await event_bus.unsubscribe(subscriber_id)
         logger.info(
             "WebSocket client disconnected (subscriber=%d, total=%d)",
