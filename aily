@@ -619,7 +619,7 @@ cmd_status() {
   fi
 
   local opencode_plugins="$HOME/.config/opencode/plugins"
-  if [[ -d "$opencode_plugins" ]] && ls "$opencode_plugins" 2>/dev/null | grep -q "aily\|notify-opencode" 2>/dev/null; then
+  if [[ -d "$opencode_plugins" ]] && find "$opencode_plugins" -maxdepth 1 \( -name "aily*" -o -name "notify-opencode*" \) -print -quit | grep -q .; then
     ok "OpenCode (plugin)"
   else
     printf "  ${C_DIM}· OpenCode (not configured)${C_RESET}\n"
@@ -1138,7 +1138,7 @@ cmd_doctor() {
   # OpenCode
   local opencode_plugins="$HOME/.config/opencode/plugins"
   if [[ -d "$opencode_plugins" ]]; then
-    if ls "$opencode_plugins" 2>/dev/null | grep -q "aily\|notify-opencode" 2>/dev/null; then
+    if find "$opencode_plugins" -maxdepth 1 \( -name "aily*" -o -name "notify-opencode*" \) -print -quit | grep -q .; then
       ok "OpenCode: plugin installed"
     else
       warn "OpenCode: plugins dir exists but no aily plugin found"

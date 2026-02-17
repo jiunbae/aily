@@ -47,8 +47,8 @@ export const ailyNotify = async ({ project, directory }) => {
           stdio: "ignore",
           detached: true,
         }).unref();
-      } catch {
-        // Silently ignore errors
+      } catch (err) {
+        console.error('[aily] Failed to call post.sh:', err);
       }
 
       lastMessageText = "";

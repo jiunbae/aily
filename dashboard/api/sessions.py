@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Valid session statuses
 VALID_STATUSES = frozenset({"active", "idle", "closed", "orphan", "unreachable"})
+VALID_AGENT_TYPES = frozenset({"claude", "codex", "gemini", "opencode", "unknown"})
 
 # Valid sort fields
 VALID_SORT_FIELDS = frozenset({"name", "created_at", "updated_at", "status", "host"})
@@ -208,7 +209,7 @@ async def create_session(request: web.Request) -> web.Response:
 
     # Update agent_type if provided
     agent_type = body.get("agent_type", "").strip()
-    if agent_type and agent_type in ("claude", "codex", "gemini", "opencode", "unknown"):
+    if agent_type and agent_type in VALID_AGENT_TYPES:
         await db.execute(
             "UPDATE sessions SET agent_type = ? WHERE name = ?",
             (agent_type, name),
@@ -302,10 +303,10 @@ async def update_session(request: web.Request) -> web.Response:
     # Allowed updatable fields
     if "agent_type" in body:
         agent_type = str(body["agent_type"]).strip()
-        if agent_type and agent_type not in ("claude", "codex", "gemini", "opencode", "unknown"):
+        if agent_type and agent_type not in VALID_AGENT_TYPES:
             return error_response(
                 400, "INVALID_AGENT_TYPE",
-                "agent_type must be: claude, codex, gemini, opencode, unknown"
+                f"agent_type must be: {', '.join(sorted(VALID_AGENT_TYPES))}"
             )
         updates.append("agent_type = ?")
         params.append(agent_type or None)

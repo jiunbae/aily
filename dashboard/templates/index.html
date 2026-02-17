@@ -298,7 +298,7 @@
                       ? 'border-[var(--accent-primary)] bg-[var(--accent-primary-subtle)] text-[var(--text-primary)]'
                       : 'border-[var(--bg-overlay)] text-[var(--text-secondary)] hover:border-[#484f58]'"
                     @click="newSession.agent_type = newSession.agent_type === at ? '' : at">
-              <span x-text="at === 'claude' ? 'Claude Code' : at === 'codex' ? 'Codex' : at === 'gemini' ? 'Gemini' : 'OpenCode'"></span>
+              <span x-text="agentLabel(at)"></span>
             </button>
           </template>
         </div>
