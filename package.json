@@ -1,6 +1,6 @@
 {
   "name": "aily-cli",
-  "version": "1.0.0",
+  "version": "2026.2.17",
   "description": "CLI for aily — AI agent notification relay for Discord and Slack",
   "bin": {
     "aily": "aily",
