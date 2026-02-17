@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install notification hooks for Claude Code, Codex CLI, and Gemini CLI.
+# Install notification hooks for Claude Code, Codex CLI, Gemini CLI, and OpenCode.
 # Symlinks hook files and configures each agent.
 set -euo pipefail
 
@@ -207,7 +207,22 @@ else
   echo "     \"command\": \"$GEMINI_HOOK_CMD\""
 fi
 
-# --- 5. tmux session hooks ---
+# --- 5. OpenCode ---
+echo ""
+echo "=== OpenCode ==="
+OPENCODE_PLUGINS="$HOME/.config/opencode/plugins"
+OPENCODE_PLUGIN_SRC="$HOOKS_DIR/notify-opencode.mjs"
+OPENCODE_PLUGIN_LINK="$OPENCODE_PLUGINS/aily-notify.mjs"
+
+if [[ -f "$OPENCODE_PLUGIN_SRC" ]]; then
+  mkdir -p "$OPENCODE_PLUGINS"
+  ln -sf "$OPENCODE_PLUGIN_SRC" "$OPENCODE_PLUGIN_LINK"
+  echo "  ✓ Linked plugin: $OPENCODE_PLUGIN_LINK"
+else
+  echo "  ⚠️  $OPENCODE_PLUGIN_SRC not found"
+fi
+
+# --- 6. tmux session hooks ---
 echo ""
 echo "=== tmux session hooks ==="
 SYNC_SCRIPT="$HOOKS_DIR/thread-sync.sh"
@@ -234,7 +249,7 @@ else
   echo "  ⚠️  thread-sync.sh not found or not executable"
 fi
 
-# --- 6. aily CLI ---
+# --- 7. aily CLI ---
 echo ""
 echo "=== aily CLI ==="
 AILY_BIN="$SCRIPT_DIR/aily"
@@ -256,6 +271,7 @@ echo "=== Done ==="
 echo "  Claude Code: notify-claude.sh (via ~/.claude/settings.json)"
 echo "  Codex CLI:   notify-codex.py  (via ~/.codex/config.toml)"
 echo "  Gemini CLI:  notify-gemini.sh (via ~/.gemini/settings.json)"
+echo "  OpenCode:    aily-notify.mjs  (via ~/.config/opencode/plugins)"
 echo "  tmux:        thread-sync.sh (via tmux set-hook)"
 echo "  CLI:         aily (start/stop/auto/sessions/status)"
 echo ""
