@@ -19,6 +19,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from dashboard.auth import auth_middleware
 from dashboard.config import Config
 from dashboard.db import init_db, close_db, SCHEMA_SQL
+from dashboard.rate_limit import rate_limit_middleware
 from dashboard.services.event_bus import EventBus
 from dashboard.services.message_service import MessageService
 from dashboard.services.platform_service import PlatformService
@@ -81,7 +82,12 @@ async def _build_app(config: Config | None = None) -> web.Application:
         max_content_length=config.jsonl_max_content_length,
     )
 
-    app = web.Application(middlewares=[auth_middleware])
+    app = web.Application(
+        middlewares=[
+            rate_limit_middleware,
+            auth_middleware,
+        ]
+    )
 
     app["config"] = config
     app["event_bus"] = event_bus
@@ -89,6 +95,7 @@ async def _build_app(config: Config | None = None) -> web.Application:
     app["platform_service"] = platform_svc
     app["message_service"] = message_svc
     app["jsonl_service"] = jsonl_svc
+    app["ws_clients"] = set()
 
     # -- routes (same as app._setup_routes) --
     app.router.add_get("/api/sessions", sessions_api.list_sessions)
@@ -155,6 +162,16 @@ async def _build_app(config: Config | None = None) -> web.Application:
 def config():
     """Default test config (no auth, no platforms)."""
     return _make_config()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_state():
+    """Reset global in-memory rate limit buckets between tests."""
+    from dashboard import rate_limit
+
+    rate_limit._buckets.clear()
+    yield
+    rate_limit._buckets.clear()
 
 
 @pytest.fixture

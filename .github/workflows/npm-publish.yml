@@ -19,6 +19,13 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install and test
+        run: pip install -r requirements.txt && pytest tests/ -v
+
       - name: Verify package contents
         run: npm pack --dry-run
 
