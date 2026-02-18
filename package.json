@@ -10,6 +10,7 @@
     "aily",
     "install.sh",
     "hooks/",
+    "completions/",
     ".env.example",
     "LICENSE",
     "README.md"

@@ -9,6 +9,8 @@
 #   aily sessions          List active sessions from dashboard
 #   aily sync [name]       Trigger message sync for a session
 #   aily logs [name]       Fetch recent messages for a session
+#   aily attach [name]     Attach to a tmux session
+#   aily export <name>     Export session messages
 #   aily config ...        Show/edit configuration
 #   aily doctor            Diagnose common issues
 #   aily start [name]      Create thread for tmux session
@@ -25,7 +27,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${AILY_ENV:-$HOME/.claude/hooks/.notify-env}"
 HOOKS_DIR="$(dirname "$ENV_FILE")"
-VERSION="1.0.0"
+AILY_VERSION="2026.2.17"
+AILY_JSON=false
 
 # ---------------------------------------------------------------------------
 # Colors & formatting
@@ -50,6 +53,15 @@ warn() { printf "  ${C_YELLOW}⚠️${C_RESET}  %s\n" "$*"; }
 err()  { printf "  ${C_RED}✗${C_RESET} %s\n" "$*" >&2; }
 info() { printf "  ${C_CYAN}·${C_RESET} %s\n" "$*"; }
 hdr()  { printf "\n${C_BOLD}=== %s ===${C_RESET}\n" "$*"; }
+
+json_output() {
+  # If --json flag is set, output JSON instead of formatted text.
+  if [[ "$AILY_JSON" == true ]]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  return 1
+}
 
 # ---------------------------------------------------------------------------
 # Dependency check
@@ -461,8 +473,33 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 7. Test notification --
-  printf "  ${C_BOLD}7) Test notification${C_RESET}\n"
+  # -- 7. Install shell completions --
+  printf "  ${C_BOLD}7) Shell completions${C_RESET}\n"
+  local comp_dir
+  if [[ -n "${ZSH_VERSION:-}" || "$SHELL" == */zsh ]]; then
+    comp_dir="${ZDOTDIR:-$HOME}/.zfunc"
+    mkdir -p "$comp_dir"
+    if [[ -f "${SCRIPT_DIR}/completions/aily.zsh" ]]; then
+      cp "${SCRIPT_DIR}/completions/aily.zsh" "${comp_dir}/_aily"
+      ok "Zsh completions installed to ${comp_dir}/_aily"
+      info "Add to .zshrc: fpath=(${comp_dir} \$fpath) && autoload -Uz compinit && compinit"
+    else
+      warn "Zsh completion script not found at ${SCRIPT_DIR}/completions/aily.zsh"
+    fi
+  else
+    comp_dir="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions}"
+    mkdir -p "$comp_dir"
+    if [[ -f "${SCRIPT_DIR}/completions/aily.bash" ]]; then
+      cp "${SCRIPT_DIR}/completions/aily.bash" "${comp_dir}/aily"
+      ok "Bash completions installed to ${comp_dir}/aily"
+    else
+      warn "Bash completion script not found at ${SCRIPT_DIR}/completions/aily.bash"
+    fi
+  fi
+  echo ""
+
+  # -- 8. Test notification --
+  printf "  ${C_BOLD}8) Test notification${C_RESET}\n"
   if [[ "$non_interactive" == "false" ]]; then
     if prompt_yn "Send a test notification?" "y"; then
       _send_test_notification
@@ -647,19 +684,19 @@ cmd_status() {
 cmd_sessions() {
   require_deps
 
-  local json_output=false
+  local output_json="${AILY_JSON}"
   local source="dashboard"  # default: try dashboard first, fall back to ssh
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --json) json_output=true; shift ;;
+      --json) output_json=true; shift ;;
       --ssh)  source="ssh"; shift ;;
       *) shift ;;
     esac
   done
 
   if [[ "$source" == "ssh" ]]; then
-    _sessions_ssh "$json_output"
+    _sessions_ssh "$output_json"
     return
   fi
 
@@ -668,8 +705,11 @@ cmd_sessions() {
   resp=$(api_call GET "/api/sessions?status=active" 2>/dev/null || echo "")
 
   if [[ -n "$resp" ]] && echo "$resp" | jq -e '.' >/dev/null 2>&1; then
-    if [[ "$json_output" == "true" ]]; then
-      echo "$resp" | jq .
+    if json_output "$resp"; then
+      return
+    fi
+    if [[ "$output_json" == "true" ]]; then
+      printf '%s\n' "$resp"
       return
     fi
 
@@ -710,7 +750,7 @@ cmd_sessions() {
   else
     # Fall back to SSH-based session listing
     info "Dashboard unavailable, falling back to SSH..."
-    _sessions_ssh "$json_output"
+    _sessions_ssh "$output_json"
   fi
 }
 
@@ -875,6 +915,83 @@ cmd_logs() {
       "$ts_short" "$role_label" "$content"
   done
   echo ""
+}
+
+# -------------------------------------------------------------------
+# aily attach [session-name]
+# -------------------------------------------------------------------
+cmd_attach() {
+  require_cmd tmux "install via your package manager" || return 1
+
+  local session_name="${1:-}"
+  if [[ -z "$session_name" ]]; then
+    printf "${C_BOLD}Active tmux sessions:${C_RESET}\n"
+    tmux list-sessions 2>/dev/null || { err "No tmux sessions found"; return 1; }
+    printf "\n"
+    read -rp "Session name: " session_name
+    [[ -z "$session_name" ]] && return 1
+  fi
+
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    exec tmux attach-session -t "$session_name"
+  else
+    err "Session '$session_name' not found"
+    return 1
+  fi
+}
+
+# -------------------------------------------------------------------
+# aily export <session-name> [json|markdown]
+# -------------------------------------------------------------------
+cmd_export() {
+  require_cmd curl "install via your package manager" || return 1
+
+  local session_name="${1:-}"
+  local format="${2:-markdown}"
+
+  if [[ -z "$session_name" ]]; then
+    err "Usage: aily export <session-name> [json|markdown]"
+    return 1
+  fi
+
+  case "$format" in
+    json|markdown) ;;
+    *)
+      err "Invalid format '${format}'. Use: json or markdown"
+      return 1
+      ;;
+  esac
+
+  local dashboard_url_value
+  dashboard_url_value="$(dashboard_url)"
+  if [[ -z "$dashboard_url_value" ]]; then
+    err "Dashboard URL not configured. Run: aily config set dashboard_url <url>"
+    return 1
+  fi
+
+  local token
+  token="$(dashboard_token)"
+
+  local output_file="${session_name}.${format#mark}"
+  [[ "$format" == "markdown" ]] && output_file="${session_name}.md"
+  [[ "$format" == "json" ]] && output_file="${session_name}.json"
+
+  printf "Exporting session '%s' as %s...\n" "$session_name" "$format"
+
+  local curl_args=(-sf)
+  if [[ -n "$token" ]]; then
+    curl_args+=(-H "Authorization: Bearer $token")
+  fi
+
+  if curl "${curl_args[@]}" "${dashboard_url_value}/api/sessions/${session_name}/export?format=${format}" -o "$output_file"; then
+    if [[ -f "$output_file" ]]; then
+      ok "Exported to $output_file ($(wc -c < "$output_file" | tr -d ' ') bytes)"
+      return 0
+    fi
+  fi
+
+  err "Export failed"
+  return 1
 }
 
 # -------------------------------------------------------------------
@@ -1432,10 +1549,10 @@ with open(path, 'w') as f:
 # aily help / version
 # -------------------------------------------------------------------
 cmd_help() {
-  printf "${C_BOLD}aily${C_RESET} v${VERSION} -- AI agent notification relay\n"
+  printf "${C_BOLD}aily${C_RESET} %s -- AI agent notification relay\n" "${AILY_VERSION:-dev}"
   echo ""
   printf "${C_BOLD}Usage:${C_RESET}\n"
-  echo "  aily <command> [options]"
+  echo "  aily [--json] [--verbose] <command> [options]"
   echo ""
   printf "${C_BOLD}Setup & diagnostics:${C_RESET}\n"
   echo "  init                      Interactive setup wizard"
@@ -1450,8 +1567,11 @@ cmd_help() {
   echo "    --ssh                     List via SSH instead of dashboard API"
   echo "  sync [session-name]       Trigger message sync for a session"
   echo "  logs [session-name]       Fetch recent messages for a session"
+  echo "  tail [session-name]       Alias for logs"
+  echo "  export [session-name]     Export a session to markdown or json"
   echo "    --json                    Output raw JSON"
   echo "    -n, --limit N             Number of messages (default: 20)"
+  echo "  attach [session-name]     Attach to an active tmux session"
   echo ""
   printf "${C_BOLD}Configuration:${C_RESET}\n"
   echo "  config show               Show current config (tokens redacted)"
@@ -1473,12 +1593,22 @@ cmd_help() {
 }
 
 cmd_version() {
-  echo "aily v${VERSION}"
+  printf "aily %s\n" "${AILY_VERSION:-dev}"
 }
 
 # ===================================================================
 # MAIN
 # ===================================================================
+
+# Parse global flags.
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --json) AILY_JSON=true; shift ;;
+    --verbose) set -x; shift ;;
+    --help) cmd_help; exit 0 ;;
+    *) break ;;
+  esac
+done
 
 CMD="${1:-help}"
 shift 2>/dev/null || true
@@ -1489,6 +1619,9 @@ case "$CMD" in
   sessions)   cmd_sessions "$@" ;;
   sync)       cmd_sync "$@" ;;
   logs)       cmd_logs "$@" ;;
+  tail)       cmd_logs "$@" ;;
+  attach)     cmd_attach "$@" ;;
+  export)     cmd_export "$@" ;;
   config)     cmd_config "$@" ;;
   doctor)     cmd_doctor "$@" ;;
   start)      cmd_start "$@" ;;
