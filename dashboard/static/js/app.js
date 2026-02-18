@@ -580,6 +580,10 @@
       stats: null,
       sessions: [],
       activity: [],
+      searchQuery: "",
+      searchResults: [],
+      searchLoading: false,
+      _searchTimer: null,
 
       showNewSessionModal: false,
       creating: false,
@@ -596,9 +600,31 @@
       formatTime,
 
       init() {
+        this._setupSearchWatcher();
         this.refresh();
         this._loadHosts();
         this._wireWs();
+      },
+
+      _setupSearchWatcher() {
+        this.$watch("searchQuery", (q) => {
+          clearTimeout(this._searchTimer);
+          if (String(q || "").trim().length < 2) {
+            this.searchResults = [];
+            this.searchLoading = false;
+            return;
+          }
+          this.searchLoading = true;
+          this._searchTimer = setTimeout(async () => {
+            try {
+              const data = await apiJson(`/api/messages/search?q=${encodeURIComponent(q)}&limit=20`);
+              this.searchResults = data.results || [];
+            } catch {
+              this.searchResults = [];
+            }
+            this.searchLoading = false;
+          }, 300);
+        });
       },
 
       async _loadHosts() {
@@ -881,6 +907,10 @@
       status: "all",
       sortKey: "last_activity",
       sortDir: "desc",
+      searchQuery: "",
+      searchResults: [],
+      searchLoading: false,
+      _searchTimer: null,
 
       showNewSessionModal: false,
       creating: false,
@@ -902,9 +932,31 @@
       formatTime,
 
       init() {
+        this._setupSearchWatcher();
         this.refresh();
         this._loadHosts();
         this._wireWs();
+      },
+
+      _setupSearchWatcher() {
+        this.$watch("searchQuery", (q) => {
+          clearTimeout(this._searchTimer);
+          if (String(q || "").trim().length < 2) {
+            this.searchResults = [];
+            this.searchLoading = false;
+            return;
+          }
+          this.searchLoading = true;
+          this._searchTimer = setTimeout(async () => {
+            try {
+              const data = await apiJson(`/api/messages/search?q=${encodeURIComponent(q)}&limit=20`);
+              this.searchResults = data.results || [];
+            } catch {
+              this.searchResults = [];
+            }
+            this.searchLoading = false;
+          }, 300);
+        });
       },
 
       async _loadHosts() {
@@ -1159,6 +1211,7 @@
 
       // Typing
       _lastTypingSentAt: 0,
+      roleFilter: "",
 
       timeAgo,
       formatTime,
@@ -1287,7 +1340,15 @@
         // Inject date separators + new messages divider.
         const items = [];
         let lastDay = "";
-        for (const m of this.messages) {
+        const visibleMessages = this.messages.filter((m) => {
+          if (!this.roleFilter) return true;
+          const role = String(m?.role || "").toLowerCase();
+          if (this.roleFilter === "assistant") {
+            return role === "assistant" || role === "tool";
+          }
+          return role === this.roleFilter;
+        });
+        for (const m of visibleMessages) {
           // New messages divider
           if (m._isNewIndicator) {
             items.push({ kind: "new-divider" });
