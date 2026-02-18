@@ -3,6 +3,7 @@
 Endpoints:
   GET    /api/sessions              - List sessions with filter/sort/pagination
   GET    /api/sessions/{name}       - Session detail with message count
+  GET    /api/sessions/{name}/export - Export session data (json|markdown)
   POST   /api/sessions              - Create tmux session
   DELETE /api/sessions/{name}       - Kill session + archive threads
   PATCH  /api/sessions/{name}       - Update session metadata
@@ -76,13 +77,13 @@ async def list_sessions(request: web.Request) -> web.Response:
     query_params: list[Any] = []
 
     if status_filter:
-        where_clauses.append("status = ?")
+        where_clauses.append("s.status = ?")
         query_params.append(status_filter)
     if host_filter:
-        where_clauses.append("host = ?")
+        where_clauses.append("s.host = ?")
         query_params.append(host_filter)
     if q:
-        where_clauses.append("name LIKE ?")
+        where_clauses.append("s.name LIKE ?")
         query_params.append(f"%{q}%")
 
     where_sql = ""
@@ -98,15 +99,18 @@ async def list_sessions(request: web.Request) -> web.Response:
 
     # Count total
     count_row = await db.fetchone(
-        f"SELECT COUNT(*) as cnt FROM sessions {where_sql}",
+        f"SELECT COUNT(*) as cnt FROM sessions s {where_sql}",
         tuple(query_params),
     )
     total = count_row["cnt"] if count_row else 0
 
     # Fetch page
     sessions = await db.fetchall(
-        f"""SELECT * FROM sessions {where_sql}
-            ORDER BY {field_name} {order_dir}
+        f"""SELECT s.*,
+                   (SELECT COUNT(*) FROM messages WHERE session_name = s.name) as message_count
+            FROM sessions s
+            {where_sql}
+            ORDER BY s.{field_name} {order_dir}
             LIMIT ? OFFSET ?""",
         tuple(query_params) + (limit, offset),
     )
@@ -143,6 +147,49 @@ async def get_session(request: web.Request) -> web.Response:
     session_data["message_count"] = count_row["cnt"] if count_row else 0
 
     return json_ok({"session": session_data})
+
+
+async def export_session(request: web.Request) -> web.Response:
+    """GET /api/sessions/{name}/export?format=json|markdown"""
+    name = request.match_info["name"]
+    fmt = request.query.get("format", "json").strip().lower()
+
+    session = await db.fetchone("SELECT * FROM sessions WHERE name = ?", (name,))
+    if not session:
+        return error_response(404, "NOT_FOUND", f"Session '{name}' not found")
+
+    messages = await db.fetchall(
+        "SELECT role, content, source, timestamp FROM messages WHERE session_name = ? ORDER BY timestamp",
+        (name,),
+    )
+
+    if fmt == "markdown":
+        lines = [f"# Session: {name}\n"]
+        lines.append(f"- Host: {session.get('host', 'N/A')}")
+        lines.append(f"- Agent: {session.get('agent_type', 'N/A')}")
+        lines.append(f"- Created: {session.get('created_at', 'N/A')}")
+        lines.append(f"- Status: {session.get('status', 'N/A')}\n")
+        lines.append("---\n")
+        for msg in messages:
+            role = msg["role"].capitalize()
+            ts = msg["timestamp"][:19] if msg.get("timestamp") else ""
+            lines.append(f"### {role} ({ts})\n")
+            lines.append(msg["content"])
+            lines.append("")
+
+        return web.Response(
+            text="\n".join(lines),
+            content_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{name}.md"'},
+        )
+
+    return web.json_response(
+        {
+            "session": dict(session),
+            "messages": messages,
+        },
+        headers={"Content-Disposition": f'attachment; filename="{name}.json"'},
+    )
 
 
 async def create_session(request: web.Request) -> web.Response:
