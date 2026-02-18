@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL = 30.0
 MAX_QUEUE_SIZE = 256
+MAX_WS_CLIENTS = 50
 
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
@@ -53,11 +54,17 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
        - receive_messages: reads client messages (subscribe, ping)
     4. Heartbeat every 30s to keep the connection alive.
     """
-    ws = web.WebSocketResponse(heartbeat=HEARTBEAT_INTERVAL)
+    ws = web.WebSocketResponse(
+        heartbeat=HEARTBEAT_INTERVAL,
+        compress=15,  # permessage-deflate with 15-bit window
+    )
     await ws.prepare(request)
     ws_clients: set[web.WebSocketResponse] = request.app.setdefault(
         "ws_clients", set()
     )
+    if len(ws_clients) >= MAX_WS_CLIENTS:
+        await ws.close(code=1013, message=b"Too many connections")
+        return ws
     ws_clients.add(ws)
 
     event_bus: EventBus = request.app["event_bus"]
