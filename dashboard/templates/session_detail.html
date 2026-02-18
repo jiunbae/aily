@@ -55,6 +55,19 @@
                   @click="showMetadata = !showMetadata">
             Info
           </button>
+          <!-- Export dropdown -->
+          <div x-data="{ open: false }" class="relative">
+            <button @click="open = !open" class="btn-secondary text-xs px-3 py-2 font-semibold">
+              Export
+            </button>
+            <div x-show="open" @click.away="open = false"
+                 class="absolute right-0 mt-1 w-40 bg-[var(--bg-secondary)] border border-[var(--bg-overlay)] rounded-lg shadow-lg z-10">
+              <a :href="'/api/sessions/' + encodeURIComponent(sessionName) + '/export?format=json'"
+                 class="block px-4 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-overlay)]">JSON</a>
+              <a :href="'/api/sessions/' + encodeURIComponent(sessionName) + '/export?format=markdown'"
+                 class="block px-4 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-overlay)]">Markdown</a>
+            </div>
+          </div>
           <button class="btn-danger px-3 py-2 text-xs font-semibold" @click="confirmDelete()">
             Kill
           </button>
@@ -62,6 +75,20 @@
       </div>
 
       <!-- Messages -->
+      <div class="px-4 pt-3">
+        <!-- Message filter tabs -->
+        <div class="flex gap-1 mb-3">
+          <button @click="roleFilter = ''"
+                  :class="roleFilter === '' ? 'bg-[var(--accent-primary)] text-white' : 'text-[var(--text-muted)]'"
+                  class="px-3 py-1 rounded-full text-xs font-medium transition-colors">All</button>
+          <button @click="roleFilter = 'user'"
+                  :class="roleFilter === 'user' ? 'bg-[var(--accent-primary)] text-white' : 'text-[var(--text-muted)]'"
+                  class="px-3 py-1 rounded-full text-xs font-medium transition-colors">User</button>
+          <button @click="roleFilter = 'assistant'"
+                  :class="roleFilter === 'assistant' ? 'bg-[var(--accent-primary)] text-white' : 'text-[var(--text-muted)]'"
+                  class="px-3 py-1 rounded-full text-xs font-medium transition-colors">Assistant</button>
+        </div>
+      </div>
       <div class="relative flex-1 min-h-0">
         <div x-ref="msgScroll" class="h-full overflow-y-auto px-4 py-4 space-y-3" @scroll="onScroll()">
           <!-- Loading older messages indicator -->
