@@ -282,6 +282,41 @@
     </div>
   </main>
 
+  <div x-data="{ _gPressed: false }"
+       @keydown.window="
+         if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+         if ($event.key === 'g') { _gPressed = true; setTimeout(() => _gPressed = false, 1000); return; }
+         if (_gPressed) {
+           _gPressed = false;
+           if ($event.key === 'h') window.location.href = '/';
+           if ($event.key === 's') window.location.href = '/sessions';
+           if ($event.key === 't') window.location.href = '/settings';
+         }
+       ">
+  </div>
+
+  <!-- Keyboard shortcuts overlay -->
+  <div x-data="{ show: false }"
+       @keydown.window="if ($event.key === '?' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) show = true"
+       @keydown.escape.window="show = false">
+    <template x-if="show">
+      <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @click.self="show = false">
+        <div class="bg-[var(--bg-secondary)] rounded-xl border border-[var(--bg-overlay)] p-6 max-w-md w-full shadow-xl">
+          <h3 class="text-lg font-semibold text-[var(--text-primary)] mb-4">Keyboard Shortcuts</h3>
+          <div class="space-y-2 text-sm">
+            <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Search messages</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">/</kbd></div>
+            <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Close / Clear</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">Esc</kbd></div>
+            <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Show shortcuts</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">?</kbd></div>
+            <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Go to home</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">g h</kbd></div>
+            <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Go to sessions</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">g s</kbd></div>
+            <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Go to settings</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">g t</kbd></div>
+          </div>
+          <button @click="show = false" class="mt-4 w-full py-2 rounded-lg bg-[var(--accent-primary)] text-white text-sm font-medium">Close</button>
+        </div>
+      </div>
+    </template>
+  </div>
+
   <!-- Custom JS (loaded before Alpine so we can register Alpine components on alpine:init) -->
   <script defer src="/static/js/ws-client.js"></script>
   <script defer src="/static/js/app.js"></script>
