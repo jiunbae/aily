@@ -20,6 +20,7 @@ from aiohttp import web
 
 from dashboard import db
 from dashboard.api import preferences as prefs_api
+from dashboard.api import search as search_api
 from dashboard.api import sessions as sessions_api
 from dashboard.api import settings as settings_api
 from dashboard.api import stats as stats_api
@@ -131,6 +132,7 @@ def _setup_routes(app: web.Application) -> None:
     # Session CRUD
     app.router.add_get("/api/sessions", sessions_api.list_sessions)
     app.router.add_get("/api/sessions/{name}", sessions_api.get_session)
+    app.router.add_get("/api/sessions/{name}/export", sessions_api.export_session)
     app.router.add_post("/api/sessions", sessions_api.create_session)
     app.router.add_delete("/api/sessions/{name}", sessions_api.delete_session)
     app.router.add_post(
@@ -160,6 +162,7 @@ def _setup_routes(app: web.Application) -> None:
 
     # Stats
     app.router.add_get("/api/stats", stats_api.get_stats)
+    app.router.add_get("/api/messages/search", search_api.search_messages)
 
     # WebSocket
     app.router.add_get("/ws", ws_api.websocket_handler)

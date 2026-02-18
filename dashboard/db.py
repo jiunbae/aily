@@ -57,6 +57,17 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(dedup_hash);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_name, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_status_updated ON sessions(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_name, role);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content,
+    session_name UNINDEXED,
+    role UNINDEXED,
+    content='messages',
+    content_rowid='id'
+);
 
 CREATE TABLE IF NOT EXISTS events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +85,23 @@ CREATE TABLE IF NOT EXISTS kv (
     updated TEXT NOT NULL
 );
 """
+
+_TRIGGER_SQL = [
+    """CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+        INSERT INTO messages_fts(rowid, content, session_name, role)
+        VALUES (new.id, new.content, new.session_name, new.role);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, content, session_name, role)
+        VALUES ('delete', old.id, old.content, old.session_name, old.role);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, content, session_name, role)
+        VALUES ('delete', old.id, old.content, old.session_name, old.role);
+        INSERT INTO messages_fts(rowid, content, session_name, role)
+        VALUES (new.id, new.content, new.session_name, new.role);
+    END""",
+]
 
 
 async def init_db(db_path: str) -> aiosqlite.Connection:
@@ -98,6 +126,10 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         statement = statement.strip()
         if statement:
             await _db.execute(statement)
+
+    for trigger_sql in _TRIGGER_SQL:
+        await _db.execute(trigger_sql)
+
     await _db.commit()
 
     logger.info("Database initialized at %s", db_path)
