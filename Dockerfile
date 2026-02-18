@@ -1,3 +1,11 @@
+# Stage 1: Install dependencies
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# Stage 2: Runtime
 FROM python:3.12-slim
 
 RUN apt-get update \
@@ -8,24 +16,22 @@ RUN useradd -m -u 1000 app
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy only installed packages from builder
+COPY --from=builder /install /usr/local
 
+# Copy application code
 COPY agent-bridge.py slack-bridge.py ./
 COPY dashboard/ ./dashboard/
 
 RUN mkdir -p /app/data && chown app:app /app/data
 
-USER 1000
+USER app
 
-# BRIDGE_MODE: "discord", "slack", or "dashboard"
-ENV BRIDGE_MODE=discord
-ENV AGENT_BRIDGE_ENV=/app/.notify-env
-ENV PYTHONUNBUFFERED=1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" || exit 1
 
 EXPOSE 8080
 
-CMD ["sh", "-c", \
-  "if [ \"$BRIDGE_MODE\" = 'slack' ]; then exec python3 slack-bridge.py; \
-   elif [ \"$BRIDGE_MODE\" = 'dashboard' ]; then exec python3 -m dashboard; \
-   else exec python3 agent-bridge.py; fi"]
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python3", "-m", "dashboard"]
