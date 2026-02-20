@@ -18,25 +18,52 @@ Get notified when tasks complete, forward interactive prompts, send commands bac
 
 ---
 
+## Prerequisites
+
+- macOS or Linux
+- `curl`, `jq` (required by aily CLI)
+- `tmux` (for session management)
+- Node.js >= 14 (for npm install) or `git` (for manual install)
+- SSH access to target hosts (key-based auth)
+
 ## Quick Start
 
-Choose any installation method:
+### 1. Install
 
 ```bash
 # npm (recommended)
-npm install -g aily-cli && aily init
+npm install -g aily-cli
 
 # npx (no install)
 npx aily-cli init
 
 # curl from dashboard
-curl -sSL https://your-dashboard-url/api/install.sh | bash
+curl -sSL https://aily.jiun.dev/api/install.sh | bash
 
 # manual
-git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init
+git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
 ```
 
-The `aily init` wizard walks you through credential setup, hook installation, and agent configuration.
+### 2. Configure
+
+```bash
+aily init
+```
+
+The interactive wizard walks you through:
+1. **Dashboard URL** — connects to the aily dashboard (tests `/healthz`)
+2. **Auth token** — for dashboard API access
+3. **Platform setup** — Discord and/or Slack tokens (validates credentials)
+4. **SSH hosts** — target machines running tmux sessions (tests connectivity)
+5. **Hook installation** — configures Claude Code, Codex CLI, Gemini CLI, OpenCode
+6. **Shell completions** — tab completions for zsh/bash
+
+### 3. Verify
+
+```bash
+aily status    # check platform connectivity
+aily doctor    # diagnose common issues
+```
 
 ## How It Works
 
@@ -145,8 +172,8 @@ SLACK_APP_TOKEN="xapp-your-slack-app-level-token"
 SLACK_CHANNEL_ID="C0123456789"
 
 # Dashboard
-DASHBOARD_URL="https://your-dashboard-url"
-DASHBOARD_TOKEN="your-secret-token"
+AILY_DASHBOARD_URL="https://aily.jiun.dev"
+AILY_AUTH_TOKEN="your-auth-token"
 
 # Multi-host (comma-separated SSH targets)
 SSH_HOSTS="host1,host2"
