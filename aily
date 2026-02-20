@@ -27,7 +27,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${AILY_ENV:-$HOME/.claude/hooks/.notify-env}"
 HOOKS_DIR="$(dirname "$ENV_FILE")"
-AILY_VERSION="2026.2.17"
+AILY_VERSION="2026.2.18"
 AILY_JSON=false
 
 # ---------------------------------------------------------------------------
