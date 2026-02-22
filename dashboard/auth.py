@@ -21,7 +21,15 @@ _NO_AUTH_PREFIXES = (
     "/api/hooks/",
     "/api/install.sh",
     "/static/",
+    "/favicon",
 )
+
+# Page routes served by Jinja2 templates (browser access, no Bearer token)
+_NO_AUTH_EXACT = frozenset((
+    "/",
+    "/sessions",
+    "/settings",
+))
 
 
 @web.middleware
@@ -42,6 +50,8 @@ async def auth_middleware(
     path = request.path
 
     # Skip auth for exempted paths
+    if path in _NO_AUTH_EXACT or path.startswith("/sessions/"):
+        return await handler(request)
     for prefix in _NO_AUTH_PREFIXES:
         if path.startswith(prefix):
             return await handler(request)
