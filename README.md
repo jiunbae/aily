@@ -18,56 +18,9 @@ Get notified when tasks complete, forward interactive prompts, send commands bac
 
 ---
 
-## Prerequisites
-
-- macOS or Linux
-- `curl`, `jq` (required by aily CLI)
-- `tmux` (for session management)
-- Node.js >= 14 (for npm install) or `git` (for manual install)
-- SSH access to target hosts (key-based auth)
-
 ## Quick Start
 
-### 1. Install
-
-```bash
-# npm (recommended)
-npm install -g aily-cli
-
-# npx (no install)
-npx aily-cli init
-
-# curl from dashboard
-curl -sSL https://aily.jiun.dev/api/install.sh | bash
-
-# manual
-git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
-```
-
-### 2. Configure
-
-```bash
-aily init
-```
-
-The interactive wizard walks you through:
-1. **Dashboard URL** — connects to the aily dashboard (tests `/healthz`)
-2. **Auth token** — for dashboard API access
-3. **Platform setup** — Discord and/or Slack tokens (validates credentials)
-4. **SSH hosts** — target machines running tmux sessions (tests connectivity)
-5. **Hook installation** — configures Claude Code, Codex CLI, Gemini CLI, OpenCode
-6. **Shell completions** — tab completions for zsh/bash
-
-### 3. Verify
-
-```bash
-aily status    # check platform connectivity
-aily doctor    # diagnose common issues
-```
-
-## Start with Agent
-
-Let your AI agent handle the install. Paste this prompt into Claude Code, Codex, or Gemini:
+Paste this into your AI agent (Claude Code, Codex, Gemini):
 
 > Install aily — AI agent notification relay for Discord/Slack.
 > Run `npm install -g aily-cli` then `aily init` to start the interactive setup wizard.
@@ -112,6 +65,27 @@ $ aily init
 
 === Done ===
 ```
+
+<details>
+<summary><b>Manual Install</b></summary>
+
+Prerequisites: macOS or Linux, `curl`, `jq`, `tmux`, Node.js >= 14, SSH key-based access to target hosts.
+
+```bash
+# npm (recommended)
+npm install -g aily-cli && aily init
+
+# npx (no install)
+npx aily-cli init
+
+# curl from dashboard
+curl -sSL https://aily.jiun.dev/api/install.sh | bash
+
+# git clone
+git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
+```
+
+</details>
 
 <details>
 <summary><b>CLI Options</b></summary>
