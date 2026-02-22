@@ -74,6 +74,7 @@ CHANNEL_ID: str = ""
 SSH_HOSTS: list[str] = []
 DEFAULT_HOST: str = ""
 BOT_USER_ID: str = ""
+THREAD_CLEANUP: str = "archive"
 _announced: bool = False
 
 # Cache: thread_ts -> session_name (avoid repeated conversations.replies calls)
@@ -222,6 +223,14 @@ async def archive_thread(client: AsyncWebClient, thread_ts: str):
         )
     except Exception as e:
         print(f"[slack-bridge] archive_thread error: {e}", file=sys.stderr)
+
+
+async def delete_thread(client: AsyncWebClient, thread_ts: str):
+    """Delete a thread by deleting the parent message."""
+    try:
+        await client.chat_delete(channel=CHANNEL_ID, ts=thread_ts)
+    except Exception as e:
+        print(f"[slack-bridge] delete_thread error: {e}", file=sys.stderr)
 
 
 async def post_message(
@@ -435,19 +444,24 @@ async def cmd_kill(
         )
         tmux_killed = rc == 0
 
-    # Archive Slack thread
+    # Clean up Slack thread
     thread_name = f"{AGENT_PREFIX}{session_name}"
     ts = await find_thread_ts(client, thread_name)
-    thread_archived = False
+    thread_cleaned = False
+    cleanup_action = "archived"
     if ts:
-        await post_message(
-            client,
-            CHANNEL_ID,
-            f"Session `{session_name}` killed. Archiving thread.",
-            ts,
-        )
-        await archive_thread(client, ts)
-        thread_archived = True
+        if THREAD_CLEANUP == "delete":
+            await delete_thread(client, ts)
+            thread_cleaned = True
+            cleanup_action = "deleted"
+        else:
+            await post_message(
+                client, CHANNEL_ID,
+                f"Session `{session_name}` killed. Archiving thread.", ts,
+            )
+            await archive_thread(client, ts)
+            thread_cleaned = True
+            cleanup_action = "archived"
         # Clear cache
         _thread_cache.pop(ts, None)
 
@@ -459,12 +473,23 @@ async def cmd_kill(
         status.append(f"Failed to kill `{session_name}` on `{host}`")
     else:
         status.append(f"tmux `{session_name}` not found")
-    if thread_archived:
-        status.append("archived thread")
+    if thread_cleaned:
+        status.append(f"{cleanup_action} thread")
     else:
         status.append("no thread found")
 
     await post_message(client, reply_to, " / ".join(status), thread_ts=thread_ts)
+
+    # Emit dashboard event for session lifecycle tracking
+    _fire_dashboard_event({
+        "type": "session.killed",
+        "session_name": session_name,
+        "platform": "slack",
+        "host": host or "",
+        "tmux_killed": tmux_killed,
+        "thread_cleanup": cleanup_action if thread_cleaned else "none",
+        "timestamp": _now_iso(),
+    })
 
 
 async def cmd_sessions(
@@ -619,7 +644,7 @@ async def handle_socket_event(
 
 
 async def main():
-    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, BOT_USER_ID
+    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, BOT_USER_ID, THREAD_CLEANUP
     global DASHBOARD_URL, _dashboard_http
 
     env_path = os.environ.get(
@@ -647,6 +672,11 @@ async def main():
         SSH_HOSTS = ["localhost"]
     DEFAULT_HOST = SSH_HOSTS[0] if SSH_HOSTS else ""
 
+    # Thread cleanup mode: "archive" (default) or "delete"
+    THREAD_CLEANUP = env.get("THREAD_CLEANUP", "archive").lower()
+    if THREAD_CLEANUP not in ("archive", "delete"):
+        THREAD_CLEANUP = "archive"
+
     if not bot_token:
         print("SLACK_BOT_TOKEN not set", file=sys.stderr)
         sys.exit(1)
@@ -666,6 +696,7 @@ async def main():
     print(f"[slack-bridge] Channel: {CHANNEL_ID}")
     print(f"[slack-bridge] SSH hosts: {SSH_HOSTS}")
     print(f"[slack-bridge] Thread prefix: '{AGENT_PREFIX}'")
+    print(f"[slack-bridge] Thread cleanup: {THREAD_CLEANUP}")
     if DASHBOARD_URL:
         print(f"[slack-bridge] Dashboard: {DASHBOARD_URL}")
     else:
