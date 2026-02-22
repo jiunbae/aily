@@ -69,37 +69,66 @@ aily doctor    # diagnose common issues
 
 Let your AI agent handle the install. Paste this prompt into Claude Code, Codex, or Gemini:
 
-> Install aily notification relay: `npm install -g aily-cli && aily init --non-interactive`.
-> Set these env vars before running init: `AILY_DASHBOARD_URL`, `AILY_AUTH_TOKEN`, `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `SSH_HOSTS`.
-> After install, run `aily status` to verify and `aily doctor` to check for issues.
+> Install aily — AI agent notification relay for Discord/Slack.
+> Run `npm install -g aily-cli` then `aily init` to start the interactive setup wizard.
+> The wizard will ask for: dashboard URL, auth token, Discord/Slack credentials, and SSH hosts.
+> After setup, run `aily status` to verify connectivity and `aily doctor` to check for issues.
 
-Or with explicit values:
+`aily init` guides you through each step interactively:
 
-```bash
-AILY_DASHBOARD_URL="https://aily.jiun.dev" \
-AILY_AUTH_TOKEN="<token>" \
-DISCORD_BOT_TOKEN="<bot-token>" \
-DISCORD_CHANNEL_ID="<channel-id>" \
-SSH_HOSTS="host1,host2" \
-aily init --non-interactive
+```
+$ aily init
+
+=== aily setup wizard ===
+
+  1) Dashboard URL
+     Dashboard URL [https://aily.jiun.dev]:
+     Testing connectivity... OK
+
+  2) Auth token
+     Auth token [****]:
+     Validating token... OK
+
+  3) Platform setup
+     Enable Discord? [Y/n]: Y
+     Discord bot token [****]:
+     Discord channel ID [1234567890]:
+     Validating Discord... OK (channel: ai-notifications)
+
+     Enable Slack? [y/N]: N
+
+  4) SSH hosts
+     SSH hosts (comma-separated) [localhost]: myhost.ts.net
+     Testing SSH to myhost.ts.net... OK
+
+  5) Writing configuration
+     ✓ Saved to ~/.claude/hooks/.notify-env (chmod 600)
+
+  6) Installing hooks
+     ✓ Claude Code, Codex CLI, Gemini CLI, OpenCode configured
+
+  7) Shell completions
+     ✓ Zsh completions installed
+
+=== Done ===
 ```
 
-### CLI Setup Options
+<details>
+<summary><b>CLI Options</b></summary>
 
-| Flag / Env Var | Description |
-|----------------|-------------|
-| `--non-interactive` | Skip prompts, read all values from env vars |
-| `--json` | Output in JSON format |
-| `--verbose` | Enable debug output |
-| `AILY_DASHBOARD_URL` | Dashboard URL (default: `https://aily.jiun.dev`) |
-| `AILY_AUTH_TOKEN` | Dashboard API auth token |
-| `DISCORD_BOT_TOKEN` | Discord bot token |
-| `DISCORD_CHANNEL_ID` | Discord channel ID |
-| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
-| `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`) |
-| `SLACK_CHANNEL_ID` | Slack channel ID |
-| `SSH_HOSTS` | Comma-separated SSH targets |
-| `AILY_ENV` | Custom config file path (default: `~/.claude/hooks/.notify-env`) |
+| Option | Description |
+|--------|-------------|
+| `aily init` | Interactive setup wizard (recommended) |
+| `aily init --non-interactive` | Headless mode — reads from env vars |
+| `aily status` | Show platform connectivity |
+| `aily doctor` | Diagnose common issues |
+| `aily config show` | Show current config (tokens redacted) |
+| `aily config set KEY VALUE` | Update a config key |
+| `aily uninstall` | Remove hooks and configuration |
+| `--json` | JSON output (global flag) |
+| `--verbose` | Debug output (global flag) |
+
+</details>
 
 ## How It Works
 
