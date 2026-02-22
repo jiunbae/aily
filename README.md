@@ -65,6 +65,42 @@ aily status    # check platform connectivity
 aily doctor    # diagnose common issues
 ```
 
+## Start with Agent
+
+Let your AI agent handle the install. Paste this prompt into Claude Code, Codex, or Gemini:
+
+> Install aily notification relay: `npm install -g aily-cli && aily init --non-interactive`.
+> Set these env vars before running init: `AILY_DASHBOARD_URL`, `AILY_AUTH_TOKEN`, `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `SSH_HOSTS`.
+> After install, run `aily status` to verify and `aily doctor` to check for issues.
+
+Or with explicit values:
+
+```bash
+AILY_DASHBOARD_URL="https://aily.jiun.dev" \
+AILY_AUTH_TOKEN="<token>" \
+DISCORD_BOT_TOKEN="<bot-token>" \
+DISCORD_CHANNEL_ID="<channel-id>" \
+SSH_HOSTS="host1,host2" \
+aily init --non-interactive
+```
+
+### CLI Setup Options
+
+| Flag / Env Var | Description |
+|----------------|-------------|
+| `--non-interactive` | Skip prompts, read all values from env vars |
+| `--json` | Output in JSON format |
+| `--verbose` | Enable debug output |
+| `AILY_DASHBOARD_URL` | Dashboard URL (default: `https://aily.jiun.dev`) |
+| `AILY_AUTH_TOKEN` | Dashboard API auth token |
+| `DISCORD_BOT_TOKEN` | Discord bot token |
+| `DISCORD_CHANNEL_ID` | Discord channel ID |
+| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`) |
+| `SLACK_CHANNEL_ID` | Slack channel ID |
+| `SSH_HOSTS` | Comma-separated SSH targets |
+| `AILY_ENV` | Custom config file path (default: `~/.claude/hooks/.notify-env`) |
+
 ## How It Works
 
 ```
