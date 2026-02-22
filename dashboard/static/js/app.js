@@ -135,6 +135,11 @@
     const data = isJson ? await res.json().catch(() => null) : await res.text().catch(() => "");
 
     if (!res.ok) {
+      // Redirect to login on auth failure
+      if (res.status === 401) {
+        window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+        return null;
+      }
       const msg =
         (data && data.error && data.error.message) ||
         (typeof data === "string" ? data : "") ||

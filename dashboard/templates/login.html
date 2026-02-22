@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en" class="{{ theme or 'dark' }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="{{ theme or 'dark' }}">
+  <title>Login — aily Dashboard</title>
+
+  <script>
+    (function() {
+      var theme = localStorage.getItem('aily-theme') || '{{ theme or "dark" }}';
+      if (theme === 'system') {
+        theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.classList.toggle('dark', theme === 'dark');
+      document.documentElement.classList.toggle('light', theme === 'light');
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'SF Mono', 'Consolas', 'monospace'],
+          },
+        },
+      },
+    }
+  </script>
+
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="bg-[var(--bg-base)] text-[var(--text-primary)] font-sans text-sm antialiased min-h-screen flex items-center justify-center">
+
+  <div class="w-full max-w-sm mx-4">
+    <div class="text-center mb-8">
+      <span class="text-3xl font-bold text-[var(--accent-primary)] font-mono tracking-tight">aily</span>
+      <p class="text-[var(--text-muted)] text-xs mt-2 uppercase tracking-widest">Dashboard</p>
+    </div>
+
+    <form method="POST" action="/login" class="bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl p-6 shadow-lg">
+      <input type="hidden" name="next" value="{{ next or '/' }}">
+
+      {% if error %}
+      <div class="mb-4 px-3 py-2 rounded-lg bg-[rgba(239,68,68,0.1)] border border-[var(--status-error)] text-[var(--status-error)] text-xs">
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <label for="token" class="block mb-2 text-xs font-medium text-[var(--text-secondary)]">Auth Token</label>
+      <input
+        type="password"
+        id="token"
+        name="token"
+        required
+        autofocus
+        autocomplete="current-password"
+        placeholder="Enter dashboard token"
+        class="w-full px-3 py-2.5 rounded-lg bg-[var(--bg-elevated)] border border-[var(--bg-overlay)] text-[var(--text-primary)] text-sm font-mono placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] transition-colors"
+      >
+
+      <button
+        type="submit"
+        class="w-full mt-4 px-4 py-2.5 rounded-lg bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-white text-sm font-medium transition-colors"
+      >
+        Login
+      </button>
+    </form>
+
+    <p class="text-center text-[var(--text-muted)] text-xs mt-6">
+      Token is set via <code class="font-mono text-[var(--text-secondary)]">DASHBOARD_TOKEN</code> env var
+    </p>
+  </div>
+
+</body>
+</html>
