@@ -56,7 +56,11 @@ fi
         THREAD_ID=$(discord_find_thread "$THREAD_NAME")
         if [[ -n "$THREAD_ID" ]]; then
           discord_post_to_thread "$THREAD_ID" "Session \`${SESSION_NAME}\` closed on \`${HOSTNAME_SHORT}\` · ${TIMESTAMP}"
-          discord_archive_thread "$THREAD_ID"
+          if [[ "${THREAD_CLEANUP:-archive}" == "delete" ]]; then
+            discord_delete_thread "$THREAD_ID"
+          else
+            discord_archive_thread "$THREAD_ID"
+          fi
         fi
         ;;
     esac
@@ -78,7 +82,11 @@ fi
         THREAD_TS=$(slack_find_thread "$THREAD_NAME")
         if [[ -n "$THREAD_TS" ]]; then
           slack_post_to_thread "$THREAD_TS" "Session \`${SESSION_NAME}\` closed on \`${HOSTNAME_SHORT}\` · ${TIMESTAMP}"
-          slack_archive_thread "$THREAD_TS"
+          if [[ "${THREAD_CLEANUP:-archive}" == "delete" ]]; then
+            slack_delete_thread "$THREAD_TS"
+          else
+            slack_archive_thread "$THREAD_TS"
+          fi
         fi
         ;;
     esac

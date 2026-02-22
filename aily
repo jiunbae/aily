@@ -416,8 +416,28 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 5. Write config --
-  printf "  ${C_BOLD}5) Writing configuration${C_RESET}\n"
+  # -- 5. Thread cleanup --
+  printf "  ${C_BOLD}5) Thread cleanup${C_RESET}\n"
+  local thread_cleanup
+  if [[ "$non_interactive" == "true" ]]; then
+    thread_cleanup="${THREAD_CLEANUP:-archive}"
+  else
+    info "When a tmux session is destroyed, what should happen to its thread?"
+    printf "    1) ${C_BOLD}archive${C_RESET} — archive/lock thread (keeps history)\n"
+    printf "    2) ${C_BOLD}delete${C_RESET}  — delete thread entirely\n"
+    local cleanup_choice
+    printf "  Choice [1]: "
+    read -r cleanup_choice
+    case "${cleanup_choice:-1}" in
+      2|delete) thread_cleanup="delete" ;;
+      *)        thread_cleanup="archive" ;;
+    esac
+    ok "Thread cleanup: ${thread_cleanup}"
+  fi
+  echo ""
+
+  # -- 6. Write config --
+  printf "  ${C_BOLD}6) Writing configuration${C_RESET}\n"
   mkdir -p "$(dirname "$ENV_FILE")"
 
   # Build the config file content
@@ -454,6 +474,7 @@ cmd_init() {
   config_content+="# --- General ---\n"
   config_content+="SSH_HOSTS=\"${ssh_hosts}\"\n"
   config_content+="TMUX_THREAD_SYNC=\"true\"\n"
+  config_content+="THREAD_CLEANUP=\"${thread_cleanup}\"\n"
 
   # Preserve any extra keys from existing config
   printf '%b' "$config_content" > "$ENV_FILE"
@@ -461,8 +482,8 @@ cmd_init() {
   ok "Saved to ${ENV_FILE} (chmod 600)"
   echo ""
 
-  # -- 6. Install hooks --
-  printf "  ${C_BOLD}6) Installing hooks${C_RESET}\n"
+  # -- 7. Install hooks --
+  printf "  ${C_BOLD}7) Installing hooks${C_RESET}\n"
   if [[ -x "${SCRIPT_DIR}/install.sh" ]]; then
     bash "${SCRIPT_DIR}/install.sh" 2>&1 | while IFS= read -r line; do
       echo "  $line"
@@ -473,8 +494,8 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 7. Install shell completions --
-  printf "  ${C_BOLD}7) Shell completions${C_RESET}\n"
+  # -- 8. Install shell completions --
+  printf "  ${C_BOLD}8) Shell completions${C_RESET}\n"
   local comp_dir
   if [[ -n "${ZSH_VERSION:-}" || "$SHELL" == */zsh ]]; then
     comp_dir="${ZDOTDIR:-$HOME}/.zfunc"
@@ -498,8 +519,8 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 8. Test notification --
-  printf "  ${C_BOLD}8) Test notification${C_RESET}\n"
+  # -- 9. Test notification --
+  printf "  ${C_BOLD}9) Test notification${C_RESET}\n"
   if [[ "$non_interactive" == "false" ]]; then
     if prompt_yn "Send a test notification?" "y"; then
       _send_test_notification
@@ -667,6 +688,9 @@ cmd_status() {
   local sync_status
   sync_status=$(env_get "TMUX_THREAD_SYNC" "true")
   info "Thread sync: ${sync_status}"
+  local cleanup_status
+  cleanup_status=$(env_get "THREAD_CLEANUP" "archive")
+  info "Thread cleanup: ${cleanup_status}"
   if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
     local session_count
     session_count=$(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')
@@ -1345,15 +1369,24 @@ cmd_stop() {
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
-  info "Stopping thread for ${session_name}..."
+  load_env
+  local cleanup_mode
+  cleanup_mode=$(env_get "THREAD_CLEANUP" "archive")
+
+  info "Stopping thread for ${session_name} (${cleanup_mode})..."
 
   if load_discord_env 2>/dev/null; then
     local thread_id
     thread_id=$(discord_find_thread "$thread_name")
     if [[ -n "$thread_id" ]]; then
       discord_post_to_thread "$thread_id" "Session \`${session_name}\` stopped on \`${hostname_short}\` · ${timestamp}"
-      discord_archive_thread "$thread_id"
-      ok "[discord] Thread archived"
+      if [[ "$cleanup_mode" == "delete" ]]; then
+        discord_delete_thread "$thread_id"
+        ok "[discord] Thread deleted"
+      else
+        discord_archive_thread "$thread_id"
+        ok "[discord] Thread archived"
+      fi
     else
       info "[discord] No thread found"
     fi
@@ -1364,8 +1397,13 @@ cmd_stop() {
     thread_ts=$(slack_find_thread "$thread_name")
     if [[ -n "$thread_ts" ]]; then
       slack_post_to_thread "$thread_ts" "Session \`${session_name}\` stopped on \`${hostname_short}\` · ${timestamp}"
-      slack_archive_thread "$thread_ts"
-      ok "[slack] Thread archived"
+      if [[ "$cleanup_mode" == "delete" ]]; then
+        slack_delete_thread "$thread_ts"
+        ok "[slack] Thread deleted"
+      else
+        slack_archive_thread "$thread_ts"
+        ok "[slack] Thread archived"
+      fi
     else
       info "[slack] No thread found"
     fi

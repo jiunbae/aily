@@ -76,6 +76,7 @@ CHANNEL_ID: str = ""
 GUILD_ID: str = ""
 SSH_HOSTS: list[str] = []
 DEFAULT_HOST: str = ""
+THREAD_CLEANUP: str = "archive"
 _announced: bool = False
 
 
@@ -241,6 +242,11 @@ async def archive_thread(http: aiohttp.ClientSession, token: str, thread_id: str
         f"/channels/{thread_id}", {"archived": True})
 
 
+async def delete_thread(http: aiohttp.ClientSession, token: str, thread_id: str):
+    """Delete a thread (Discord channel delete)."""
+    await discord_request(http, token, "DELETE", f"/channels/{thread_id}")
+
+
 # --- ! commands ---
 
 async def handle_command(http: aiohttp.ClientSession, token: str,
@@ -341,15 +347,22 @@ async def cmd_kill(http: aiohttp.ClientSession, token: str,
             f"tmux kill-session -t {safe_name}")
         tmux_killed = (rc == 0)
 
-    # Archive Discord thread
+    # Clean up Discord thread
     thread_name = f"{AGENT_PREFIX}{session_name}"
     thread_id = await find_thread(http, token, thread_name)
-    thread_archived = False
+    thread_cleaned = False
+    cleanup_action = "archived"
     if thread_id:
-        await post_message(http, token, thread_id,
-            f"Session `{session_name}` killed. Archiving thread.")
-        await archive_thread(http, token, thread_id)
-        thread_archived = True
+        if THREAD_CLEANUP == "delete":
+            await delete_thread(http, token, thread_id)
+            thread_cleaned = True
+            cleanup_action = "deleted"
+        else:
+            await post_message(http, token, thread_id,
+                f"Session `{session_name}` killed. Archiving thread.")
+            await archive_thread(http, token, thread_id)
+            thread_cleaned = True
+            cleanup_action = "archived"
 
     # Report
     status = []
@@ -359,12 +372,23 @@ async def cmd_kill(http: aiohttp.ClientSession, token: str,
         status.append(f"Failed to kill `{session_name}` on `{host}`")
     else:
         status.append(f"tmux `{session_name}` not found")
-    if thread_archived:
-        status.append("archived thread")
+    if thread_cleaned:
+        status.append(f"{cleanup_action} thread")
     else:
         status.append("no thread found")
 
     await post_message(http, token, reply_to, " / ".join(status))
+
+    # Emit dashboard event for session lifecycle tracking
+    _fire_dashboard_event({
+        "type": "session.killed",
+        "session_name": session_name,
+        "platform": "discord",
+        "host": host or "",
+        "tmux_killed": tmux_killed,
+        "thread_cleanup": cleanup_action if thread_cleaned else "none",
+        "timestamp": _now_iso(),
+    })
 
 
 async def cmd_sessions(http: aiohttp.ClientSession, token: str, reply_to: str):
@@ -582,7 +606,7 @@ async def heartbeat_loop(ws, interval: float, get_sequence):
 
 
 async def main():
-    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, DASHBOARD_URL, _dashboard_http
+    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, THREAD_CLEANUP, DASHBOARD_URL, _dashboard_http
 
     env_path = os.environ.get("AGENT_BRIDGE_ENV",
         os.path.expanduser("~/.claude/hooks/.notify-env"))
@@ -607,6 +631,11 @@ async def main():
         SSH_HOSTS = ["localhost"]
     DEFAULT_HOST = SSH_HOSTS[0] if SSH_HOSTS else ""
 
+    # Thread cleanup mode: "archive" (default) or "delete"
+    THREAD_CLEANUP = env.get("THREAD_CLEANUP", "archive").lower()
+    if THREAD_CLEANUP not in ("archive", "delete"):
+        THREAD_CLEANUP = "archive"
+
     if not token:
         print("DISCORD_BOT_TOKEN not set", file=sys.stderr)
         sys.exit(1)
@@ -618,6 +647,7 @@ async def main():
     print(f"[bridge] SSH hosts: {SSH_HOSTS}")
     print(f"[bridge] Channel: {CHANNEL_ID}")
     print(f"[bridge] Thread prefix: '{AGENT_PREFIX}'")
+    print(f"[bridge] Thread cleanup: {THREAD_CLEANUP}")
     if DASHBOARD_URL:
         print(f"[bridge] Dashboard: {DASHBOARD_URL}")
     else:
