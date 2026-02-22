@@ -74,6 +74,7 @@ CHANNEL_ID: str = ""
 SSH_HOSTS: list[str] = []
 DEFAULT_HOST: str = ""
 BOT_USER_ID: str = ""
+_announced: bool = False
 
 # Cache: thread_ts -> session_name (avoid repeated conversations.replies calls)
 _thread_cache: dict[str, str] = {}
@@ -678,6 +679,20 @@ async def main():
 
     print("[slack-bridge] Starting Socket Mode connection...")
     await socket_client.connect()
+
+    # Announce commands on first connect
+    global _announced
+    if not _announced:
+        _announced = True
+        announce_text = (
+            "*aily bridge connected*\n"
+            "Available commands:\n"
+            "- `!new <name> [host] [pwd]` — create tmux session\n"
+            "- `!kill <name>` — kill tmux session\n"
+            "- `!sessions` — list active sessions\n"
+            f"Hosts: `{'`, `'.join(SSH_HOSTS)}`"
+        )
+        await post_message(web_client, CHANNEL_ID, announce_text)
 
     # Keep alive
     try:
