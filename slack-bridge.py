@@ -288,7 +288,7 @@ async def handle_command(
     thread_ts: str = None,
 ):
     """Handle ! commands from Slack."""
-    parts = text.split(None, 2)
+    parts = text.split(None, 3)
     cmd = parts[0].lower() if parts else ""
 
     if cmd == "!new":
@@ -301,7 +301,7 @@ async def handle_command(
         await post_message(
             client,
             channel,
-            "Unknown command. Available: `!new <name> [host]`, `!kill <name>`, `!sessions`",
+            "Unknown command. Available: `!new <name> [host] [pwd]`, `!kill <name>`, `!sessions`",
             thread_ts=thread_ts,
         )
 
@@ -312,12 +312,12 @@ async def cmd_new(
     parts: list[str],
     thread_ts: str = None,
 ):
-    """!new <session_name> [host] — create tmux session + Slack thread."""
+    """!new <session_name> [host] [pwd] — create tmux session + Slack thread."""
     if len(parts) < 2:
         await post_message(
             client,
             reply_to,
-            f"Usage: `!new <session_name> [host]`\n"
+            f"Usage: `!new <session_name> [host] [pwd]`\n"
             f"Available hosts: `{'`, `'.join(SSH_HOSTS)}`",
             thread_ts=thread_ts,
         )
@@ -325,6 +325,7 @@ async def cmd_new(
 
     session_name = parts[1]
     host = parts[2] if len(parts) > 2 else DEFAULT_HOST
+    working_dir = parts[3] if len(parts) > 3 else None
 
     if not is_valid_session_name(session_name):
         await post_message(
@@ -357,9 +358,10 @@ async def cmd_new(
 
     # Create tmux session
     safe_name = shlex.quote(session_name)
-    rc, _ = await asyncio.to_thread(
-        run_ssh, host, f"tmux new-session -d -s {safe_name}"
-    )
+    tmux_cmd = f"tmux new-session -d -s {safe_name}"
+    if working_dir:
+        tmux_cmd += f" -c {shlex.quote(working_dir)}"
+    rc, _ = await asyncio.to_thread(run_ssh, host, tmux_cmd)
     if rc != 0:
         await post_message(
             client,
@@ -370,26 +372,27 @@ async def cmd_new(
         return
 
     # Create Slack thread
+    cwd_label = f" in `{working_dir}`" if working_dir else ""
     thread_name = f"{AGENT_PREFIX}{session_name}"
     new_ts = await ensure_thread(
-        client, thread_name, f"tmux session: *{thread_name}* (`{host}`)"
+        client, thread_name, f"tmux session: *{thread_name}* (`{host}`{cwd_label})"
     )
 
     if new_ts:
         await post_message(
-            client, CHANNEL_ID, f"Session `{session_name}` created on `{host}`.", new_ts
+            client, CHANNEL_ID, f"Session `{session_name}` created on `{host}`{cwd_label}.", new_ts
         )
         await post_message(
             client,
             reply_to,
-            f"Created `{session_name}` on `{host}` + thread",
+            f"Created `{session_name}` on `{host}`{cwd_label} + thread",
             thread_ts=thread_ts,
         )
     else:
         await post_message(
             client,
             reply_to,
-            f"Created tmux `{session_name}` on `{host}` but failed to create thread.",
+            f"Created tmux `{session_name}` on `{host}`{cwd_label} but failed to create thread.",
             thread_ts=thread_ts,
         )
 

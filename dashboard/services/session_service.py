@@ -97,17 +97,20 @@ class SessionService:
         await asyncio.gather(*(query_host(h) for h in self.ssh_hosts))
         return results
 
-    async def create_session(self, name: str, host: str) -> bool:
+    async def create_session(
+        self, name: str, host: str, working_dir: str | None = None
+    ) -> bool:
         """Create a new detached tmux session on the specified host.
 
         Args:
             name: Session name (must pass is_valid_session_name).
             host: SSH host to create on.
+            working_dir: Initial working directory (default: home dir).
 
         Returns:
             True if creation succeeded.
         """
-        return await ssh.create_tmux_session(host, name)
+        return await ssh.create_tmux_session(host, name, working_dir)
 
     async def kill_session(self, name: str) -> tuple[bool, str | None]:
         """Kill a tmux session, searching all hosts for it first.

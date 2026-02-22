@@ -238,7 +238,8 @@ async def create_session(request: web.Request) -> web.Response:
         )
 
     # Create tmux session via SSH
-    success = await session_svc.create_session(name, host)
+    working_dir = body.get("working_dir", "").strip() or None
+    success = await session_svc.create_session(name, host, working_dir)
     if not success:
         return error_response(
             500,
@@ -249,9 +250,9 @@ async def create_session(request: web.Request) -> web.Response:
     # Record in database
     now = db.now_iso()
     await db.execute(
-        """INSERT INTO sessions (name, host, status, created_at, updated_at)
-           VALUES (?, ?, 'active', ?, ?)""",
-        (name, host, now, now),
+        """INSERT INTO sessions (name, host, status, working_dir, created_at, updated_at)
+           VALUES (?, ?, 'active', ?, ?, ?)""",
+        (name, host, working_dir, now, now),
     )
 
     # Update agent_type if provided
