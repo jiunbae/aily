@@ -76,6 +76,7 @@ CHANNEL_ID: str = ""
 GUILD_ID: str = ""
 SSH_HOSTS: list[str] = []
 DEFAULT_HOST: str = ""
+_announced: bool = False
 
 
 def load_env(env_path: str) -> dict:
@@ -500,6 +501,20 @@ async def gateway_connect(token: str):
             GUILD_ID = ch.get("guild_id", "") if isinstance(ch, dict) else ""
             if GUILD_ID:
                 print(f"[bridge] Guild: {GUILD_ID}")
+
+        # Announce commands on first connect
+        global _announced
+        if not _announced:
+            _announced = True
+            announce_text = (
+                "**aily bridge connected**\n"
+                "Available commands:\n"
+                "- `!new <name> [host] [pwd]` — create tmux session\n"
+                "- `!kill <name>` — kill tmux session\n"
+                "- `!sessions` — list active sessions\n"
+                f"Hosts: `{'`, `'.join(SSH_HOSTS)}`"
+            )
+            await post_message(http, token, CHANNEL_ID, announce_text)
 
         intents = INTENT_GUILDS | INTENT_GUILD_MESSAGES | INTENT_MESSAGE_CONTENT
         sequence = None
