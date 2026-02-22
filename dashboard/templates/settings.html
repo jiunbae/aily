@@ -94,6 +94,17 @@
             <p class="text-[11px] text-[var(--text-muted)] mt-1">Used for API authentication (Bearer token)</p>
           </div>
 
+          <!-- Logout -->
+          <div class="flex items-center justify-between py-2">
+            <div>
+              <div class="text-xs font-medium text-[var(--text-secondary)]">Session</div>
+              <div class="text-[11px] text-[var(--text-muted)]">Clear browser session and return to login</div>
+            </div>
+            <form method="POST" action="/logout">
+              <button type="submit" class="btn-secondary px-3 py-2 text-xs font-medium">Logout</button>
+            </form>
+          </div>
+
           <!-- Session Poller -->
           <div class="flex items-center justify-between py-2">
             <div>

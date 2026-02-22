@@ -26,7 +26,13 @@ from dashboard.api import settings as settings_api
 from dashboard.api import stats as stats_api
 from dashboard.api import ws as ws_api
 from dashboard.access_log import access_log_middleware
-from dashboard.auth import auth_middleware
+from dashboard.auth import (
+    COOKIE_MAX_AGE,
+    COOKIE_NAME,
+    auth_middleware,
+    create_session_cookie,
+    validate_session_cookie,
+)
 from dashboard.config import Config
 from dashboard.db import close_db, init_db
 from dashboard.rate_limit import rate_limit_middleware
@@ -185,6 +191,9 @@ def _setup_page_routes(app: web.Application) -> None:
     These routes serve Jinja2 templates if available, otherwise return
     a simple JSON response indicating the dashboard is running.
     """
+    app.router.add_get("/login", _login_page)
+    app.router.add_post("/login", _login_submit)
+    app.router.add_post("/logout", _logout)
     app.router.add_get("/", _index_page)
     app.router.add_get("/sessions", _sessions_page)
     app.router.add_get("/sessions/{name}", _session_detail_page)
@@ -227,9 +236,88 @@ async def _page_context(request: web.Request, **extra: str) -> dict:
     """Build common template context for page handlers."""
     ctx: dict = {"theme": await _get_theme(), **extra}
     config = request.app.get("config")
+    # Only pass ws_token if authenticated via cookie (token already known to server)
     if config and config.dashboard_token:
-        ctx["ws_token"] = config.dashboard_token
+        cookie_value = request.cookies.get(COOKIE_NAME, "")
+        if validate_session_cookie(cookie_value, config.dashboard_token):
+            ctx["ws_token"] = config.dashboard_token
     return ctx
+
+
+async def _login_page(request: web.Request) -> web.Response:
+    """GET /login - Login page."""
+    config = request.app.get("config")
+    # If no auth configured, redirect to home
+    if not config or not config.dashboard_token:
+        raise web.HTTPFound("/")
+    # If already authenticated via cookie, redirect to home
+    cookie_value = request.cookies.get(COOKIE_NAME, "")
+    if validate_session_cookie(cookie_value, config.dashboard_token):
+        raise web.HTTPFound("/")
+    try:
+        import aiohttp_jinja2
+
+        next_url = request.query.get("next", "/")
+        ctx = {"theme": await _get_theme(), "next": next_url, "error": ""}
+        return aiohttp_jinja2.render_template("login.html", request, ctx)
+    except (ImportError, Exception):
+        return web.json_response(
+            {"error": "Login page requires templates. Use Authorization: Bearer header."},
+            status=401,
+        )
+
+
+async def _login_submit(request: web.Request) -> web.Response:
+    """POST /login - Validate token and set session cookie."""
+    import hmac as _hmac
+
+    config = request.app.get("config")
+    if not config or not config.dashboard_token:
+        raise web.HTTPFound("/")
+
+    data = await request.post()
+    token = data.get("token", "")
+    next_url = data.get("next", "/")
+
+    # Validate next URL (prevent open redirect)
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        next_url = "/"
+
+    if token and _hmac.compare_digest(token, config.dashboard_token):
+        # Set session cookie and redirect
+        cookie_value = create_session_cookie(config.dashboard_token)
+        response = web.HTTPFound(next_url)
+        response.set_cookie(
+            COOKIE_NAME,
+            cookie_value,
+            max_age=COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="Lax",
+            path="/",
+        )
+        raise response
+
+    # Invalid token — re-render login with error
+    try:
+        import aiohttp_jinja2
+
+        ctx = {
+            "theme": await _get_theme(),
+            "next": next_url,
+            "error": "Invalid token",
+        }
+        return aiohttp_jinja2.render_template(
+            "login.html", request, ctx, status=401
+        )
+    except (ImportError, Exception):
+        return web.json_response({"error": "Invalid token"}, status=401)
+
+
+async def _logout(request: web.Request) -> web.Response:
+    """POST /logout - Clear session cookie."""
+    response = web.HTTPFound("/login")
+    response.del_cookie(COOKIE_NAME, path="/")
+    raise response
 
 
 async def _index_page(request: web.Request) -> web.Response:
