@@ -246,7 +246,7 @@ async def handle_command(http: aiohttp.ClientSession, token: str,
                          channel_id: str, message: dict):
     """Handle ! commands from Discord."""
     content = message.get("content", "").strip()
-    parts = content.split(None, 2)
+    parts = content.split(None, 3)
     cmd = parts[0].lower() if parts else ""
 
     if cmd == "!new":
@@ -257,20 +257,21 @@ async def handle_command(http: aiohttp.ClientSession, token: str,
         await cmd_sessions(http, token, channel_id)
     else:
         await post_message(http, token, channel_id,
-            "Unknown command. Available: `!new <name> [host]`, `!kill <name>`, `!sessions`")
+            "Unknown command. Available: `!new <name> [host] [pwd]`, `!kill <name>`, `!sessions`")
 
 
 async def cmd_new(http: aiohttp.ClientSession, token: str,
                   reply_to: str, parts: list[str]):
-    """!new <session_name> [host] — create tmux session + Discord thread."""
+    """!new <session_name> [host] [pwd] — create tmux session + Discord thread."""
     if len(parts) < 2:
         await post_message(http, token, reply_to,
-            "Usage: `!new <session_name> [host]`\n"
+            "Usage: `!new <session_name> [host] [pwd]`\n"
             f"Available hosts: `{'`, `'.join(SSH_HOSTS)}`")
         return
 
     session_name = parts[1]
     host = parts[2] if len(parts) > 2 else DEFAULT_HOST
+    working_dir = parts[3] if len(parts) > 3 else None
 
     if not is_valid_session_name(session_name):
         await post_message(http, token, reply_to,
@@ -291,26 +292,29 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
 
     # Create tmux session
     safe_name = shlex.quote(session_name)
-    rc, _ = await asyncio.to_thread(run_ssh, host,
-        f"tmux new-session -d -s {safe_name}")
+    tmux_cmd = f"tmux new-session -d -s {safe_name}"
+    if working_dir:
+        tmux_cmd += f" -c {shlex.quote(working_dir)}"
+    rc, _ = await asyncio.to_thread(run_ssh, host, tmux_cmd)
     if rc != 0:
         await post_message(http, token, reply_to,
             f"Failed to create tmux session `{session_name}` on `{host}`.")
         return
 
     # Create Discord thread
+    cwd_label = f" in `{working_dir}`" if working_dir else ""
     thread_name = f"{AGENT_PREFIX}{session_name}"
     thread_id = await ensure_thread(http, token, thread_name,
-        f"tmux session: **{thread_name}** (`{host}`)")
+        f"tmux session: **{thread_name}** (`{host}`{cwd_label})")
 
     if thread_id:
         await post_message(http, token, thread_id,
-            f"Session `{session_name}` created on `{host}`.")
+            f"Session `{session_name}` created on `{host}`{cwd_label}.")
         await post_message(http, token, reply_to,
-            f"Created `{session_name}` on `{host}` + thread <#{thread_id}>")
+            f"Created `{session_name}` on `{host}`{cwd_label} + thread <#{thread_id}>")
     else:
         await post_message(http, token, reply_to,
-            f"Created tmux `{session_name}` on `{host}` but failed to create thread.")
+            f"Created tmux `{session_name}` on `{host}`{cwd_label} but failed to create thread.")
 
 
 async def cmd_kill(http: aiohttp.ClientSession, token: str,

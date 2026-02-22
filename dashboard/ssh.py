@@ -179,20 +179,26 @@ async def has_session(host: str, session_name: str) -> bool:
     return rc == 0 and "found" in out
 
 
-async def create_tmux_session(host: str, name: str) -> bool:
+async def create_tmux_session(
+    host: str, name: str, working_dir: str | None = None
+) -> bool:
     """Create a new detached tmux session.
 
     Args:
         host: SSH host to create the session on.
         name: Session name.
+        working_dir: Initial working directory (default: home dir).
 
     Returns:
         True if creation succeeded.
     """
     safe = shlex.quote(name)
-    rc, _ = await run_ssh(host, f"tmux new-session -d -s {safe}")
+    cmd = f"tmux new-session -d -s {safe}"
+    if working_dir:
+        cmd += f" -c {shlex.quote(working_dir)}"
+    rc, _ = await run_ssh(host, cmd)
     if rc == 0:
-        logger.info("Created tmux session '%s' on '%s'", name, host)
+        logger.info("Created tmux session '%s' on '%s' (cwd=%s)", name, host, working_dir or "~")
     else:
         logger.error("Failed to create tmux session '%s' on '%s'", name, host)
     return rc == 0
