@@ -22,7 +22,7 @@ Get notified when tasks complete, forward interactive prompts, send commands bac
 
 Paste this into your AI agent (Claude Code, Codex, Gemini):
 
-> Install aily — AI agent notification relay for Discord/Slack.
+> Install aily — AI agent notification relay for Discord/Slack (https://github.com/jiunbae/aily).
 > Run `npm install -g aily-cli` then `aily init` to start the interactive setup wizard.
 > The wizard will ask for: dashboard URL, auth token, Discord/Slack credentials, and SSH hosts.
 > After setup, run `aily status` to verify connectivity and `aily doctor` to check for issues.
