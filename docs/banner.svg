@@ -7,6 +7,12 @@
     <clipPath id="icon-clip">
       <rect x="-56" y="-56" width="112" height="112" rx="26"/>
     </clipPath>
+    <style>
+      @media (prefers-color-scheme: dark) {
+        .wordmark { fill: #F1F5F9 !important; }
+        .tagline  { fill: #94A3B8 !important; }
+      }
+    </style>
   </defs>
 
   <!-- Logo icon -->
@@ -26,8 +32,8 @@
   </g>
 
   <!-- Wordmark -->
-  <text x="180" y="105" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="80" font-weight="800" fill="#1E1B4B" letter-spacing="-4">aily</text>
+  <text class="wordmark" x="180" y="105" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="80" font-weight="800" fill="#1E1B4B" letter-spacing="-4">aily</text>
 
   <!-- Tagline -->
-  <text x="184" y="138" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="17" font-weight="500" fill="#6B7280" letter-spacing="1">AI agent notification relay</text>
+  <text class="tagline" x="184" y="138" font-family="'Inter', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif" font-size="17" font-weight="500" fill="#6B7280" letter-spacing="1">AI agent notification relay</text>
 </svg>
