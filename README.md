@@ -1,26 +1,22 @@
 <div align="center">
 
-<img src="docs/banner.svg" alt="aily — AI notification relay" width="700"/>
+<img src="docs/banner.svg" alt="aily — AI agent notification relay" width="700"/>
 
 <br/>
-<br/>
 
-AI agent notification relay + web dashboard for Discord and Slack.
-Get notified when tasks complete, forward interactive prompts, send commands back — all from your phone.
+**Know when your agent finishes. Reply from your phone.**
+
+Built for developers running AI coding agents in tmux sessions across SSH hosts.
 
 [![npm](https://img.shields.io/npm/v/aily-cli)](https://www.npmjs.com/package/aily-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Claude Code](https://img.shields.io/badge/Claude_Code-hook-blueviolet)](https://docs.anthropic.com/en/docs/claude-code)
-[![Codex CLI](https://img.shields.io/badge/Codex_CLI-hook-green)](https://github.com/openai/codex)
-[![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-hook-orange)](https://github.com/google-gemini/gemini-cli)
+[![GitHub stars](https://img.shields.io/github/stars/jiunbae/aily)](https://github.com/jiunbae/aily)
 
 </div>
 
----
+## Quickstart for Agents
 
-## Quick Start
-
-Paste this into your AI agent (Claude Code, Codex, Gemini):
+<div><img src="https://quickstart-for-agents.vercel.app/api/header.svg?theme=claude-code&mascot=wave&title=Install+aily&lang=Agents" width="100%" /></div>
 
 ```
 Install aily — AI agent notification relay for Discord/Slack (https://github.com/jiunbae/aily).
@@ -29,7 +25,16 @@ The wizard will ask for: dashboard URL, auth token, Discord/Slack credentials, a
 After setup, run `aily status` to verify connectivity and `aily doctor` to check for issues.
 ```
 
-`aily init` guides you through each step interactively:
+<div><img src="https://quickstart-for-agents.vercel.app/api/footer.svg?theme=claude-code" width="100%" /></div>
+
+## Quick Start
+
+> **Prerequisite:** [Node.js](https://nodejs.org/) >= 14
+
+`aily init` walks you through everything:
+
+<details>
+<summary><code>$ aily init</code> — wizard output</summary>
 
 ```
 $ aily init
@@ -37,36 +42,32 @@ $ aily init
 === aily setup wizard ===
 
   1) Dashboard URL
-     Dashboard URL [https://aily.jiun.dev]:
-     Testing connectivity... OK
+     Dashboard URL [https://aily.jiun.dev]: ... OK
 
-  2) Auth token
-     Auth token [****]:
-     Validating token... OK
+  2) Auth token ... OK
 
   3) Platform setup
-     Enable Discord? [Y/n]: Y
-     Discord bot token [****]:
-     Discord channel ID [1234567890]:
-     Validating Discord... OK (channel: ai-notifications)
-
-     Enable Slack? [y/N]: N
+     Enable Discord? ... OK (channel: ai-notifications)
+     Enable Slack? ... skipped
 
   4) SSH hosts
-     SSH hosts (comma-separated) [localhost]: myhost.ts.net
-     Testing SSH to myhost.ts.net... OK
+     SSH hosts [localhost]: myhost.ts.net ... OK
 
-  5) Writing configuration
+  5) Thread cleanup
+     Choice [1: archive]: ... OK
+
+  6) Writing configuration
      ✓ Saved to ~/.claude/hooks/.notify-env (chmod 600)
 
-  6) Installing hooks
-     ✓ Claude Code, Codex CLI, Gemini CLI, OpenCode configured
+  7) Installing hooks
+     ✓ Claude Code, Codex CLI, Gemini CLI configured
 
-  7) Shell completions
-     ✓ Zsh completions installed
+  8) Shell completions ... installed
 
-=== Done ===
+=== Setup complete ===
 ```
+
+</details>
 
 <details>
 <summary><b>Manual Install</b></summary>
@@ -90,117 +91,82 @@ git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
 </details>
 
 <details>
-<summary><b>CLI Options</b></summary>
+<summary><b>CLI Reference</b></summary>
 
-| Option | Description |
-|--------|-------------|
-| `aily init` | Interactive setup wizard (recommended) |
+| Command | Description |
+|---------|-------------|
+| `aily init` | Interactive setup wizard (credentials, hooks, agents) |
 | `aily init --non-interactive` | Headless mode — reads from env vars |
-| `aily status` | Show platform connectivity |
+| `aily status` | Show platform connectivity and configuration |
 | `aily doctor` | Diagnose common issues |
+| `aily sessions` | List active sessions from dashboard |
+| `aily sync [name]` | Trigger message sync for a session |
+| `aily logs [name]` | Fetch recent messages for a session |
 | `aily config show` | Show current config (tokens redacted) |
 | `aily config set KEY VALUE` | Update a config key |
+| `aily start [name]` | Create thread for tmux session |
+| `aily stop [name]` | Archive/delete thread for tmux session |
+| `aily auto [on\|off]` | Toggle auto thread sync (tmux hooks) |
 | `aily uninstall` | Remove hooks and configuration |
 | `--json` | JSON output (global flag) |
 | `--verbose` | Debug output (global flag) |
 
 </details>
 
+## What Happens After Setup
+
+Once installed, aily works automatically in the background:
+
+- **Agent finishes a task** — You get a Discord/Slack notification in a thread named after your tmux session, with the agent's response.
+- **Agent asks a question** — The prompt appears in the same thread. Reply from your phone to answer it.
+- **You reply in the thread** — Your message is forwarded to the agent's tmux session via SSH, as if you typed it at the keyboard.
+
+Every tmux session gets a dedicated thread. Start a session, get a thread. Close the session, the thread archives (or deletes — [configurable](/.env.example)). No manual wiring.
+
+Unlike one-way notification tools, aily provides **bidirectional chat** — you can monitor and control agents entirely from your phone.
+
+<!-- TODO: Add screenshot/GIF showing Discord notification + reply flow -->
+
 ## How It Works
 
-```
-  Agent (Claude/Codex/Gemini)
-      |
-      v
-  Hook triggers  --->  post.sh (dispatcher)  --+--->  Discord thread
-                                                |
-                                                +--->  Slack thread
-                                                |
-                                                +--->  Dashboard API
+```mermaid
+flowchart LR
+    A["Agent\n(Claude / Codex / Gemini)"] --> B["Hook\n(post.sh)"]
+    B --> C["Discord thread"]
+    B --> D["Slack thread"]
+    B --> E["Dashboard API"]
 
-  Discord/Slack message in thread
-      |
-      v
-  Bridge  --->  SSH  --->  tmux send-keys  --->  Agent input
+    C --> F["Bridge"]
+    D --> F
+    F -->|"SSH + tmux send-keys"| A
 ```
 
 Each tmux session gets a dedicated thread (`[agent] <session-name>`) on each platform. Task completions, interactive prompts, and errors are posted to the matching thread. Reply in the thread to send input back to the agent.
 
+For a deeper look, see [Architecture](docs/architecture.md).
+
 ## Dashboard
 
-The web dashboard provides a real-time UI for monitoring and managing sessions across hosts.
+The web dashboard provides a real-time UI for monitoring and managing sessions across hosts. Features include live session status via WebSocket, full message history, send-input controls, dark/light theme, and mobile-friendly layout.
 
-| Page | Path | Description |
-|------|------|-------------|
-| Home | `/` | Overview with stats and recent activity |
-| Sessions | `/sessions` | Live session list with status, messages, send input |
-| Session Detail | `/sessions/{name}` | Full message history and controls for a session |
-| Settings | `/settings` | Platform status, SSH hosts, feature toggles |
+<!-- TODO: Add screenshot of dashboard sessions page -->
 
-Features: real-time updates via WebSocket, dark/light theme, token-based auth, mobile-friendly.
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `aily init` | Interactive setup wizard (credentials, hooks, agents) |
-| `aily status` | Show platform connectivity and configuration |
-| `aily sessions` | List active sessions from dashboard |
-| `aily sync [name]` | Trigger message sync for a session |
-| `aily logs [name]` | Fetch recent messages for a session |
-| `aily config ...` | Show or edit configuration |
-| `aily doctor` | Diagnose common issues |
-| `aily start [name]` | Create thread for tmux session |
-| `aily stop [name]` | Archive thread for tmux session |
-| `aily auto [on\|off]` | Toggle auto thread sync (tmux hooks) |
-| `aily uninstall` | Remove hooks and configuration |
+See [API Reference](docs/api.md) for dashboard routes and REST endpoints.
 
 ## Supported Agents
 
 | Agent | Hook Type | Extractor |
 |-------|-----------|-----------|
-| **Claude Code** | `Notification` + `PreToolUse` | JSONL session parser |
-| **Codex CLI** | `notify` | stdin message |
-| **Gemini CLI** | `AfterAgent` | stdin JSON |
-
-## Architecture
-
-```
-aily/
-├── aily                        # CLI tool
-├── agent-bridge.py             # Discord <-> tmux bridge
-├── slack-bridge.py             # Slack <-> tmux bridge
-├── dashboard/
-│   ├── app.py                  # aiohttp app factory
-│   ├── config.py               # Configuration from env / .notify-env
-│   ├── api/                    # REST + WebSocket endpoints
-│   ├── services/               # Session, message, platform services
-│   ├── workers/                # Background pollers and sync
-│   ├── templates/              # Jinja2 HTML templates
-│   └── static/                 # CSS, JS, assets
-├── hooks/
-│   ├── post.sh                 # Multi-platform dispatcher
-│   ├── discord-lib.sh          # Discord API functions
-│   ├── slack-lib.sh            # Slack API functions
-│   ├── thread-sync.sh          # tmux session lifecycle
-│   ├── notify-claude.sh        # Claude Code hook
-│   ├── notify-codex.py         # Codex CLI hook
-│   ├── notify-gemini.sh        # Gemini CLI hook
-│   ├── ask-question-notify.sh  # Interactive prompt forwarder
-│   └── extract-last-message.py # JSONL response extractor
-├── Dockerfile                  # Multi-mode container (discord/slack/dashboard)
-└── install.sh                  # One-command local setup
-```
-
-**Bridges** run as long-lived processes (Discord bot or Slack Socket Mode) that relay messages bidirectionally between platform threads and tmux sessions via SSH.
-
-**Dashboard** is an aiohttp web app that polls SSH hosts for tmux sessions, syncs messages from Discord/Slack, and serves a real-time UI. Background workers handle session polling, message sync, and optional JSONL ingestion.
-
-**Hooks** are lightweight shell/Python scripts that fire on agent events, format the output, and dispatch to all configured platforms in parallel. They fork to background to avoid blocking agent execution.
+| [![Claude Code](https://img.shields.io/badge/Claude_Code-hook-blueviolet)](https://docs.anthropic.com/en/docs/claude-code) | `Notification` + `PreToolUse` | JSONL session parser |
+| [![Codex CLI](https://img.shields.io/badge/Codex_CLI-hook-green)](https://github.com/openai/codex) | `notify` | stdin message |
+| [![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-hook-orange)](https://github.com/google-gemini/gemini-cli) | `AfterAgent` | stdin JSON |
 
 ## Configuration
 
-Credentials are stored in `~/.claude/hooks/.notify-env`:
+`aily init` creates `~/.claude/hooks/.notify-env` with all credentials. Run `aily config show` to inspect.
+
+<details>
+<summary><b>.notify-env reference</b></summary>
 
 ```env
 # Discord (optional)
@@ -222,6 +188,8 @@ SSH_HOSTS="host1,host2"
 
 Platforms are auto-detected from available tokens. Run `aily status` to verify.
 
+</details>
+
 <details>
 <summary><b>Discord Bot Setup</b></summary>
 
@@ -242,26 +210,6 @@ Platforms are auto-detected from available tokens. Run `aily status` to verify.
 5. Invite the bot to your channel and copy the channel ID (`SLACK_CHANNEL_ID`)
 
 </details>
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/sessions` | List all sessions |
-| `GET` | `/api/sessions/{name}` | Get session details |
-| `POST` | `/api/sessions/{name}/send` | Send input to a session |
-| `GET` | `/api/sessions/{name}/messages` | Get message history |
-| `POST` | `/api/sessions/{name}/sync` | Trigger message sync |
-| `GET` | `/api/stats` | Dashboard statistics |
-| `GET` | `/ws` | WebSocket for real-time updates |
-| `GET` | `/api/settings` | System settings |
-| `PUT` | `/api/settings` | Update settings |
-| `POST` | `/api/settings/test` | Test platform/SSH connectivity |
-| `GET` | `/api/install.sh` | Downloadable installer script |
-| `POST` | `/api/hooks/event` | Bridge webhook (internal) |
-| `GET` | `/healthz` | Health check (no auth) |
-
-All endpoints except `/healthz` and `/api/hooks/event` require a `Bearer` token when `DASHBOARD_TOKEN` is set.
 
 ## Docker / Kubernetes
 
