@@ -79,6 +79,45 @@ DEFAULT_HOST: str = ""
 THREAD_CLEANUP: str = "archive"
 _announced: bool = False
 
+# Track background tasks to prevent GC and surface exceptions
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _track_task(coro) -> asyncio.Task:
+    """Create a tracked background task that logs exceptions on completion."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _on_done(t: asyncio.Task):
+        _background_tasks.discard(t)
+        if not t.cancelled() and t.exception():
+            print(f"[bridge] background task failed: {t.exception()}", file=sys.stderr)
+
+    task.add_done_callback(_on_done)
+    return task
+
+
+_SECRET_PATTERNS = re.compile(
+    r'(?i)'
+    r'((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
+    r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string'
+    r'|key[_-]?id|client[_-]?secret)'
+    r'\s*[=:])\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
+)
+_PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
+
+
+def _sanitize_backticks(text: str) -> str:
+    """Escape triple backticks in text to prevent markdown injection."""
+    return text.replace('```', r'\`\`\`')
+
+
+def _redact_secrets(text: str) -> str:
+    """Redact common secret patterns from shell output."""
+    text = _SECRET_PATTERNS.sub(r'\1 [REDACTED]', text)
+    text = _PEM_RE.sub('[REDACTED PEM KEY]', text)
+    return text
+
 
 def load_env(env_path: str) -> dict:
     """Load .notify-env file."""
@@ -180,9 +219,9 @@ def capture_shell_output(
 
     last_content = ""
     stable_hits = 0
-    elapsed = 1.0
+    deadline = time.monotonic() + max_wait
 
-    while elapsed < max_wait:
+    while time.monotonic() < deadline:
         current = capture_pane_content(host, session)
         if not current:
             break
@@ -196,7 +235,6 @@ def capture_shell_output(
             last_content = current
 
         time.sleep(poll_interval)
-        elapsed += poll_interval
 
     # Final check: ensure shell is still the foreground process
     pane_cmd = get_pane_command(host, session)
@@ -553,10 +591,15 @@ async def _capture_and_post_output(
         if not output.strip():
             return
 
+        output = _redact_secrets(output)
+        output = _sanitize_backticks(output)
+
         if len(output) > 1800:
             output = output[:1800] + "\n...(truncated)"
 
-        await post_message(http, token, channel_id, f"```\n{output}\n```")
+        safe_name = session.replace('`', "'")
+        await post_message(http, token, channel_id,
+            f"Shell output from `{safe_name}`:\n```\n{output}\n```")
 
     except Exception as e:
         print(f"[bridge] output capture error: {e}", file=sys.stderr)
@@ -598,7 +641,7 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
 
     print(f"[bridge] {user_name} -> [{session_name}]: {user_message[:80]}")
 
-    host = find_session_host(session_name)
+    host = await asyncio.to_thread(find_session_host, session_name)
     if not host:
         await post_message(http, token, channel_id,
             f"Session `{session_name}` not found on any host.\n"
@@ -625,11 +668,14 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
 
     sent = await asyncio.to_thread(send_to_tmux, host, session_name, user_message)
     if sent:
-        asyncio.create_task(
+        _track_task(
             _capture_and_post_output(
                 http, token, channel_id, host, session_name, pre_content
             )
         )
+    else:
+        await post_message(http, token, channel_id,
+            f"Failed to send to `{session_name}` on `{host}`. The session may have exited.")
 
 
 # --- Gateway ---
@@ -699,7 +745,7 @@ async def gateway_connect(token: str):
                                 }
                             }
                         })
-                        asyncio.create_task(
+                        _track_task(
                             heartbeat_loop(ws, heartbeat_interval, lambda: sequence))
 
                     # Heartbeat ACK
@@ -709,7 +755,7 @@ async def gateway_connect(token: str):
                     # Dispatch events
                     elif op == 0:
                         if t == "MESSAGE_CREATE":
-                            asyncio.create_task(
+                            _track_task(
                                 handle_message(http, token, bot_user_id, d))
 
                     # Reconnect / Invalid session
