@@ -33,6 +33,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 
 # Dashboard webhook URL (optional — if not set, events are silently skipped)
 DASHBOARD_URL: str = os.environ.get("AILY_DASHBOARD_URL", "")
+DASHBOARD_AUTH_TOKEN: str = os.environ.get("AILY_AUTH_TOKEN", "")
 
 # Shared aiohttp session for dashboard POSTs (set in main)
 _dashboard_http: aiohttp.ClientSession | None = None
@@ -71,7 +72,10 @@ async def dashboard_api(method: str, path: str, json_body: dict = None) -> dict 
         return None
     url = f"{DASHBOARD_URL.rstrip('/')}{path}"
     try:
-        kwargs: dict = {"timeout": aiohttp.ClientTimeout(total=10)}
+        headers: dict = {}
+        if DASHBOARD_AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {DASHBOARD_AUTH_TOKEN}"
+        kwargs: dict = {"timeout": aiohttp.ClientTimeout(total=10), "headers": headers}
         if json_body is not None:
             kwargs["json"] = json_body
         async with _dashboard_http.request(method, url, **kwargs) as resp:
@@ -80,7 +84,7 @@ async def dashboard_api(method: str, path: str, json_body: dict = None) -> dict 
             body = await resp.text()
             print(f"[dashboard] {method} {path} {resp.status}: {body[:200]}", file=sys.stderr)
             return None
-    except Exception as e:
+    except (aiohttp.ClientError, TimeoutError) as e:
         print(f"[dashboard] {method} {path} failed: {e}", file=sys.stderr)
         return None
 
@@ -756,7 +760,7 @@ async def handle_socket_event(
 
 async def main():
     global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, BOT_USER_ID, THREAD_CLEANUP
-    global DASHBOARD_URL, _dashboard_http
+    global DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
 
     env_path = os.environ.get(
         "AGENT_BRIDGE_ENV", os.path.expanduser("~/.claude/hooks/.notify-env")
@@ -774,6 +778,8 @@ async def main():
     # Dashboard URL from env var (K8s) or .notify-env file
     if not DASHBOARD_URL:
         DASHBOARD_URL = env.get("AILY_DASHBOARD_URL", "")
+    if not DASHBOARD_AUTH_TOKEN:
+        DASHBOARD_AUTH_TOKEN = env.get("AILY_AUTH_TOKEN", "")
 
     # SSH hosts from env (comma-separated) or defaults
     hosts_str = env.get("SSH_HOSTS", "")

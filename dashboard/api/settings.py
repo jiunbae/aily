@@ -39,6 +39,7 @@ DEFAULTS: dict[str, str] = {
     "usage_poll_model_anthropic": "claude-haiku-4-5-20251001",
     "usage_poll_model_openai": "gpt-4o-mini",
     "enable_command_queue": "false",
+    "usage_retention_hours": "168",
 }
 
 # Keys that can be written by the user
@@ -54,6 +55,7 @@ WRITABLE_KEYS = frozenset({
     "usage_poll_model_anthropic",
     "usage_poll_model_openai",
     "enable_command_queue",
+    "usage_retention_hours",
 })
 
 # Read-only keys derived from runtime config

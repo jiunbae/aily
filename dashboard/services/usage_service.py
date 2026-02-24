@@ -125,7 +125,7 @@ class UsageService:
             else:
                 snapshot["error_message"] = f"Unknown provider: {provider}"
                 snapshot["poll_status_code"] = 0
-        except Exception as e:
+        except (aiohttp.ClientError, TimeoutError, OSError) as e:
             snapshot["poll_status_code"] = 0
             snapshot["error_message"] = str(e)[:500]
             logger.exception("Usage poll failed for %s", provider)
