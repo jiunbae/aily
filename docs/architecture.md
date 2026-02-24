@@ -27,7 +27,7 @@ There are two independent data flows:
 
 ## Components
 
-### 1. Notification Hook (`notify-clawdia.sh`)
+### 1. Notification Hook (`post.sh`)
 
 **Trigger:** Claude Code's `Notification` event (fires when the AI finishes and the user appears idle)
 
