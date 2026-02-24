@@ -104,7 +104,8 @@ _thread_cache: OrderedDict[str, str] = OrderedDict()
 _SECRET_PATTERNS = re.compile(
     r'(?i)'
     r'((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
-    r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string)'
+    r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string'
+    r'|key[_-]?id|client[_-]?secret)'
     r'\s*[=:])\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
 )
 _PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
