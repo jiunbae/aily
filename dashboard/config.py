@@ -59,6 +59,16 @@ class Config:
     jsonl_max_lines: int = 500           # max lines to tail per file
     jsonl_max_content_length: int = 5000 # truncate content longer than this
 
+    # Usage monitoring
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    enable_usage_poller: bool = False
+    usage_poll_interval: int = 60
+    usage_poll_model_anthropic: str = "claude-haiku-4-5-20251001"
+    usage_poll_model_openai: str = "gpt-4o-mini"
+    enable_command_queue: bool = False
+    usage_retention_hours: int = 168  # 7 days
+
     # .notify-env path
     env_file: str = ""
 
@@ -123,6 +133,28 @@ class Config:
             os.environ.get("JSONL_MAX_LINES", str(config.jsonl_max_lines))
         )
 
+        # Usage monitoring
+        config.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        config.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        config.enable_usage_poller = (
+            os.environ.get("ENABLE_USAGE_POLLER", "false").lower() == "true"
+        )
+        config.usage_poll_interval = int(
+            os.environ.get("USAGE_POLL_INTERVAL", str(config.usage_poll_interval))
+        )
+        config.usage_poll_model_anthropic = os.environ.get(
+            "USAGE_POLL_MODEL_ANTHROPIC", config.usage_poll_model_anthropic
+        )
+        config.usage_poll_model_openai = os.environ.get(
+            "USAGE_POLL_MODEL_OPENAI", config.usage_poll_model_openai
+        )
+        config.enable_command_queue = (
+            os.environ.get("ENABLE_COMMAND_QUEUE", "false").lower() == "true"
+        )
+        config.usage_retention_hours = int(
+            os.environ.get("USAGE_RETENTION_HOURS", str(config.usage_retention_hours))
+        )
+
         # Fallback: load .notify-env file (same format as bridges)
         env_file = os.environ.get("AGENT_BRIDGE_ENV", "")
         if env_file and Path(env_file).exists():
@@ -165,5 +197,11 @@ def _load_notify_env(config: Config, path: str) -> None:
         hosts = env.get("SSH_HOSTS", "")
         if hosts:
             config.ssh_hosts = [h.strip() for h in hosts.split(",") if h.strip()]
+
+    # API keys for usage monitoring
+    if not config.anthropic_api_key:
+        config.anthropic_api_key = env.get("ANTHROPIC_API_KEY", "")
+    if not config.openai_api_key:
+        config.openai_api_key = env.get("OPENAI_API_KEY", "")
 
     logger.info("Loaded config from %s", path)
