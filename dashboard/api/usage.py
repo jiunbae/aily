@@ -212,7 +212,7 @@ async def enqueue_command(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     session_name = body.get("session_name", "").strip()
@@ -235,6 +235,14 @@ async def enqueue_command(request: web.Request) -> web.Response:
                 f"Session '{session_name}' not found or has no host",
             )
         host = session["host"]
+
+    # Validate host against configured SSH_HOSTS
+    session_svc = request.app.get("session_service")
+    if session_svc and host not in session_svc.ssh_hosts:
+        return error_response(
+            400, "INVALID_HOST",
+            f"Host '{host}' is not in the allowed SSH_HOSTS list",
+        )
 
     try:
         priority = int(body.get("priority", 0))

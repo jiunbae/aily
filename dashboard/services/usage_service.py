@@ -6,6 +6,7 @@ and manages a deferred command queue that executes when limits recover.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -196,8 +197,12 @@ class UsageService:
             else:
                 try:
                     result[field_name] = int(value)
-                except ValueError:
-                    result[field_name] = value
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Could not parse integer from header '%s': %s",
+                        header_name, value,
+                    )
+                    result[field_name] = None
         return result
 
     # --- Snapshot persistence ---
@@ -289,23 +294,26 @@ class UsageService:
         )
 
     async def execute_pending_commands(self) -> list[dict[str, Any]]:
-        """Execute all pending commands via SessionService."""
+        """Execute all pending commands via SessionService concurrently."""
         if not self.session_svc:
             logger.warning("Cannot execute commands: no SessionService")
             return []
 
         commands = await self.get_pending_commands()
-        results: list[dict[str, Any]] = []
+        if not commands:
+            return []
 
+        # Mark all as executing first
+        now = db.now_iso()
         for cmd in commands:
-            cmd_id = cmd["id"]
-            now = db.now_iso()
-
             await db.execute(
                 "UPDATE command_queue SET status = 'executing', updated_at = ? WHERE id = ?",
-                (now, cmd_id),
+                (now, cmd["id"]),
             )
 
+        async def _exec_one(cmd: dict) -> dict:
+            cmd_id = cmd["id"]
+            ts = db.now_iso()
             try:
                 success = await self.session_svc.send_to_session(
                     cmd["host"], cmd["session_name"], cmd["command"]
@@ -315,9 +323,9 @@ class UsageService:
                         """UPDATE command_queue
                            SET status = 'completed', executed_at = ?, updated_at = ?
                            WHERE id = ?""",
-                        (now, now, cmd_id),
+                        (ts, ts, cmd_id),
                     )
-                    result = {**cmd, "status": "completed", "executed_at": now}
+                    result = {**cmd, "status": "completed", "executed_at": ts}
                     if self.event_bus:
                         await self.event_bus.publish(Event.command_executed(result))
                 else:
@@ -325,7 +333,7 @@ class UsageService:
                         """UPDATE command_queue
                            SET status = 'failed', error = 'send_to_session returned false', updated_at = ?
                            WHERE id = ?""",
-                        (now, cmd_id),
+                        (ts, cmd_id),
                     )
                     result = {**cmd, "status": "failed", "error": "send failed"}
                     if self.event_bus:
@@ -335,16 +343,16 @@ class UsageService:
                     """UPDATE command_queue
                        SET status = 'failed', error = ?, updated_at = ?
                        WHERE id = ?""",
-                    (str(e)[:500], now, cmd_id),
+                    (str(e)[:500], ts, cmd_id),
                 )
                 result = {**cmd, "status": "failed", "error": str(e)[:200]}
                 if self.event_bus:
                     await self.event_bus.publish(Event.command_failed(result))
                 logger.exception("Command %d failed", cmd_id)
+            return result
 
-            results.append(result)
-
-        return results
+        results = await asyncio.gather(*[_exec_one(cmd) for cmd in commands])
+        return list(results)
 
     async def cancel_command(self, cmd_id: int) -> bool:
         row = await db.fetchone(
