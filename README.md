@@ -120,6 +120,7 @@ Once installed, aily works automatically in the background:
 - **Agent finishes a task** — You get a Discord/Slack notification in a thread named after your tmux session, with the agent's response.
 - **Agent asks a question** — The prompt appears in the same thread. Reply from your phone to answer it.
 - **You reply in the thread** — Your message is forwarded to the agent's tmux session via SSH, as if you typed it at the keyboard.
+- **Shell command output** — When the tmux session is running a plain shell (not an agent), command output is captured and relayed back to the thread automatically.
 
 Every tmux session gets a dedicated thread. Start a session, get a thread. Close the session, the thread archives (or deletes — [configurable](/.env.example)). No manual wiring.
 
@@ -139,6 +140,8 @@ flowchart LR
     C --> F["Bridge"]
     D --> F
     F -->|"SSH + tmux send-keys"| A
+    F -->|"capture-pane output"| C
+    F -->|"capture-pane output"| D
 ```
 
 Each tmux session gets a dedicated thread (`[agent] <session-name>`) on each platform. Task completions, interactive prompts, and errors are posted to the matching thread. Reply in the thread to send input back to the agent.
@@ -147,7 +150,7 @@ For a deeper look, see [Architecture](docs/architecture.md).
 
 ## Dashboard
 
-The web dashboard provides a real-time UI for monitoring and managing sessions across hosts. Features include live session status via WebSocket, full message history, send-input controls, dark/light theme, and mobile-friendly layout.
+The web dashboard provides a real-time UI for monitoring and managing sessions across hosts. Features include live session status via WebSocket, full message history, send-input controls, login authentication, dark/light theme, and mobile-friendly layout.
 
 <!-- TODO: Add screenshot of dashboard sessions page -->
 
@@ -184,6 +187,9 @@ AILY_AUTH_TOKEN="your-auth-token"
 
 # Multi-host (comma-separated SSH targets)
 SSH_HOSTS="host1,host2"
+
+# Thread cleanup on session kill: "archive" (default) or "delete"
+THREAD_CLEANUP="archive"
 ```
 
 Platforms are auto-detected from available tokens. Run `aily status` to verify.
