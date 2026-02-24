@@ -294,22 +294,30 @@ class UsageService:
         )
 
     async def execute_pending_commands(self) -> list[dict[str, Any]]:
-        """Execute all pending commands via SessionService concurrently."""
+        """Execute all pending commands via SessionService concurrently.
+
+        Uses atomic UPDATE ... WHERE status='pending' to claim commands,
+        preventing double-execution from concurrent callers.
+        """
         if not self.session_svc:
             logger.warning("Cannot execute commands: no SessionService")
             return []
 
-        commands = await self.get_pending_commands()
+        # Atomically claim pending commands by marking them 'executing'
+        now = db.now_iso()
+        await db.execute(
+            """UPDATE command_queue SET status = 'executing', updated_at = ?
+               WHERE status = 'pending'""",
+            (now,),
+        )
+        commands = await db.fetchall(
+            """SELECT * FROM command_queue
+               WHERE status = 'executing'
+               ORDER BY priority DESC, created_at ASC
+               LIMIT 50"""
+        )
         if not commands:
             return []
-
-        # Mark all as executing first
-        now = db.now_iso()
-        for cmd in commands:
-            await db.execute(
-                "UPDATE command_queue SET status = 'executing', updated_at = ? WHERE id = ?",
-                (now, cmd["id"]),
-            )
 
         async def _exec_one(cmd: dict) -> dict:
             cmd_id = cmd["id"]
@@ -338,6 +346,15 @@ class UsageService:
                     result = {**cmd, "status": "failed", "error": "send failed"}
                     if self.event_bus:
                         await self.event_bus.publish(Event.command_failed(result))
+            except asyncio.CancelledError:
+                # On shutdown, revert to pending so commands aren't stuck
+                await db.execute(
+                    """UPDATE command_queue SET status = 'pending', updated_at = ?
+                       WHERE id = ? AND status = 'executing'""",
+                    (ts, cmd_id),
+                )
+                result = {**cmd, "status": "pending"}
+                raise
             except Exception as e:
                 await db.execute(
                     """UPDATE command_queue
@@ -345,26 +362,25 @@ class UsageService:
                        WHERE id = ?""",
                     (str(e)[:500], ts, cmd_id),
                 )
-                result = {**cmd, "status": "failed", "error": str(e)[:200]}
+                result = {**cmd, "status": "failed", "error": str(e)[:500]}
                 if self.event_bus:
                     await self.event_bus.publish(Event.command_failed(result))
                 logger.exception("Command %d failed", cmd_id)
             return result
 
-        results = await asyncio.gather(*[_exec_one(cmd) for cmd in commands])
-        return list(results)
+        results = await asyncio.gather(
+            *[_exec_one(cmd) for cmd in commands], return_exceptions=True
+        )
+        return [r for r in results if isinstance(r, dict)]
 
     async def cancel_command(self, cmd_id: int) -> bool:
-        row = await db.fetchone(
-            "SELECT status FROM command_queue WHERE id = ?", (cmd_id,)
-        )
-        if not row or row["status"] != "pending":
-            return False
-        await db.execute(
-            "UPDATE command_queue SET status = 'cancelled', updated_at = ? WHERE id = ?",
+        """Cancel a pending command atomically."""
+        cursor = await db.execute(
+            """UPDATE command_queue SET status = 'cancelled', updated_at = ?
+               WHERE id = ? AND status = 'pending'""",
             (db.now_iso(), cmd_id),
         )
-        return True
+        return cursor.rowcount > 0
 
     async def get_queue_stats(self) -> dict[str, int]:
         rows = await db.fetchall(

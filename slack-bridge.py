@@ -602,6 +602,13 @@ async def cmd_queue(
             )
             return
         session_name = parts[2]
+        if not is_valid_session_name(session_name):
+            await post_message(
+                client, reply_to,
+                "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).",
+                thread_ts=thread_ts,
+            )
+            return
         command = parts[3]
         result = await dashboard_api("POST", "/api/usage/queue", {
             "session_name": session_name,
@@ -662,8 +669,8 @@ async def cmd_queue(
         lines.append(f"  {'ID':<6} {'SESSION':<20} {'HOST':<12} COMMAND")
         for cmd in commands[:15]:
             lines.append(
-                f"  {cmd['id']:<6} {cmd['session_name']:<20} "
-                f"{cmd['host']:<12} {cmd['command']}"
+                f"  {cmd.get('id', '?'):<6} {cmd.get('session_name', '?'):<20} "
+                f"{cmd.get('host', '?'):<12} {cmd.get('command', '?')}"
             )
         if total > 15:
             lines.append(f"  ... and {total - 15} more")

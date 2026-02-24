@@ -1545,7 +1545,7 @@ _usage_queue() {
     add)
       # aily usage queue add <session> <command>
       local session="${2:-}"
-      local command="${3:-}"
+      local command="${*:3}"
       if [[ -z "$session" || -z "$command" ]]; then
         echo "Usage: aily usage queue add <session-name> <command>" >&2
         return 1

@@ -1856,10 +1856,11 @@
 
       isAtLimit(provider) {
         var s = this.getSnap(provider);
-        return s.requests_remaining === 0
-          || s.input_tokens_remaining === 0
-          || s.output_tokens_remaining === 0
-          || s.tokens_remaining === 0;
+        function atZero(v) { return v != null && v === 0; }
+        return atZero(s.requests_remaining)
+          || atZero(s.input_tokens_remaining)
+          || atZero(s.output_tokens_remaining)
+          || atZero(s.tokens_remaining);
       },
 
       providerLabel(p) {

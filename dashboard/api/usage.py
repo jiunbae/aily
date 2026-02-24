@@ -39,7 +39,11 @@ async def get_current_usage(request: web.Request) -> web.Response:
            SELECT * FROM ranked WHERE rn = 1
            ORDER BY provider"""
     )
-    snapshots: dict[str, Any] = {row["provider"]: dict(row) for row in rows}
+    snapshots: dict[str, Any] = {}
+    for row in rows:
+        d = dict(row)
+        d.pop("rn", None)
+        snapshots[d["provider"]] = d
 
     usage_svc = _get_usage_svc(request)
     queue_stats = {}
@@ -60,7 +64,7 @@ async def get_usage_history(request: web.Request) -> web.Response:
     params = request.query
     provider = params.get("provider", "").strip()
     try:
-        limit = min(int(params.get("limit", "60")), 500)
+        limit = max(1, min(int(params.get("limit", "60")), 500))
     except ValueError:
         limit = 60
     try:
@@ -111,7 +115,7 @@ async def get_usage_summary(request: web.Request) -> web.Response:
     Query params: hours (default 24, max 168), provider
     """
     try:
-        hours = min(int(request.query.get("hours", "24")), 168)
+        hours = max(1, min(int(request.query.get("hours", "24")), 168))
     except ValueError:
         hours = 24
     provider = request.query.get("provider", "").strip()
@@ -153,7 +157,7 @@ async def list_queue(request: web.Request) -> web.Response:
     params = request.query
     status_filter = params.get("status", "").strip()
     try:
-        limit = min(int(params.get("limit", "50")), 200)
+        limit = max(1, min(int(params.get("limit", "50")), 200))
     except ValueError:
         limit = 50
     try:
