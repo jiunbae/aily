@@ -232,20 +232,20 @@ load_slack_env() {
 prompt_value() {
   local label="$1" default="${2:-}" secret="${3:-false}"
   local value
-  if [[ "$secret" == "true" ]]; then
-    printf "  %s" "$label" >&2
-    if [[ -n "$default" ]]; then
+  printf "  %s" "$label" >&2
+  if [[ -n "$default" ]]; then
+    if [[ "$secret" == "true" ]]; then
       printf " [%s]" "$(redact "$default")" >&2
+    else
+      printf " [%s]" "$default" >&2
     fi
-    printf ": " >&2
+  fi
+  printf ": " >&2
+
+  if [[ "$secret" == "true" ]]; then
     read -rs value
     echo "" >&2
   else
-    printf "  %s" "$label" >&2
-    if [[ -n "$default" ]]; then
-      printf " [%s]" "$default" >&2
-    fi
-    printf ": " >&2
     read -r value
   fi
   echo "${value:-$default}"
