@@ -1001,9 +1001,32 @@ cmd_export() {
   local token
   token="$(dashboard_token)"
 
-  local output_file="${session_name}.${format#mark}"
-  [[ "$format" == "markdown" ]] && output_file="${session_name}.md"
-  [[ "$format" == "json" ]] && output_file="${session_name}.json"
+  # Build a safe local filename from session name to prevent path traversal.
+  local output_stem="$session_name"
+  output_stem="${output_stem##*/}"
+  output_stem="${output_stem##*\\}"
+  output_stem="$(printf '%s' "$output_stem" | tr -c 'A-Za-z0-9._-:' '_')"
+  if [[ -z "$output_stem" || "$output_stem" == "." || "$output_stem" == ".." ]]; then
+    output_stem="session"
+  fi
+
+  local output_file
+  if [[ "$format" == "json" ]]; then
+    output_file="${output_stem}.json"
+  else
+    output_file="${output_stem}.md"
+  fi
+
+  local session_name_encoded
+  if command -v python3 >/dev/null 2>&1; then
+    session_name_encoded="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$session_name" 2>/dev/null || echo "")"
+  elif command -v jq >/dev/null 2>&1; then
+    session_name_encoded="$(jq -rn --arg v "$session_name" '$v|@uri' 2>/dev/null || echo "")"
+  fi
+  if [[ -z "$session_name_encoded" ]]; then
+    err "Could not encode session name for export URL (requires python3 or jq)"
+    return 1
+  fi
 
   printf "Exporting session '%s' as %s...\n" "$session_name" "$format"
 
@@ -1012,7 +1035,7 @@ cmd_export() {
     curl_args+=(-H "Authorization: Bearer $token")
   fi
 
-  if curl "${curl_args[@]}" "${dashboard_url_value}/api/sessions/${session_name}/export?format=${format}" -o "$output_file"; then
+  if curl "${curl_args[@]}" "${dashboard_url_value}/api/sessions/${session_name_encoded}/export?format=${format}" -o "$output_file"; then
     if [[ -f "$output_file" ]]; then
       ok "Exported to $output_file ($(wc -c < "$output_file" | tr -d ' ') bytes)"
       return 0
