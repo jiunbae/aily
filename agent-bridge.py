@@ -736,15 +736,36 @@ async def gateway_connect(token: str):
         global _announced
         if not _announced:
             _announced = True
-            announce_text = (
-                "**aily bridge connected**\n"
-                "Available commands:\n"
-                "- `!new <name> [host] [pwd]` — create tmux session\n"
-                "- `!kill <name>` — kill tmux session\n"
-                "- `!sessions` — list active sessions\n"
-                f"Hosts: `{'`, `'.join(SSH_HOSTS)}`"
-            )
-            await post_message(http, token, CHANNEL_ID, announce_text)
+            lines = [
+                "**aily bridge connected**",
+                "Available commands:",
+                "- `!new <name> [host] [pwd]` — create tmux session",
+                "- `!kill <name>` — kill tmux session",
+                "- `!sessions` — list active sessions",
+                "- `!queue` — list / add / execute deferred commands",
+                f"Hosts: `{'`, `'.join(SSH_HOSTS)}`",
+            ]
+            # Append live usage status if dashboard is reachable
+            usage = await dashboard_api("GET", "/api/usage")
+            if usage and usage.get("usage"):
+                lines.append("")
+                lines.append("**API Usage**")
+                for provider, snap in usage["usage"].items():
+                    req_rem = snap.get("requests_remaining")
+                    req_lim = snap.get("requests_limit")
+                    tok_rem = snap.get("tokens_remaining")
+                    tok_lim = snap.get("tokens_limit")
+                    parts_ = [f"**{provider}**:"]
+                    if req_lim is not None:
+                        parts_.append(f"requests {req_rem}/{req_lim}")
+                    if tok_lim is not None:
+                        parts_.append(f"tokens {tok_rem}/{tok_lim}")
+                    lines.append("  ".join(parts_))
+                qs = usage.get("queue_stats", {})
+                pending = qs.get("pending", 0)
+                if pending:
+                    lines.append(f"Queued commands: **{pending}** pending")
+            await post_message(http, token, CHANNEL_ID, "\n".join(lines))
 
         intents = INTENT_GUILDS | INTENT_GUILD_MESSAGES | INTENT_MESSAGE_CONTENT
         sequence = None
