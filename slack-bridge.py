@@ -103,18 +103,21 @@ _thread_cache: OrderedDict[str, str] = OrderedDict()
 
 _SECRET_PATTERNS = re.compile(
     r'(?i)'
-    r'(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
+    r'((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
     r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string)'
-    r'\s*[=:]\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
+    r'\s*[=:])\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
 )
 _PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
 
 
+def _sanitize_backticks(text: str) -> str:
+    """Escape triple backticks in text to prevent markdown injection."""
+    return text.replace('```', r'\`\`\`')
+
+
 def _redact_secrets(text: str) -> str:
     """Redact common secret patterns from shell output."""
-    text = _SECRET_PATTERNS.sub(lambda m: m.group(0).split('=')[0] + '=[REDACTED]'
-                                 if '=' in m.group(0)
-                                 else m.group(0).split(':')[0] + ': [REDACTED]', text)
+    text = _SECRET_PATTERNS.sub(r'\1 [REDACTED]', text)
     text = _PEM_RE.sub('[REDACTED PEM KEY]', text)
     return text
 
@@ -382,7 +385,7 @@ def _cache_thread(thread_ts: str, session_name: str):
     """Add entry to thread cache with LRU eviction."""
     _thread_cache[thread_ts] = session_name
     while len(_thread_cache) > _THREAD_CACHE_MAX:
-        _thread_cache.pop(next(iter(_thread_cache)))
+        _thread_cache.popitem(last=False)
 
 
 async def get_thread_session(
@@ -717,12 +720,14 @@ async def _capture_and_post_output(
             return
 
         output = _redact_secrets(output)
+        output = _sanitize_backticks(output)
 
         if len(output) > 3600:
             output = output[:3600] + "\n...(truncated)"
 
+        safe_name = session.replace('`', "'")
         await post_message(client, channel,
-            f"Shell output from `{session}`:\n```\n{output}\n```", thread_ts=thread_ts)
+            f"Shell output from `{safe_name}`:\n```\n{output}\n```", thread_ts=thread_ts)
 
     except Exception as e:
         print(f"[slack-bridge] output capture error: {e}", file=sys.stderr)

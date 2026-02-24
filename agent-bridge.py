@@ -99,18 +99,21 @@ def _track_task(coro) -> asyncio.Task:
 
 _SECRET_PATTERNS = re.compile(
     r'(?i)'
-    r'(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
+    r'((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
     r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string)'
-    r'\s*[=:]\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
+    r'\s*[=:])\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
 )
 _PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
 
 
+def _sanitize_backticks(text: str) -> str:
+    """Escape triple backticks in text to prevent markdown injection."""
+    return text.replace('```', r'\`\`\`')
+
+
 def _redact_secrets(text: str) -> str:
     """Redact common secret patterns from shell output."""
-    text = _SECRET_PATTERNS.sub(lambda m: m.group(0).split('=')[0] + '=[REDACTED]'
-                                 if '=' in m.group(0)
-                                 else m.group(0).split(':')[0] + ': [REDACTED]', text)
+    text = _SECRET_PATTERNS.sub(r'\1 [REDACTED]', text)
     text = _PEM_RE.sub('[REDACTED PEM KEY]', text)
     return text
 
@@ -588,12 +591,14 @@ async def _capture_and_post_output(
             return
 
         output = _redact_secrets(output)
+        output = _sanitize_backticks(output)
 
         if len(output) > 1800:
             output = output[:1800] + "\n...(truncated)"
 
+        safe_name = session.replace('`', "'")
         await post_message(http, token, channel_id,
-            f"Shell output from `{session}`:\n```\n{output}\n```")
+            f"Shell output from `{safe_name}`:\n```\n{output}\n```")
 
     except Exception as e:
         print(f"[bridge] output capture error: {e}", file=sys.stderr)
