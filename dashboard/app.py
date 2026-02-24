@@ -231,6 +231,7 @@ def _setup_page_routes(app: web.Application) -> None:
     app.router.add_get("/", _index_page)
     app.router.add_get("/sessions", _sessions_page)
     app.router.add_get("/sessions/{name}", _session_detail_page)
+    app.router.add_get("/usage", _usage_page)
     app.router.add_get("/settings", _settings_page)
 
 
@@ -401,6 +402,19 @@ async def _session_detail_page(request: web.Request) -> web.Response:
                 "redirect": f"/api/sessions/{name}",
                 "message": "Templates not available",
             }
+        )
+
+
+async def _usage_page(request: web.Request) -> web.Response:
+    """GET /usage - Usage monitoring page."""
+    try:
+        import aiohttp_jinja2
+
+        ctx = await _page_context(request)
+        return aiohttp_jinja2.render_template("usage.html", request, ctx)
+    except (ImportError, Exception):
+        return web.json_response(
+            {"redirect": "/api/usage", "message": "Templates not available"}
         )
 
 
