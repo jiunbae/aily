@@ -24,6 +24,7 @@ from dashboard.api import search as search_api
 from dashboard.api import sessions as sessions_api
 from dashboard.api import settings as settings_api
 from dashboard.api import stats as stats_api
+from dashboard.api import usage as usage_api
 from dashboard.api import ws as ws_api
 from dashboard.access_log import access_log_middleware
 from dashboard.auth import (
@@ -80,6 +81,28 @@ async def create_app() -> web.Application:
         max_content_length=config.jsonl_max_content_length,
     )
 
+    # Create usage service (if API key configured and poller enabled)
+    usage_svc = None
+    has_usage_keys = config.anthropic_api_key or config.openai_api_key
+    if has_usage_keys and config.enable_usage_poller:
+        from dashboard.services.usage_service import UsageService
+
+        usage_svc = UsageService(
+            anthropic_api_key=config.anthropic_api_key,
+            openai_api_key=config.openai_api_key,
+            event_bus=event_bus,
+            session_svc=session_svc,
+            poll_model_anthropic=config.usage_poll_model_anthropic,
+            poll_model_openai=config.usage_poll_model_openai,
+            enable_command_queue=config.enable_command_queue,
+            retention_hours=config.usage_retention_hours,
+        )
+        logger.info(
+            "Usage service created (providers=%s, cmd_queue=%s)",
+            usage_svc.providers,
+            config.enable_command_queue,
+        )
+
     # Create app with middleware
     app = web.Application(
         middlewares=[
@@ -97,6 +120,8 @@ async def create_app() -> web.Application:
     app["message_service"] = message_svc
     app["jsonl_service"] = jsonl_svc
     app["ws_clients"] = set()
+    if usage_svc:
+        app["usage_service"] = usage_svc
 
     # Setup Jinja2 templates (if available)
     template_dir = os.path.join(os.path.dirname(__file__), "templates")
@@ -178,6 +203,15 @@ def _setup_routes(app: web.Application) -> None:
         "/api/hooks/event", sessions_api.receive_bridge_event
     )
 
+    # Usage monitoring
+    app.router.add_get("/api/usage", usage_api.get_current_usage)
+    app.router.add_get("/api/usage/history", usage_api.get_usage_history)
+    app.router.add_get("/api/usage/summary", usage_api.get_usage_summary)
+    app.router.add_get("/api/usage/queue", usage_api.list_queue)
+    app.router.add_post("/api/usage/queue", usage_api.enqueue_command)
+    app.router.add_delete("/api/usage/queue/{id}", usage_api.cancel_queue_command)
+    app.router.add_post("/api/usage/queue/execute", usage_api.execute_queue)
+
     # Settings
     settings_api.setup_routes(app)
 
@@ -197,6 +231,7 @@ def _setup_page_routes(app: web.Application) -> None:
     app.router.add_get("/", _index_page)
     app.router.add_get("/sessions", _sessions_page)
     app.router.add_get("/sessions/{name}", _session_detail_page)
+    app.router.add_get("/usage", _usage_page)
     app.router.add_get("/settings", _settings_page)
 
 
@@ -370,6 +405,19 @@ async def _session_detail_page(request: web.Request) -> web.Response:
         )
 
 
+async def _usage_page(request: web.Request) -> web.Response:
+    """GET /usage - Usage monitoring page."""
+    try:
+        import aiohttp_jinja2
+
+        ctx = await _page_context(request)
+        return aiohttp_jinja2.render_template("usage.html", request, ctx)
+    except (ImportError, Exception):
+        return web.json_response(
+            {"redirect": "/api/usage", "message": "Templates not available"}
+        )
+
+
 async def _settings_page(request: web.Request) -> web.Response:
     """GET /settings - Settings page."""
     try:
@@ -428,6 +476,21 @@ async def _on_startup(app: web.Application) -> None:
             "JSONL ingester started (interval=%ds)", config.jsonl_scan_interval
         )
 
+    # Start usage poller worker
+    usage_svc_ref = app.get("usage_service")
+    if config.enable_usage_poller and usage_svc_ref:
+        from dashboard.workers.usage_poller import usage_poller as _usage_poller
+
+        task = asyncio.create_task(
+            _usage_poller(usage_svc_ref, interval=config.usage_poll_interval)
+        )
+        app["_worker_tasks"].append(task)
+        logger.info(
+            "Usage poller started (interval=%ds, providers=%s)",
+            config.usage_poll_interval,
+            usage_svc_ref.providers,
+        )
+
     logger.info("Dashboard started on %s:%d", config.host, config.port)
 
 
@@ -449,6 +512,11 @@ async def _on_cleanup(app: web.Application) -> None:
         for ws in list(ws_clients):
             close_tasks.append(ws.close(code=1001, message=b"Server shutting down"))
         await asyncio.gather(*close_tasks, return_exceptions=True)
+
+    # Close usage service HTTP session
+    usage_svc = app.get("usage_service")
+    if usage_svc:
+        await usage_svc.close()
 
     # Close shared HTTP session
     platform_svc: PlatformService = app["platform_service"]

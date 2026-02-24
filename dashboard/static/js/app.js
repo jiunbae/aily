@@ -1810,6 +1810,211 @@
     };
   }
 
+  // ------------------------------------
+  // Usage Monitor page component
+  // ------------------------------------
+
+  function usageMonitor() {
+    return {
+      loading: true,
+      error: "",
+      usage: {},          // { provider: snapshot }
+      queueStats: {},
+      queueItems: [],
+      history: [],
+      historyProvider: "",
+      lastUpdated: null,
+      showQueueForm: false,
+      executing: false,
+      newCmd: { session_name: "", host: "", command: "" },
+      _wsHandler: null,
+
+      get providerNames() {
+        return Object.keys(this.usage).sort();
+      },
+
+      get hasQueueData() {
+        var s = this.queueStats;
+        return s && Object.keys(s).some(function(k) { return s[k] > 0; });
+      },
+
+      get queueStatEntries() {
+        var s = this.queueStats || {};
+        var order = ["pending", "executing", "completed", "failed", "cancelled"];
+        return order.filter(function(k) { return s[k] > 0; }).map(function(k) { return [k, s[k]]; });
+      },
+
+      get filteredHistory() {
+        var p = this.historyProvider;
+        if (!p) return this.history;
+        return this.history.filter(function(s) { return s.provider === p; });
+      },
+
+      getSnap(provider) {
+        return this.usage[provider] || {};
+      },
+
+      isAtLimit(provider) {
+        var s = this.getSnap(provider);
+        function atZero(v) { return v != null && v === 0; }
+        return atZero(s.requests_remaining)
+          || atZero(s.input_tokens_remaining)
+          || atZero(s.output_tokens_remaining)
+          || atZero(s.tokens_remaining);
+      },
+
+      providerLabel(p) {
+        if (p === "anthropic") return "Anthropic";
+        if (p === "openai") return "OpenAI";
+        return p.charAt(0).toUpperCase() + p.slice(1);
+      },
+
+      usagePercent(remaining, limit) {
+        if (limit == null || limit === 0) return 0;
+        var used = limit - (remaining || 0);
+        return Math.min(100, Math.max(0, Math.round((used / limit) * 100)));
+      },
+
+      formatRemaining(remaining, limit) {
+        if (limit == null) return "-";
+        return this.formatCompact(remaining || 0) + " / " + this.formatCompact(limit);
+      },
+
+      formatCompact(n) {
+        if (n == null) return "-";
+        if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+        if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+        return String(n);
+      },
+
+      formatReset(resetStr) {
+        if (!resetStr) return "";
+        // Try to parse ISO date or relative time string
+        var d = new Date(resetStr);
+        if (!isNaN(d.getTime())) {
+          var now = Date.now();
+          var diff = d.getTime() - now;
+          if (diff <= 0) return "now";
+          if (diff < 60000) return "in " + Math.ceil(diff / 1000) + "s";
+          if (diff < 3600000) return "in " + Math.ceil(diff / 60000) + "m";
+          return "in " + Math.round(diff / 3600000) + "h";
+        }
+        return resetStr;
+      },
+
+      barColor(remaining, limit) {
+        if (limit == null || limit === 0) return "usage-bar-ok";
+        var pct = ((remaining || 0) / limit) * 100;
+        if (pct <= 0) return "usage-bar-critical";
+        if (pct <= 20) return "usage-bar-warn";
+        return "usage-bar-ok";
+      },
+
+      async init() {
+        await this.refresh();
+        this._setupWS();
+      },
+
+      async refresh() {
+        this.error = "";
+        try {
+          var [usageResp, queueResp, historyResp] = await Promise.all([
+            apiJson("/api/usage"),
+            apiJson("/api/usage/queue?limit=50"),
+            apiJson("/api/usage/history?limit=30"),
+          ]);
+          this.usage = usageResp?.usage || {};
+          this.queueStats = usageResp?.queue_stats || {};
+          this.queueItems = queueResp?.commands || [];
+          this.history = historyResp?.snapshots || [];
+          this.lastUpdated = new Date().toISOString();
+        } catch (e) {
+          this.error = e?.message || "Failed to load usage data";
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      _setupWS() {
+        var self = this;
+        if (!window.ailyWS) return;
+        this._wsHandler = function(type, event) {
+          if (type === "usage.updated") {
+            var p = event?.payload?.provider;
+            if (p) {
+              self.usage[p] = event.payload;
+              self.usage = { ...self.usage };
+              self.lastUpdated = new Date().toISOString();
+            }
+          } else if (type === "usage.limit_reached" || type === "usage.reset") {
+            // Refresh everything on limit events
+            self.refresh();
+          } else if (type === "command.queued" || type === "command.executed" || type === "command.failed") {
+            self._refreshQueue();
+          }
+        };
+        window.ailyWS.on("*", this._wsHandler);
+      },
+
+      async _refreshQueue() {
+        try {
+          var [usageResp, queueResp] = await Promise.all([
+            apiJson("/api/usage"),
+            apiJson("/api/usage/queue?limit=50"),
+          ]);
+          this.queueStats = usageResp?.queue_stats || {};
+          this.queueItems = queueResp?.commands || [];
+        } catch (_) {}
+      },
+
+      async enqueueCommand() {
+        if (!this.newCmd.session_name || !this.newCmd.command) return;
+        try {
+          await apiJson("/api/usage/queue", {
+            method: "POST",
+            body: {
+              session_name: this.newCmd.session_name,
+              command: this.newCmd.command,
+              host: this.newCmd.host || undefined,
+            },
+          });
+          this.newCmd = { session_name: "", host: "", command: "" };
+          this.showQueueForm = false;
+          await this._refreshQueue();
+        } catch (e) {
+          this.error = e?.message || "Failed to queue command";
+        }
+      },
+
+      async cancelCommand(id) {
+        try {
+          await apiJson("/api/usage/queue/" + id, { method: "DELETE" });
+          await this._refreshQueue();
+        } catch (e) {
+          this.error = e?.message || "Failed to cancel command";
+        }
+      },
+
+      async executeQueue() {
+        this.executing = true;
+        try {
+          await apiJson("/api/usage/queue/execute", { method: "POST" });
+          await this._refreshQueue();
+        } catch (e) {
+          this.error = e?.message || "Failed to execute queue";
+        } finally {
+          this.executing = false;
+        }
+      },
+
+      destroy() {
+        if (this._wsHandler && window.ailyWS) {
+          window.ailyWS.off("*", this._wsHandler);
+        }
+      },
+    };
+  }
+
   // -----------------------------
   // Register Alpine data providers
   // -----------------------------
@@ -1827,5 +2032,6 @@
     Alpine.data("sessionList", sessionList);
     Alpine.data("sessionDetail", sessionDetail);
     Alpine.data("settingsPage", settingsPage);
+    Alpine.data("usageMonitor", usageMonitor);
   });
 })();

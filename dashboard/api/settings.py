@@ -34,6 +34,12 @@ DEFAULTS: dict[str, str] = {
     "poll_interval": "30",
     "enable_jsonl_ingester": "false",
     "jsonl_scan_interval": "60",
+    "enable_usage_poller": "false",
+    "usage_poll_interval": "60",
+    "usage_poll_model_anthropic": "claude-haiku-4-5-20251001",
+    "usage_poll_model_openai": "gpt-4o-mini",
+    "enable_command_queue": "false",
+    "usage_retention_hours": "168",
 }
 
 # Keys that can be written by the user
@@ -44,6 +50,12 @@ WRITABLE_KEYS = frozenset({
     "poll_interval",
     "enable_jsonl_ingester",
     "jsonl_scan_interval",
+    "enable_usage_poller",
+    "usage_poll_interval",
+    "usage_poll_model_anthropic",
+    "usage_poll_model_openai",
+    "enable_command_queue",
+    "usage_retention_hours",
 })
 
 # Read-only keys derived from runtime config

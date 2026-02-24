@@ -100,6 +100,40 @@ class Event:
     def heartbeat(cls) -> Event:
         return cls(type="heartbeat", payload={})
 
+    @classmethod
+    def usage_updated(cls, provider: str, snapshot: dict[str, Any]) -> Event:
+        return cls(type="usage.updated", payload={"provider": provider, **snapshot})
+
+    @classmethod
+    def usage_limit_reached(
+        cls, provider: str, limit_type: str, snapshot: dict[str, Any]
+    ) -> Event:
+        return cls(
+            type="usage.limit_reached",
+            payload={"provider": provider, "limit_type": limit_type, **snapshot},
+        )
+
+    @classmethod
+    def usage_reset(
+        cls, provider: str, limit_type: str, snapshot: dict[str, Any]
+    ) -> Event:
+        return cls(
+            type="usage.reset",
+            payload={"provider": provider, "limit_type": limit_type, **snapshot},
+        )
+
+    @classmethod
+    def command_queued(cls, command_data: dict[str, Any]) -> Event:
+        return cls(type="command.queued", payload=command_data)
+
+    @classmethod
+    def command_executed(cls, command_data: dict[str, Any]) -> Event:
+        return cls(type="command.executed", payload=command_data)
+
+    @classmethod
+    def command_failed(cls, command_data: dict[str, Any]) -> Event:
+        return cls(type="command.failed", payload=command_data)
+
 
 class EventBus:
     """asyncio.Queue-based subscriber management.

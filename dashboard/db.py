@@ -84,6 +84,46 @@ CREATE TABLE IF NOT EXISTS kv (
     value   TEXT NOT NULL,
     updated TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS usage_snapshots (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider                    TEXT NOT NULL DEFAULT 'anthropic',
+    polled_at                   TEXT NOT NULL,
+    requests_limit              INTEGER,
+    requests_remaining          INTEGER,
+    requests_reset              TEXT,
+    input_tokens_limit          INTEGER,
+    input_tokens_remaining      INTEGER,
+    input_tokens_reset          TEXT,
+    output_tokens_limit         INTEGER,
+    output_tokens_remaining     INTEGER,
+    output_tokens_reset         TEXT,
+    tokens_limit                INTEGER,
+    tokens_remaining            INTEGER,
+    tokens_reset                TEXT,
+    poll_model                  TEXT,
+    poll_status_code            INTEGER,
+    error_message               TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_polled ON usage_snapshots(polled_at);
+CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_snapshots(provider, polled_at);
+
+CREATE TABLE IF NOT EXISTS command_queue (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_name    TEXT NOT NULL,
+    host            TEXT NOT NULL,
+    command         TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    priority        INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    executed_at     TEXT,
+    error           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_cmdq_status ON command_queue(status);
+CREATE INDEX IF NOT EXISTS idx_cmdq_created ON command_queue(created_at);
 """
 
 _TRIGGER_SQL = [
