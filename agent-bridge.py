@@ -60,6 +60,26 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def dashboard_api(method: str, path: str, json_body: dict = None) -> dict | None:
+    """Call dashboard REST API and return parsed JSON response, or None on failure."""
+    if not DASHBOARD_URL or _dashboard_http is None:
+        return None
+    url = f"{DASHBOARD_URL.rstrip('/')}{path}"
+    try:
+        kwargs: dict = {"timeout": aiohttp.ClientTimeout(total=10)}
+        if json_body is not None:
+            kwargs["json"] = json_body
+        async with _dashboard_http.request(method, url, **kwargs) as resp:
+            if resp.status < 400:
+                return await resp.json()
+            body = await resp.text()
+            print(f"[dashboard] {method} {path} {resp.status}: {body[:200]}", file=sys.stderr)
+            return None
+    except Exception as e:
+        print(f"[dashboard] {method} {path} failed: {e}", file=sys.stderr)
+        return None
+
+
 # Discord gateway intents
 INTENT_GUILDS = 1 << 0
 INTENT_GUILD_MESSAGES = 1 << 9
@@ -349,9 +369,11 @@ async def handle_command(http: aiohttp.ClientSession, token: str,
         await cmd_kill(http, token, channel_id, parts)
     elif cmd in ("!sessions", "!ls"):
         await cmd_sessions(http, token, channel_id)
+    elif cmd == "!queue":
+        await cmd_queue(http, token, channel_id, parts)
     else:
         await post_message(http, token, channel_id,
-            "Unknown command. Available: `!new <name> [host] [pwd]`, `!kill <name>`, `!sessions`")
+            "Unknown command. Available: `!new <name> [host] [pwd]`, `!kill <name>`, `!sessions`, `!queue`")
 
 
 async def cmd_new(http: aiohttp.ClientSession, token: str,
@@ -527,6 +549,67 @@ async def cmd_sessions(http: aiohttp.ClientSession, token: str, reply_to: str):
     lines.append("```")
 
     await post_message(http, token, reply_to, "\n".join(lines))
+
+
+async def cmd_queue(http: aiohttp.ClientSession, token: str,
+                    reply_to: str, parts: list[str]):
+    """!queue [add <session> <command> | execute] — manage deferred command queue."""
+    subcmd = parts[1].lower() if len(parts) > 1 else ""
+
+    if subcmd == "add":
+        if len(parts) < 4:
+            await post_message(http, token, reply_to,
+                "Usage: `!queue add <session_name> <command>`")
+            return
+        session_name = parts[2]
+        command = parts[3]
+        result = await dashboard_api("POST", "/api/usage/queue", {
+            "session_name": session_name,
+            "command": command,
+        })
+        if result:
+            cmd_id = result.get("command", {}).get("id", "?")
+            await post_message(http, token, reply_to,
+                f"Queued command #{cmd_id} for `{session_name}`: `{command}`")
+        else:
+            await post_message(http, token, reply_to,
+                "Failed to queue command. Is the usage monitor enabled?")
+
+    elif subcmd == "execute":
+        result = await dashboard_api("POST", "/api/usage/queue/execute")
+        if result:
+            count = result.get("executed", 0)
+            await post_message(http, token, reply_to,
+                f"Executed {count} pending command(s).")
+        else:
+            await post_message(http, token, reply_to,
+                "Failed to execute queue. Is the usage monitor enabled?")
+
+    else:
+        # List pending commands
+        result = await dashboard_api("GET", "/api/usage/queue?status=pending")
+        if not result:
+            await post_message(http, token, reply_to,
+                "Dashboard unavailable or usage monitor not enabled.")
+            return
+
+        commands = result.get("commands", [])
+        total = result.get("total", 0)
+        if total == 0:
+            await post_message(http, token, reply_to, "No pending commands in queue.")
+            return
+
+        lines = [f"**Command Queue** ({total} pending)", "```"]
+        lines.append(f"  {'ID':<6} {'SESSION':<20} {'HOST':<12} COMMAND")
+        for cmd in commands[:15]:
+            lines.append(
+                f"  {cmd['id']:<6} {cmd['session_name']:<20} "
+                f"{cmd['host']:<12} {cmd['command']}"
+            )
+        if total > 15:
+            lines.append(f"  ... and {total - 15} more")
+        lines.append("```")
+        await post_message(http, token, reply_to, "\n".join(lines))
 
 
 # --- Shell output capture ---
