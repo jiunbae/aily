@@ -233,19 +233,19 @@ prompt_value() {
   local label="$1" default="${2:-}" secret="${3:-false}"
   local value
   if [[ "$secret" == "true" ]]; then
-    printf "  %s" "$label"
+    printf "  %s" "$label" >&2
     if [[ -n "$default" ]]; then
-      printf " [%s]" "$(redact "$default")"
+      printf " [%s]" "$(redact "$default")" >&2
     fi
-    printf ": "
+    printf ": " >&2
     read -rs value
-    echo ""
+    echo "" >&2
   else
-    printf "  %s" "$label"
+    printf "  %s" "$label" >&2
     if [[ -n "$default" ]]; then
-      printf " [%s]" "$default"
+      printf " [%s]" "$default" >&2
     fi
-    printf ": "
+    printf ": " >&2
     read -r value
   fi
   echo "${value:-$default}"
@@ -261,7 +261,10 @@ prompt_yn() {
   local answer
   read -r answer
   answer="${answer:-$default}"
-  [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]
+  case "$answer" in
+    [Yy]|[Yy][Ee][Ss]) return 0 ;;
+    *)                 return 1 ;;
+  esac
 }
 
 # ===================================================================
@@ -1454,10 +1457,13 @@ cmd_uninstall() {
   printf "  ${C_BOLD}Continue? (y/N):${C_RESET} "
   local answer
   read -r answer
-  if [[ "${answer,,}" != "y" && "${answer,,}" != "yes" ]]; then
-    echo "  Aborted."
-    exit 0
-  fi
+  case "$answer" in
+    [Yy]|[Yy][Ee][Ss]) ;;
+    *)
+      echo "  Aborted."
+      exit 0
+      ;;
+  esac
   echo ""
 
   # 1. Remove hook symlinks
