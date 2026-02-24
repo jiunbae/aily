@@ -11,9 +11,13 @@ _aily_completions() {
     _aily_fetch_sessions() {
         # Delegate to `aily sessions --json` to respect configured dashboard/auth/fallback logic.
         if command -v aily >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-            aily sessions --json 2>/dev/null | jq -r \
-                '(if type == "array" then . else .sessions // [] end) | .[] | .name' 2>/dev/null
-            return
+            local from_aily
+            from_aily=$(aily sessions --json 2>/dev/null | jq -r \
+                '(if type == "array" then . else .sessions // [] end) | .[] | .name' 2>/dev/null || true)
+            if [[ -n "$from_aily" ]]; then
+                printf '%s\n' "$from_aily"
+                return
+            fi
         fi
         if command -v tmux >/dev/null 2>&1; then
             tmux list-sessions -F '#{session_name}' 2>/dev/null || true
