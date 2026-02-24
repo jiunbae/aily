@@ -625,14 +625,15 @@ async def cmd_queue(http: aiohttp.ClientSession, token: str,
 async def _capture_and_post_output(
     http: aiohttp.ClientSession, token: str,
     channel_id: str, host: str, session: str,
+    pre_content: str,
 ):
     """Background task: capture shell output and post to Discord.
 
     Skips capture if a non-shell process (e.g., Claude Code) is running.
+    pre_content must be captured BEFORE send_to_tmux to avoid missing
+    fast command output.
     """
     try:
-        pre_content = await asyncio.to_thread(capture_pane_content, host, session)
-
         output = await asyncio.to_thread(
             capture_shell_output, host, session, pre_content
         )
@@ -710,10 +711,15 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
         "timestamp": _now_iso(),
     })
 
+    # Capture pane BEFORE sending — critical for catching fast command output
+    pre_content = await asyncio.to_thread(capture_pane_content, host, session_name)
+
     sent = await asyncio.to_thread(send_to_tmux, host, session_name, user_message)
     if sent:
         asyncio.create_task(
-            _capture_and_post_output(http, token, channel_id, host, session_name)
+            _capture_and_post_output(
+                http, token, channel_id, host, session_name, pre_content
+            )
         )
 
 
