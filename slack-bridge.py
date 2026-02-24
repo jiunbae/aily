@@ -144,6 +144,93 @@ def send_to_tmux(host: str, session: str, message: str) -> bool:
     return rc == 0
 
 
+# Shell names for output capture (skip capture for non-shell processes)
+_SHELL_NAMES = frozenset({"bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh"})
+
+
+def get_pane_command(host: str, session: str) -> str:
+    """Get the current foreground command in a tmux session's active pane."""
+    safe_session = shlex.quote(session)
+    rc, out = run_ssh(
+        host,
+        f"tmux display-message -t {safe_session} -p '#{{pane_current_command}}'"
+    )
+    return out.strip() if rc == 0 else ""
+
+
+def capture_pane_content(host: str, session: str) -> str:
+    """Capture visible pane content from a tmux session."""
+    safe_session = shlex.quote(session)
+    rc, out = run_ssh(host, f"tmux capture-pane -t {safe_session} -p", timeout=10)
+    return out if rc == 0 else ""
+
+
+def capture_shell_output(
+    host: str, session: str, pre_content: str,
+    poll_interval: float = 1.0,
+    stable_count: int = 2,
+    max_wait: float = 30.0,
+) -> str | None:
+    """Poll tmux pane until output stabilizes, return new content.
+
+    Returns None if a non-shell process takes over (e.g., Claude Code started).
+    Returns empty string if no new output detected.
+    """
+    time.sleep(1.0)
+
+    # Check: did the command spawn a non-shell process?
+    pane_cmd = get_pane_command(host, session)
+    if pane_cmd.lower() not in _SHELL_NAMES:
+        return None
+
+    last_content = ""
+    stable_hits = 0
+    elapsed = 1.0
+
+    while elapsed < max_wait:
+        current = capture_pane_content(host, session)
+        if not current:
+            break
+
+        if current == last_content:
+            stable_hits += 1
+            if stable_hits >= stable_count:
+                break
+        else:
+            stable_hits = 0
+            last_content = current
+
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+    # Final check: ensure shell is still the foreground process
+    pane_cmd = get_pane_command(host, session)
+    if pane_cmd.lower() not in _SHELL_NAMES:
+        return None
+
+    if not last_content:
+        return ""
+
+    # Diff: find new lines compared to pre_content
+    pre_lines = pre_content.rstrip().split('\n') if pre_content.strip() else []
+    post_lines = last_content.rstrip().split('\n') if last_content.strip() else []
+
+    common_len = 0
+    for i, (a, b) in enumerate(zip(pre_lines, post_lines)):
+        if a == b:
+            common_len = i + 1
+        else:
+            break
+
+    new_lines = post_lines[common_len:]
+
+    # Strip trailing empty lines
+    while new_lines and not new_lines[-1].strip():
+        new_lines.pop()
+
+    return '\n'.join(new_lines)
+
+
 # --- Slack REST helpers ---
 
 
@@ -558,6 +645,41 @@ async def cmd_sessions(
     await post_message(client, reply_to, "\n".join(lines), thread_ts=thread_ts)
 
 
+# --- Shell output capture ---
+
+
+async def _capture_and_post_output(
+    client: AsyncWebClient,
+    channel: str, thread_ts: str,
+    host: str, session: str,
+    pre_content: str,
+):
+    """Background task: capture shell output and post to Slack thread.
+
+    Skips capture if a non-shell process (e.g., Claude Code) is running.
+    pre_content must be captured BEFORE send_to_tmux to avoid missing
+    fast command output.
+    """
+    try:
+        output = await asyncio.to_thread(
+            capture_shell_output, host, session, pre_content
+        )
+
+        if output is None:
+            # Non-shell process (Claude Code etc.) — its own hooks handle output
+            return
+        if not output.strip():
+            return
+
+        if len(output) > 3600:
+            output = output[:3600] + "\n...(truncated)"
+
+        await post_message(client, channel, f"```\n{output}\n```", thread_ts=thread_ts)
+
+    except Exception as e:
+        print(f"[slack-bridge] output capture error: {e}", file=sys.stderr)
+
+
 # --- Socket Mode event handler ---
 
 
@@ -637,7 +759,17 @@ async def handle_socket_event(
         "timestamp": _now_iso(),
     })
 
-    await asyncio.to_thread(send_to_tmux, host, session_name, text)
+    # Capture pane BEFORE sending — critical for catching fast command output
+    pre_content = await asyncio.to_thread(capture_pane_content, host, session_name)
+
+    sent = await asyncio.to_thread(send_to_tmux, host, session_name, text)
+    if sent:
+        asyncio.create_task(
+            _capture_and_post_output(
+                client.web_client, channel, thread_ts,
+                host, session_name, pre_content
+            )
+        )
 
 
 # --- Main ---
