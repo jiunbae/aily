@@ -139,9 +139,15 @@ class Config:
         config.enable_usage_poller = (
             os.environ.get("ENABLE_USAGE_POLLER", "false").lower() == "true"
         )
-        config.usage_poll_interval = int(
-            os.environ.get("USAGE_POLL_INTERVAL", str(config.usage_poll_interval))
-        )
+        try:
+            config.usage_poll_interval = int(
+                os.environ.get("USAGE_POLL_INTERVAL", str(config.usage_poll_interval))
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid USAGE_POLL_INTERVAL, using default: %d",
+                config.usage_poll_interval,
+            )
         config.usage_poll_model_anthropic = os.environ.get(
             "USAGE_POLL_MODEL_ANTHROPIC", config.usage_poll_model_anthropic
         )
@@ -151,9 +157,17 @@ class Config:
         config.enable_command_queue = (
             os.environ.get("ENABLE_COMMAND_QUEUE", "false").lower() == "true"
         )
-        config.usage_retention_hours = int(
-            os.environ.get("USAGE_RETENTION_HOURS", str(config.usage_retention_hours))
-        )
+        try:
+            config.usage_retention_hours = int(
+                os.environ.get(
+                    "USAGE_RETENTION_HOURS", str(config.usage_retention_hours)
+                )
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid USAGE_RETENTION_HOURS, using default: %d",
+                config.usage_retention_hours,
+            )
 
         # Fallback: load .notify-env file (same format as bridges)
         env_file = os.environ.get("AGENT_BRIDGE_ENV", "")

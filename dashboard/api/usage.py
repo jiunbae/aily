@@ -30,22 +30,16 @@ def _get_usage_svc(request: web.Request):
 
 async def get_current_usage(request: web.Request) -> web.Response:
     """GET /api/usage — latest snapshot per provider + queue stats."""
-    # Get latest snapshot per provider
-    providers = await db.fetchall(
-        """SELECT DISTINCT provider FROM usage_snapshots
+    # Get latest snapshot per provider using a window function (single query)
+    rows = await db.fetchall(
+        """WITH ranked AS (
+             SELECT *, ROW_NUMBER() OVER(PARTITION BY provider ORDER BY polled_at DESC) AS rn
+             FROM usage_snapshots
+           )
+           SELECT * FROM ranked WHERE rn = 1
            ORDER BY provider"""
     )
-    snapshots: dict[str, Any] = {}
-    for row in providers:
-        p = row["provider"]
-        snap = await db.fetchone(
-            """SELECT * FROM usage_snapshots
-               WHERE provider = ?
-               ORDER BY polled_at DESC LIMIT 1""",
-            (p,),
-        )
-        if snap:
-            snapshots[p] = dict(snap)
+    snapshots: dict[str, Any] = {row["provider"]: dict(row) for row in rows}
 
     usage_svc = _get_usage_svc(request)
     queue_stats = {}
@@ -242,7 +236,10 @@ async def enqueue_command(request: web.Request) -> web.Response:
             )
         host = session["host"]
 
-    priority = int(body.get("priority", 0))
+    try:
+        priority = int(body.get("priority", 0))
+    except (ValueError, TypeError):
+        return error_response(400, "INVALID_PRIORITY", "priority must be an integer")
     entry = await usage_svc.enqueue_command(session_name, host, command, priority)
     return json_ok({"command": entry}, status=201)
 

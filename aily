@@ -1482,50 +1482,46 @@ cmd_usage() {
   fi
 
   for provider in $providers; do
-    local snap
-    snap=$(echo "$resp" | jq -r ".usage[\"$provider\"]")
-
-    local status_code
-    status_code=$(echo "$snap" | jq -r '.poll_status_code // "?"')
+    # Single jq call to extract all fields at once
+    local -a fields
+    mapfile -t fields < <(echo "$resp" | jq -r ".usage[\"$provider\"] |
+      (.poll_status_code // \"?\"),
+      (.polled_at // \"-\"),
+      (.requests_remaining // \"?\"),
+      (.requests_limit // \"?\"),
+      (.input_tokens_remaining // \"?\"),
+      (.input_tokens_limit // \"?\"),
+      (.output_tokens_remaining // \"?\"),
+      (.output_tokens_limit // \"?\"),
+      (.tokens_remaining // \"?\"),
+      (.tokens_limit // \"?\"),
+      (.error_message // empty)")
+    local status_code="${fields[0]:-?}"
     local polled_at
-    polled_at=$(echo "$snap" | jq -r '.polled_at // "-"' | sed 's/T/ /;s/\..*//')
+    polled_at=$(echo "${fields[1]:--}" | sed 's/T/ /;s/\..*//')
+    local req_rem="${fields[2]:-?}" req_lim="${fields[3]:-?}"
+    local in_rem="${fields[4]:-?}" in_lim="${fields[5]:-?}"
+    local out_rem="${fields[6]:-?}" out_lim="${fields[7]:-?}"
+    local tok_rem="${fields[8]:-?}" tok_lim="${fields[9]:-?}"
+    local err_msg="${fields[10]:-}"
 
     printf "  ${C_BOLD}${C_CYAN}%s${C_RESET}  ${C_DIM}(polled: %s, status: %s)${C_RESET}\n" \
       "$provider" "$polled_at" "$status_code"
 
-    # Requests
-    local req_rem req_lim
-    req_rem=$(echo "$snap" | jq -r '.requests_remaining // "?"')
-    req_lim=$(echo "$snap" | jq -r '.requests_limit // "?"')
     printf "    Requests:      %s / %s remaining\n" "$req_rem" "$req_lim"
 
-    # Input tokens
-    local in_rem in_lim
-    in_rem=$(echo "$snap" | jq -r '.input_tokens_remaining // "?"')
-    in_lim=$(echo "$snap" | jq -r '.input_tokens_limit // "?"')
     if [[ "$in_rem" != "?" && "$in_rem" != "null" ]]; then
       printf "    Input tokens:  %s / %s remaining\n" "$in_rem" "$in_lim"
     fi
 
-    # Output tokens
-    local out_rem out_lim
-    out_rem=$(echo "$snap" | jq -r '.output_tokens_remaining // "?"')
-    out_lim=$(echo "$snap" | jq -r '.output_tokens_limit // "?"')
     if [[ "$out_rem" != "?" && "$out_rem" != "null" ]]; then
       printf "    Output tokens: %s / %s remaining\n" "$out_rem" "$out_lim"
     fi
 
-    # Total tokens
-    local tok_rem tok_lim
-    tok_rem=$(echo "$snap" | jq -r '.tokens_remaining // "?"')
-    tok_lim=$(echo "$snap" | jq -r '.tokens_limit // "?"')
     if [[ "$tok_rem" != "?" && "$tok_rem" != "null" ]]; then
       printf "    Tokens:        %s / %s remaining\n" "$tok_rem" "$tok_lim"
     fi
 
-    # Error
-    local err_msg
-    err_msg=$(echo "$snap" | jq -r '.error_message // empty')
     if [[ -n "$err_msg" ]]; then
       printf "    ${C_RED}Error: %s${C_RESET}\n" "$err_msg"
     fi
@@ -1556,7 +1552,7 @@ _usage_queue() {
       fi
       local resp
       resp=$(api_call POST "/api/usage/queue" \
-        -d "{\"session_name\":\"$session\",\"command\":\"$command\"}" 2>/dev/null || echo "")
+        -d "$(jq -n --arg s "$session" --arg c "$command" '{"session_name":$s, "command":$c}')" 2>/dev/null || echo "")
       if [[ -z "$resp" ]]; then
         err "Failed to enqueue command"
         return 1
