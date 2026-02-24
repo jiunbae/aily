@@ -122,7 +122,9 @@ Once installed, aily works automatically in the background:
 - **You reply in the thread** — Your message is forwarded to the agent's tmux session via SSH, as if you typed it at the keyboard.
 - **Shell command output** — When the tmux session is running a plain shell (not an agent), command output is captured and relayed back to the thread automatically.
 
-Every tmux session gets a dedicated thread. Start a session, get a thread. Close the session, the thread archives (or deletes — [configurable](/.env.example)). No manual wiring.
+Every tmux session gets a dedicated thread. Start a session, get a thread. Close the session, the thread archives (or deletes — [configurable](.env.example)). No manual wiring.
+
+You can also manage sessions directly from Discord/Slack using bridge commands: `!new <name> [host]`, `!kill <name>`, `!sessions`.
 
 Unlike one-way notification tools, aily provides **bidirectional chat** — you can monitor and control agents entirely from your phone.
 
@@ -140,8 +142,7 @@ flowchart LR
     C --> F["Bridge"]
     D --> F
     F -->|"SSH + tmux send-keys"| A
-    F -->|"capture-pane output"| C
-    F -->|"capture-pane output"| D
+    A -.->|"capture-pane"| F
 ```
 
 Each tmux session gets a dedicated thread (`[agent] <session-name>`) on each platform. Task completions, interactive prompts, and errors are posted to the matching thread. Reply in the thread to send input back to the agent.
@@ -190,6 +191,12 @@ SSH_HOSTS="host1,host2"
 
 # Thread cleanup on session kill: "archive" (default) or "delete"
 THREAD_CLEANUP="archive"
+
+# Auto-create/archive threads on tmux session start/close (default: true)
+# TMUX_THREAD_SYNC="true"
+
+# Force specific platforms (default: auto-detect from tokens)
+# NOTIFY_PLATFORMS="discord,slack"
 ```
 
 Platforms are auto-detected from available tokens. Run `aily status` to verify.
@@ -223,16 +230,20 @@ The Dockerfile supports three modes via `BRIDGE_MODE`:
 
 ```bash
 # Discord bridge
-docker run -e BRIDGE_MODE=discord -e DISCORD_BOT_TOKEN=... aily
+docker run -e BRIDGE_MODE=discord \
+  -e DISCORD_BOT_TOKEN=... -e DISCORD_CHANNEL_ID=... \
+  -e SSH_HOSTS=... aily
 
 # Slack bridge
-docker run -e BRIDGE_MODE=slack -e SLACK_BOT_TOKEN=... aily
+docker run -e BRIDGE_MODE=slack \
+  -e SLACK_BOT_TOKEN=... -e SLACK_APP_TOKEN=... -e SLACK_CHANNEL_ID=... \
+  -e SSH_HOSTS=... aily
 
 # Dashboard
 docker run -e BRIDGE_MODE=dashboard -p 8080:8080 aily
 ```
 
-For Kubernetes, deploy via ArgoCD with the included kustomize overlays. The CI pipeline (Gitea Actions) builds multi-arch images and updates the IaC repo automatically.
+Bridges require Python 3.10+ when running outside Docker. For Kubernetes, deploy via ArgoCD with the included kustomize overlays. The CI pipeline (Gitea Actions) builds multi-arch images and updates the IaC repo automatically.
 
 ## License
 
