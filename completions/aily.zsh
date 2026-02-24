@@ -1,29 +1,8 @@
 #compdef aily
 
-_aily_sessions() {
-    local -a sessions
-    sessions=()
-
-    if (( $+commands[curl] && $+commands[python3] )); then
-        sessions=(${(f)"$(curl -sf http://localhost:8080/api/sessions?limit=50 2>/dev/null | python3 -c "
-import json,sys
-try:
-    data=json.load(sys.stdin)
-    for s in data.get('sessions',[]):
-        print(s['name'])
-except: pass
-" 2>/dev/null)"})
-    fi
-
-    if (( ${#sessions[@]} == 0 )) && (( $+commands[tmux] )); then
-        sessions=(${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"})
-    fi
-
-    print -l -- $sessions
-}
-
 _aily() {
-    local context state line
+    local context state line cmd
+    local -i i cmd_index arg_index
     local -a commands
     commands=(
         'init:Set up aily hooks and configuration'
@@ -44,6 +23,22 @@ _aily() {
         'version:Show version'
     )
 
+    _aily_sessions() {
+        local -a sessions
+        sessions=()
+
+        # Delegate to `aily sessions --json` to respect configured dashboard/auth/fallback logic.
+        if (( $+commands[aily] && $+commands[jq] )); then
+            sessions=(${(f)"$(aily sessions --json 2>/dev/null | jq -r '(if type == \"array\" then . else .sessions // [] end) | .[] | .name' 2>/dev/null)"})
+        fi
+
+        if (( ${#sessions[@]} == 0 )) && (( $+commands[tmux] )); then
+            sessions=(${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"})
+        fi
+
+        print -l -- $sessions
+    }
+
     _arguments -C \
         '--json[Output in JSON format]' \
         '--verbose[Enable verbose output]' \
@@ -56,14 +51,32 @@ _aily() {
             _describe -t commands 'aily commands' commands
             ;;
         args)
-            local cmd
-            cmd="${words[2]}"
+            cmd=""
+            cmd_index=0
+            for (( i = 2; i < CURRENT; i++ )); do
+                case "${words[i]}" in
+                    --json|--verbose|--help) continue ;;
+                    -*) continue ;;
+                    *)
+                        cmd="${words[i]}"
+                        cmd_index=$i
+                        break
+                        ;;
+                esac
+            done
+
+            if [[ -z "$cmd" ]]; then
+                _describe -t commands 'aily commands' commands
+                return
+            fi
+
+            arg_index=$((CURRENT - cmd_index))
             case "$cmd" in
                 logs|tail)
                     _arguments \
                         '--json[JSON output]' \
                         '(-n --limit)'{-n,--limit}'[message limit]:count:'
-                    if (( CURRENT == 3 )); then
+                    if (( arg_index == 1 )); then
                         local -a sessions
                         sessions=(${(f)"$(_aily_sessions)"})
                         _describe 'session' sessions
@@ -80,21 +93,23 @@ _aily() {
                     _describe 'session' sessions
                     ;;
                 export)
-                    if (( CURRENT == 3 )); then
+                    if (( arg_index == 1 )); then
                         local -a sessions
                         sessions=(${(f)"$(_aily_sessions)"})
                         _describe 'session' sessions
-                    elif (( CURRENT == 4 )); then
+                    elif (( arg_index == 2 )); then
                         _values 'format' json markdown
                     fi
                     ;;
                 config)
-                    if (( CURRENT == 3 )); then
+                    if (( arg_index == 1 )); then
                         _values 'config command' show set dashboard-url
                     fi
                     ;;
                 auto)
-                    _values 'mode' on off
+                    if (( arg_index == 1 )); then
+                        _values 'mode' on off
+                    fi
                     ;;
             esac
             ;;

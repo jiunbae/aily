@@ -1,21 +1,18 @@
 # Bash completion for aily CLI
 _aily_completions() {
-    local cur prev cmd commands
+    local cur prev cmd commands cmd_index arg_index i word
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]:-}"
-    cmd="${COMP_WORDS[1]:-}"
+    cmd=""
+    cmd_index=-1
 
     commands="init status sessions sync logs tail attach export config doctor start stop auto uninstall help version"
 
     _aily_fetch_sessions() {
-        if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-            curl -sf "http://localhost:8080/api/sessions?limit=50" 2>/dev/null | python3 -c "
-import json,sys
-try:
-    data=json.load(sys.stdin)
-    for s in data.get('sessions',[]):
-        print(s['name'])
-except: pass"
+        # Delegate to `aily sessions --json` to respect configured dashboard/auth/fallback logic.
+        if command -v aily >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+            aily sessions --json 2>/dev/null | jq -r \
+                '(if type == "array" then . else .sessions // [] end) | .[] | .name' 2>/dev/null
             return
         fi
         if command -v tmux >/dev/null 2>&1; then
@@ -23,10 +20,25 @@ except: pass"
         fi
     }
 
-    if [[ "$COMP_CWORD" -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+    for ((i=1; i<COMP_CWORD; i++)); do
+        word="${COMP_WORDS[i]}"
+        case "$word" in
+            --json|--verbose|--help) continue ;;
+            -*) continue ;;
+            *)
+                cmd="$word"
+                cmd_index=$i
+                break
+                ;;
+        esac
+    done
+
+    if [[ -z "$cmd" ]]; then
+        COMPREPLY=($(compgen -W "$commands --json --help --verbose" -- "$cur"))
         return 0
     fi
+
+    arg_index=$((COMP_CWORD - cmd_index))
 
     case "$cmd" in
         sessions)
@@ -49,32 +61,28 @@ except: pass"
             return 0
             ;;
         export)
-            if [[ "$COMP_CWORD" -eq 2 ]]; then
+            if [[ "$arg_index" -eq 1 ]]; then
                 local sessions
                 sessions="$(_aily_fetch_sessions)"
                 COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
-            elif [[ "$COMP_CWORD" -eq 3 ]]; then
+            elif [[ "$arg_index" -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "json markdown" -- "$cur"))
             fi
             return 0
             ;;
         config)
-            if [[ "$COMP_CWORD" -eq 2 ]]; then
+            if [[ "$arg_index" -eq 1 ]]; then
                 COMPREPLY=($(compgen -W "show set dashboard-url" -- "$cur"))
             fi
             return 0
             ;;
         auto)
-            COMPREPLY=($(compgen -W "on off" -- "$cur"))
+            if [[ "$arg_index" -eq 1 ]]; then
+                COMPREPLY=($(compgen -W "on off" -- "$cur"))
+            fi
             return 0
             ;;
     esac
-
-    # Global flags
-    if [[ "$COMP_CWORD" -eq 1 && "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "--json --help --verbose" -- "$cur"))
-        return 0
-    fi
 }
 
 complete -F _aily_completions aily
