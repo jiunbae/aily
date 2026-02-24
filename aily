@@ -776,7 +776,9 @@ cmd_sessions() {
     echo ""
   else
     # Fall back to SSH-based session listing
-    info "Dashboard unavailable, falling back to SSH..."
+    if [[ "$output_json" != "true" && "$AILY_JSON" != true ]]; then
+      info "Dashboard unavailable, falling back to SSH..."
+    fi
     _sessions_ssh "$output_json"
   fi
 }

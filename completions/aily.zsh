@@ -3,8 +3,8 @@
 _aily() {
     local context state line cmd
     local -i i cmd_index arg_index
-    local -a commands
-    commands=(
+    local -a cmd_specs
+    cmd_specs=(
         'init:Set up aily hooks and configuration'
         'status:Show connection and hook status'
         'sessions:List active sessions'
@@ -29,7 +29,7 @@ _aily() {
 
         # Delegate to `aily sessions --json` to respect configured dashboard/auth/fallback logic.
         if (( $+commands[aily] && $+commands[jq] )); then
-            sessions=(${(f)"$(aily sessions --json 2>/dev/null | jq -r '(if type == \"array\" then . else .sessions // [] end) | .[] | .name' 2>/dev/null)"})
+            sessions=(${(f)"$(aily sessions --json 2>/dev/null | jq -r '(if type == "array" then . else .sessions // [] end) | .[] | .name' 2>/dev/null)"})
         fi
 
         if (( ${#sessions[@]} == 0 )) && (( $+commands[tmux] )); then
@@ -48,7 +48,7 @@ _aily() {
 
     case "$state" in
         cmd)
-            _describe -t commands 'aily commands' commands
+            _describe -t commands 'aily commands' cmd_specs
             ;;
         args)
             cmd=""
@@ -66,7 +66,7 @@ _aily() {
             done
 
             if [[ -z "$cmd" ]]; then
-                _describe -t commands 'aily commands' commands
+                _describe -t commands 'aily commands' cmd_specs
                 return
             fi
 
