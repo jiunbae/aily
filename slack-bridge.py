@@ -22,6 +22,7 @@ import shlex
 import subprocess
 import sys
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 import aiohttp
@@ -97,16 +98,16 @@ def _track_task(coro) -> asyncio.Task:
 # Cache: thread_ts -> session_name (avoid repeated conversations.replies calls)
 # Capped at 256 entries with LRU eviction via OrderedDict
 _THREAD_CACHE_MAX = 256
-_thread_cache: dict[str, str] = {}
+_thread_cache: OrderedDict[str, str] = OrderedDict()
 
 
 _SECRET_PATTERNS = re.compile(
     r'(?i)'
     r'(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
     r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string)'
-    r'\s*[=:]\s*\S+',
+    r'\s*[=:]\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
 )
-_PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----')
+_PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
 
 
 def _redact_secrets(text: str) -> str:
@@ -389,6 +390,7 @@ async def get_thread_session(
 ) -> str | None:
     """Get session name from a thread's parent message. Uses cache."""
     if thread_ts in _thread_cache:
+        _thread_cache.move_to_end(thread_ts)
         return _thread_cache[thread_ts]
 
     try:

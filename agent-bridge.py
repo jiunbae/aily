@@ -101,9 +101,9 @@ _SECRET_PATTERNS = re.compile(
     r'(?i)'
     r'(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
     r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string)'
-    r'\s*[=:]\s*\S+',
+    r'\s*[=:]\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
 )
-_PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----')
+_PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
 
 
 def _redact_secrets(text: str) -> str:
