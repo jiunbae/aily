@@ -570,7 +570,7 @@ async def cmd_queue(http: aiohttp.ClientSession, token: str,
             await post_message(http, token, reply_to,
                 "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).")
             return
-        command = parts[3]
+        command = " ".join(parts[3:])
         result = await dashboard_api("POST", "/api/usage/queue", {
             "session_name": session_name,
             "command": command,
