@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+
+{% block title %}Usage - aily Dashboard{% endblock %}
+
+{% block nav_usage_active %}is-active{% endblock %}
+
+{% block content %}
+<div x-data="usageMonitor()" x-init="init()">
+
+  <!-- Page Header -->
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-lg font-semibold text-[var(--text-primary)]">API Usage</h1>
+      <p class="text-xs text-[var(--text-secondary)] mt-1">Rate limit status and command queue</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="text-[11px] text-[var(--text-muted)]" x-show="lastUpdated" x-text="'Updated ' + ailyUtils.timeAgo(lastUpdated)"></span>
+      <button @click="refresh()" class="btn-ghost px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Error Banner -->
+  <template x-if="error">
+    <div class="mb-6 bg-[rgba(239,68,68,0.10)] border border-[rgba(239,68,68,0.35)] rounded-lg p-4 text-sm text-[var(--text-secondary)]">
+      <span class="text-[var(--status-error)] font-semibold">Error:</span>
+      <span x-text="error"></span>
+    </div>
+  </template>
+
+  <!-- Loading Skeleton -->
+  <template x-if="loading">
+    <div class="space-y-6">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <template x-for="i in 2" :key="i">
+          <div class="skeleton-card rounded-xl p-6">
+            <div class="skeleton-line w-1/3 h-5 mb-4"></div>
+            <div class="skeleton-line w-full h-3 mb-3"></div>
+            <div class="skeleton-line w-full h-3 mb-3"></div>
+            <div class="skeleton-line w-3/4 h-3"></div>
+          </div>
+        </template>
+      </div>
+      <div class="skeleton-card rounded-xl p-6">
+        <div class="skeleton-line w-1/4 h-5 mb-4"></div>
+        <div class="skeleton-line w-full h-3 mb-3"></div>
+        <div class="skeleton-line w-full h-3"></div>
+      </div>
+    </div>
+  </template>
+
+  <!-- Main Content -->
+  <template x-if="!loading">
+    <div class="space-y-6">
+
+      <!-- No providers message -->
+      <template x-if="providerNames.length === 0">
+        <section class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-8 text-center">
+          <svg class="w-12 h-12 mx-auto mb-3 text-[var(--text-muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                  d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+          </svg>
+          <h2 class="text-sm font-medium text-[var(--text-secondary)] mb-1">No usage data yet</h2>
+          <p class="text-xs text-[var(--text-muted)]">
+            Enable the usage poller in <a href="/settings" class="text-[var(--text-link)] hover:underline">Settings</a>
+            and configure API keys in <code class="font-mono text-[11px] px-1 py-0.5 rounded bg-[var(--bg-base)] border border-[var(--bg-overlay)]">.env</code>
+          </p>
+        </section>
+      </template>
+
+      <!-- Provider Cards -->
+      <template x-if="providerNames.length > 0">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <template x-for="provider in providerNames" :key="provider">
+            <section class="rounded-xl border bg-[var(--bg-surface)] p-5 transition-colors duration-200"
+                     :class="isAtLimit(provider) ? 'border-[rgba(239,68,68,0.5)]' : 'border-[var(--bg-overlay)]'">
+              <!-- Provider Header -->
+              <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-2">
+                  <span class="w-2.5 h-2.5 rounded-full"
+                        :class="isAtLimit(provider) ? 'bg-[var(--status-error)] pulse-error' : 'bg-[var(--status-active)] pulse-active'"></span>
+                  <h2 class="text-sm font-semibold text-[var(--text-primary)] capitalize" x-text="providerLabel(provider)"></h2>
+                </div>
+                <div class="flex items-center gap-2">
+                  <template x-if="getSnap(provider).poll_model">
+                    <span class="text-[10px] font-mono text-[var(--text-muted)] px-1.5 py-0.5 rounded bg-[var(--bg-base)] border border-[var(--bg-overlay)]"
+                          x-text="getSnap(provider).poll_model"></span>
+                  </template>
+                  <span class="text-[10px] text-[var(--text-muted)]"
+                        x-text="getSnap(provider).polled_at ? ailyUtils.timeAgo(getSnap(provider).polled_at) : ''"></span>
+                </div>
+              </div>
+
+              <!-- Limit Bars -->
+              <div class="space-y-3">
+                <!-- Requests -->
+                <template x-if="getSnap(provider).requests_limit != null">
+                  <div>
+                    <div class="flex items-center justify-between mb-1">
+                      <span class="text-[11px] font-medium text-[var(--text-secondary)]">Requests</span>
+                      <span class="text-[11px] font-mono text-[var(--text-primary)]"
+                            x-text="formatRemaining(getSnap(provider).requests_remaining, getSnap(provider).requests_limit)"></span>
+                    </div>
+                    <div class="usage-bar">
+                      <div class="usage-bar-fill"
+                           :class="barColor(getSnap(provider).requests_remaining, getSnap(provider).requests_limit)"
+                           :style="'width:' + usagePercent(getSnap(provider).requests_remaining, getSnap(provider).requests_limit) + '%'">
+                      </div>
+                    </div>
+                    <template x-if="getSnap(provider).requests_reset">
+                      <div class="text-[10px] text-[var(--text-muted)] mt-0.5"
+                           x-text="'Resets ' + formatReset(getSnap(provider).requests_reset)"></div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- Input Tokens -->
+                <template x-if="getSnap(provider).input_tokens_limit != null">
+                  <div>
+                    <div class="flex items-center justify-between mb-1">
+                      <span class="text-[11px] font-medium text-[var(--text-secondary)]">Input Tokens</span>
+                      <span class="text-[11px] font-mono text-[var(--text-primary)]"
+                            x-text="formatRemaining(getSnap(provider).input_tokens_remaining, getSnap(provider).input_tokens_limit)"></span>
+                    </div>
+                    <div class="usage-bar">
+                      <div class="usage-bar-fill"
+                           :class="barColor(getSnap(provider).input_tokens_remaining, getSnap(provider).input_tokens_limit)"
+                           :style="'width:' + usagePercent(getSnap(provider).input_tokens_remaining, getSnap(provider).input_tokens_limit) + '%'">
+                      </div>
+                    </div>
+                    <template x-if="getSnap(provider).input_tokens_reset">
+                      <div class="text-[10px] text-[var(--text-muted)] mt-0.5"
+                           x-text="'Resets ' + formatReset(getSnap(provider).input_tokens_reset)"></div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- Output Tokens -->
+                <template x-if="getSnap(provider).output_tokens_limit != null">
+                  <div>
+                    <div class="flex items-center justify-between mb-1">
+                      <span class="text-[11px] font-medium text-[var(--text-secondary)]">Output Tokens</span>
+                      <span class="text-[11px] font-mono text-[var(--text-primary)]"
+                            x-text="formatRemaining(getSnap(provider).output_tokens_remaining, getSnap(provider).output_tokens_limit)"></span>
+                    </div>
+                    <div class="usage-bar">
+                      <div class="usage-bar-fill"
+                           :class="barColor(getSnap(provider).output_tokens_remaining, getSnap(provider).output_tokens_limit)"
+                           :style="'width:' + usagePercent(getSnap(provider).output_tokens_remaining, getSnap(provider).output_tokens_limit) + '%'">
+                      </div>
+                    </div>
+                    <template x-if="getSnap(provider).output_tokens_reset">
+                      <div class="text-[10px] text-[var(--text-muted)] mt-0.5"
+                           x-text="'Resets ' + formatReset(getSnap(provider).output_tokens_reset)"></div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- Tokens (combined, e.g. OpenAI) -->
+                <template x-if="getSnap(provider).tokens_limit != null">
+                  <div>
+                    <div class="flex items-center justify-between mb-1">
+                      <span class="text-[11px] font-medium text-[var(--text-secondary)]">Tokens</span>
+                      <span class="text-[11px] font-mono text-[var(--text-primary)]"
+                            x-text="formatRemaining(getSnap(provider).tokens_remaining, getSnap(provider).tokens_limit)"></span>
+                    </div>
+                    <div class="usage-bar">
+                      <div class="usage-bar-fill"
+                           :class="barColor(getSnap(provider).tokens_remaining, getSnap(provider).tokens_limit)"
+                           :style="'width:' + usagePercent(getSnap(provider).tokens_remaining, getSnap(provider).tokens_limit) + '%'">
+                      </div>
+                    </div>
+                    <template x-if="getSnap(provider).tokens_reset">
+                      <div class="text-[10px] text-[var(--text-muted)] mt-0.5"
+                           x-text="'Resets ' + formatReset(getSnap(provider).tokens_reset)"></div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- Error indicator -->
+                <template x-if="getSnap(provider).error_message">
+                  <div class="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-[rgba(239,68,68,0.08)] border border-[rgba(239,68,68,0.2)]">
+                    <svg class="w-3.5 h-3.5 text-[var(--status-error)] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01"/>
+                    </svg>
+                    <span class="text-[11px] text-[var(--status-error)]" x-text="getSnap(provider).error_message"></span>
+                  </div>
+                </template>
+              </div>
+            </section>
+          </template>
+        </div>
+      </template>
+
+      <!-- Command Queue -->
+      <section class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-2">
+            <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Command Queue</h2>
+            <template x-if="queueStats.pending > 0">
+              <span class="text-[10px] font-semibold bg-[var(--status-waiting)] text-white rounded-full px-1.5 py-0.5 min-w-[18px] text-center leading-none"
+                    x-text="queueStats.pending"></span>
+            </template>
+          </div>
+          <div class="flex items-center gap-2">
+            <button @click="showQueueForm = !showQueueForm"
+                    class="btn-ghost px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+              + Add
+            </button>
+            <template x-if="queueStats.pending > 0">
+              <button @click="executeQueue()"
+                      :disabled="executing"
+                      class="btn-primary px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
+                <span x-show="!executing">Execute All</span>
+                <span x-show="executing" x-cloak>Executing...</span>
+              </button>
+            </template>
+          </div>
+        </div>
+
+        <!-- Add command form -->
+        <template x-if="showQueueForm">
+          <div class="mb-4 p-4 rounded-lg border border-[var(--bg-overlay)] bg-[var(--bg-base)]" x-transition>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label class="block mb-1 text-[11px] font-medium text-[var(--text-secondary)]">Session</label>
+                <input type="text" x-model="newCmd.session_name" placeholder="session-name"
+                       class="input-field w-full font-mono text-xs">
+              </div>
+              <div>
+                <label class="block mb-1 text-[11px] font-medium text-[var(--text-secondary)]">Host</label>
+                <input type="text" x-model="newCmd.host" placeholder="(default)"
+                       class="input-field w-full font-mono text-xs">
+              </div>
+              <div>
+                <label class="block mb-1 text-[11px] font-medium text-[var(--text-secondary)]">Command</label>
+                <input type="text" x-model="newCmd.command" placeholder="tmux command"
+                       @keydown.enter="enqueueCommand()"
+                       class="input-field w-full font-mono text-xs">
+              </div>
+            </div>
+            <div class="flex items-center justify-end gap-2 mt-3">
+              <button @click="showQueueForm = false" class="btn-ghost px-3 py-1.5 text-xs">Cancel</button>
+              <button @click="enqueueCommand()"
+                      :disabled="!newCmd.session_name || !newCmd.command"
+                      class="btn-primary px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
+                Queue Command
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Queue stats summary -->
+        <template x-if="hasQueueData">
+          <div class="flex flex-wrap gap-3 mb-4">
+            <template x-for="[status, count] in queueStatEntries" :key="status">
+              <div class="flex items-center gap-1.5 text-[11px]">
+                <span class="w-1.5 h-1.5 rounded-full"
+                      :class="{
+                        'bg-[var(--status-waiting)]': status === 'pending',
+                        'bg-[var(--accent-primary)]': status === 'executing',
+                        'bg-[var(--status-active)]': status === 'completed',
+                        'bg-[var(--status-error)]': status === 'failed',
+                        'bg-[var(--text-muted)]': status === 'cancelled',
+                      }"></span>
+                <span class="text-[var(--text-muted)] capitalize" x-text="status"></span>
+                <span class="font-mono text-[var(--text-primary)]" x-text="count"></span>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Queue table -->
+        <template x-if="queueItems.length > 0">
+          <div class="rounded-lg border border-[var(--bg-overlay)] overflow-hidden">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="bg-[var(--bg-base)] text-[var(--text-muted)]">
+                  <th class="text-left px-4 py-2 font-medium w-12">#</th>
+                  <th class="text-left px-4 py-2 font-medium">Session</th>
+                  <th class="text-left px-4 py-2 font-medium">Host</th>
+                  <th class="text-left px-4 py-2 font-medium">Command</th>
+                  <th class="text-left px-4 py-2 font-medium">Status</th>
+                  <th class="text-left px-4 py-2 font-medium">Created</th>
+                  <th class="text-right px-4 py-2 font-medium w-16"></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-[var(--bg-overlay)]">
+                <template x-for="cmd in queueItems" :key="cmd.id">
+                  <tr class="hover:bg-[var(--bg-base)] transition-colors">
+                    <td class="px-4 py-2 font-mono text-[var(--text-muted)]" x-text="cmd.id"></td>
+                    <td class="px-4 py-2 font-mono text-[var(--text-primary)]" x-text="cmd.session_name"></td>
+                    <td class="px-4 py-2 font-mono text-[var(--text-secondary)]" x-text="cmd.host || '-'"></td>
+                    <td class="px-4 py-2">
+                      <code class="font-mono text-[var(--text-primary)] text-[11px] px-1.5 py-0.5 rounded bg-[var(--bg-base)] border border-[var(--bg-overlay)]"
+                            x-text="cmd.command"></code>
+                    </td>
+                    <td class="px-4 py-2">
+                      <span class="inline-flex items-center gap-1">
+                        <span class="w-1.5 h-1.5 rounded-full"
+                              :class="{
+                                'bg-[var(--status-waiting)]': cmd.status === 'pending',
+                                'bg-[var(--accent-primary)]': cmd.status === 'executing',
+                                'bg-[var(--status-active)]': cmd.status === 'completed',
+                                'bg-[var(--status-error)]': cmd.status === 'failed',
+                                'bg-[var(--text-muted)]': cmd.status === 'cancelled',
+                              }"></span>
+                        <span class="text-[var(--text-secondary)] capitalize" x-text="cmd.status"></span>
+                      </span>
+                    </td>
+                    <td class="px-4 py-2 text-[var(--text-muted)]" x-text="ailyUtils.timeAgo(cmd.created_at)"></td>
+                    <td class="px-4 py-2 text-right">
+                      <template x-if="cmd.status === 'pending'">
+                        <button @click="cancelCommand(cmd.id)"
+                                class="text-[var(--status-error)] hover:text-[var(--text-primary)] text-[11px]">
+                          Cancel
+                        </button>
+                      </template>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </template>
+
+        <template x-if="queueItems.length === 0 && !showQueueForm">
+          <div class="text-center py-6">
+            <p class="text-xs text-[var(--text-muted)]">No commands in queue</p>
+          </div>
+        </template>
+      </section>
+
+      <!-- Recent History -->
+      <section class="rounded-xl border border-[var(--bg-overlay)] bg-[var(--bg-surface)] p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Recent Polls</h2>
+          <div class="flex items-center gap-2">
+            <template x-for="p in providerNames" :key="'filter-'+p">
+              <button @click="historyProvider = historyProvider === p ? '' : p"
+                      class="px-2 py-1 text-[10px] rounded-md border transition-colors"
+                      :class="historyProvider === p
+                        ? 'border-[var(--accent-primary)] text-[var(--accent-primary)] bg-[rgba(99,102,241,0.1)]'
+                        : 'border-[var(--bg-overlay)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]'"
+                      x-text="p">
+              </button>
+            </template>
+          </div>
+        </div>
+
+        <template x-if="filteredHistory.length > 0">
+          <div class="rounded-lg border border-[var(--bg-overlay)] overflow-hidden overflow-x-auto">
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="bg-[var(--bg-base)] text-[var(--text-muted)]">
+                  <th class="text-left px-3 py-2 font-medium">Time</th>
+                  <th class="text-left px-3 py-2 font-medium">Provider</th>
+                  <th class="text-right px-3 py-2 font-medium">Requests</th>
+                  <th class="text-right px-3 py-2 font-medium">Input Tokens</th>
+                  <th class="text-right px-3 py-2 font-medium">Output Tokens</th>
+                  <th class="text-right px-3 py-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-[var(--bg-overlay)]">
+                <template x-for="snap in filteredHistory" :key="snap.id">
+                  <tr class="hover:bg-[var(--bg-base)] transition-colors">
+                    <td class="px-3 py-2 text-[var(--text-muted)] whitespace-nowrap" x-text="ailyUtils.timeAgo(snap.polled_at)"></td>
+                    <td class="px-3 py-2">
+                      <span class="capitalize text-[var(--text-secondary)]" x-text="snap.provider"></span>
+                    </td>
+                    <td class="px-3 py-2 text-right font-mono text-[var(--text-primary)]"
+                        x-text="snap.requests_limit != null ? (snap.requests_remaining + '/' + snap.requests_limit) : '-'"></td>
+                    <td class="px-3 py-2 text-right font-mono text-[var(--text-primary)]"
+                        x-text="snap.input_tokens_limit != null ? formatCompact(snap.input_tokens_remaining) + '/' + formatCompact(snap.input_tokens_limit) : '-'"></td>
+                    <td class="px-3 py-2 text-right font-mono text-[var(--text-primary)]"
+                        x-text="snap.output_tokens_limit != null ? formatCompact(snap.output_tokens_remaining) + '/' + formatCompact(snap.output_tokens_limit) : '-'"></td>
+                    <td class="px-3 py-2 text-right">
+                      <span class="w-2 h-2 inline-block rounded-full"
+                            :class="snap.error_message ? 'bg-[var(--status-error)]' : 'bg-[var(--status-active)]'"
+                            :title="snap.error_message || 'OK'"></span>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </template>
+
+        <template x-if="filteredHistory.length === 0">
+          <div class="text-center py-6">
+            <p class="text-xs text-[var(--text-muted)]">No polling history yet</p>
+          </div>
+        </template>
+      </section>
+
+    </div>
+  </template>
+
+</div>
+{% endblock %}

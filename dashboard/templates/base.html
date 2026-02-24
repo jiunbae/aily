@@ -114,6 +114,16 @@
               class="ml-auto text-[11px] font-semibold bg-[var(--accent-primary)] text-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center leading-none"
               style="display:none;"></span>
       </a>
+      <a href="/usage"
+         class="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150 {% block nav_usage_active %}{% endblock %}"
+         :class="sidebarCollapsed && !sidebarOpen ? 'justify-center' : ''"
+         :title="sidebarCollapsed && !sidebarOpen ? 'Usage' : ''">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        </svg>
+        <span class="text-[13px] font-medium" x-show="!sidebarCollapsed || sidebarOpen">Usage</span>
+      </a>
       <a href="/settings"
          class="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150 {% block nav_settings_active %}{% endblock %}"
          :class="sidebarCollapsed && !sidebarOpen ? 'justify-center' : ''"
@@ -290,6 +300,7 @@
            _gPressed = false;
            if ($event.key === 'h') window.location.href = '/';
            if ($event.key === 's') window.location.href = '/sessions';
+           if ($event.key === 'u') window.location.href = '/usage';
            if ($event.key === 't') window.location.href = '/settings';
          }
        ">
@@ -309,6 +320,7 @@
             <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Show shortcuts</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">?</kbd></div>
             <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Go to home</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">g h</kbd></div>
             <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Go to sessions</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">g s</kbd></div>
+            <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Go to usage</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">g u</kbd></div>
             <div class="flex justify-between"><span class="text-[var(--text-secondary)]">Go to settings</span><kbd class="px-2 py-0.5 bg-[var(--bg-overlay)] rounded text-xs font-mono">g t</kbd></div>
           </div>
           <button @click="show = false" class="mt-4 w-full py-2 rounded-lg bg-[var(--accent-primary)] text-white text-sm font-medium">Close</button>

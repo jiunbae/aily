@@ -1441,6 +1441,171 @@ cmd_auto() {
 }
 
 # -------------------------------------------------------------------
+# aily usage
+# -------------------------------------------------------------------
+
+cmd_usage() {
+  require_deps
+
+  local subcmd="${1:-}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    queue)
+      _usage_queue "$@"
+      return
+      ;;
+  esac
+
+  # Default: show current usage
+  local resp
+  resp=$(api_call GET "/api/usage" 2>/dev/null || echo "")
+
+  if [[ -z "$resp" ]]; then
+    err "Dashboard unavailable"
+    return 1
+  fi
+
+  if json_output "$resp"; then return; fi
+
+  hdr "API Usage (Rate Limits)"
+  echo ""
+
+  # Parse providers from response
+  local providers
+  providers=$(echo "$resp" | jq -r '.usage // {} | keys[]' 2>/dev/null)
+
+  if [[ -z "$providers" ]]; then
+    info "No usage data available. Enable USAGE_POLLER in dashboard settings."
+    echo ""
+    return
+  fi
+
+  for provider in $providers; do
+    # Single jq call to extract all fields at once
+    local -a fields
+    mapfile -t fields < <(echo "$resp" | jq -r ".usage[\"$provider\"] |
+      (.poll_status_code // \"?\"),
+      (.polled_at // \"-\"),
+      (.requests_remaining // \"?\"),
+      (.requests_limit // \"?\"),
+      (.input_tokens_remaining // \"?\"),
+      (.input_tokens_limit // \"?\"),
+      (.output_tokens_remaining // \"?\"),
+      (.output_tokens_limit // \"?\"),
+      (.tokens_remaining // \"?\"),
+      (.tokens_limit // \"?\"),
+      (.error_message // empty)")
+    local status_code="${fields[0]:-?}"
+    local polled_at
+    polled_at=$(echo "${fields[1]:--}" | sed 's/T/ /;s/\..*//')
+    local req_rem="${fields[2]:-?}" req_lim="${fields[3]:-?}"
+    local in_rem="${fields[4]:-?}" in_lim="${fields[5]:-?}"
+    local out_rem="${fields[6]:-?}" out_lim="${fields[7]:-?}"
+    local tok_rem="${fields[8]:-?}" tok_lim="${fields[9]:-?}"
+    local err_msg="${fields[10]:-}"
+
+    printf "  ${C_BOLD}${C_CYAN}%s${C_RESET}  ${C_DIM}(polled: %s, status: %s)${C_RESET}\n" \
+      "$provider" "$polled_at" "$status_code"
+
+    printf "    Requests:      %s / %s remaining\n" "$req_rem" "$req_lim"
+
+    if [[ "$in_rem" != "?" && "$in_rem" != "null" ]]; then
+      printf "    Input tokens:  %s / %s remaining\n" "$in_rem" "$in_lim"
+    fi
+
+    if [[ "$out_rem" != "?" && "$out_rem" != "null" ]]; then
+      printf "    Output tokens: %s / %s remaining\n" "$out_rem" "$out_lim"
+    fi
+
+    if [[ "$tok_rem" != "?" && "$tok_rem" != "null" ]]; then
+      printf "    Tokens:        %s / %s remaining\n" "$tok_rem" "$tok_lim"
+    fi
+
+    if [[ -n "$err_msg" ]]; then
+      printf "    ${C_RED}Error: %s${C_RESET}\n" "$err_msg"
+    fi
+    echo ""
+  done
+
+  # Queue stats
+  local pending
+  pending=$(echo "$resp" | jq -r '.queue_stats.pending // 0')
+  if [[ "$pending" != "0" ]]; then
+    printf "  ${C_YELLOW}Command queue: %s pending${C_RESET}\n" "$pending"
+    info "Run: aily usage queue"
+    echo ""
+  fi
+}
+
+_usage_queue() {
+  local action="${1:-}"
+
+  case "$action" in
+    add)
+      # aily usage queue add <session> <command>
+      local session="${2:-}"
+      local command="${*:3}"
+      if [[ -z "$session" || -z "$command" ]]; then
+        echo "Usage: aily usage queue add <session-name> <command>" >&2
+        return 1
+      fi
+      local resp
+      resp=$(api_call POST "/api/usage/queue" \
+        -d "$(jq -n --arg s "$session" --arg c "$command" '{"session_name":$s, "command":$c}')" 2>/dev/null || echo "")
+      if [[ -z "$resp" ]]; then
+        err "Failed to enqueue command"
+        return 1
+      fi
+      if json_output "$resp"; then return; fi
+      ok "Command queued for session '$session'"
+      ;;
+    execute)
+      local resp
+      resp=$(api_call POST "/api/usage/queue/execute" 2>/dev/null || echo "")
+      if [[ -z "$resp" ]]; then
+        err "Failed to execute queue"
+        return 1
+      fi
+      if json_output "$resp"; then return; fi
+      local count
+      count=$(echo "$resp" | jq -r '.executed // 0')
+      ok "Executed $count queued commands"
+      ;;
+    *)
+      # List queue (default)
+      local resp
+      resp=$(api_call GET "/api/usage/queue?status=pending" 2>/dev/null || echo "")
+      if [[ -z "$resp" ]]; then
+        err "Dashboard unavailable"
+        return 1
+      fi
+      if json_output "$resp"; then return; fi
+
+      local total
+      total=$(echo "$resp" | jq -r '.total // 0')
+      hdr "Command Queue (${total} pending)"
+      echo ""
+
+      if [[ "$total" == "0" ]]; then
+        info "No pending commands"
+        echo ""
+        return
+      fi
+
+      printf "  ${C_BOLD}%-6s %-24s %-12s %s${C_RESET}\n" "ID" "SESSION" "HOST" "COMMAND"
+      printf "  %-6s %-24s %-12s %s\n" "------" "------------------------" "------------" "----------------------------"
+
+      echo "$resp" | jq -r '.commands[] | [(.id|tostring), .session_name, .host, .command] | @tsv' 2>/dev/null | \
+        while IFS=$'\t' read -r id session host command; do
+          printf "  %-6s %-24s %-12s %s\n" "$id" "$session" "$host" "$command"
+        done
+      echo ""
+      ;;
+  esac
+}
+
+# -------------------------------------------------------------------
 # aily uninstall
 # -------------------------------------------------------------------
 cmd_uninstall() {
@@ -1616,6 +1781,13 @@ cmd_help() {
   echo "  config set KEY VALUE      Update a config key"
   echo "  config dashboard-url URL  Shortcut: set dashboard URL"
   echo ""
+  printf "${C_BOLD}Usage monitoring:${C_RESET}\n"
+  echo "  usage                     Show current API rate limit status"
+  echo "    --json                    Output raw JSON"
+  echo "  usage queue               Show pending command queue"
+  echo "  usage queue add S CMD     Queue a command for session S"
+  echo "  usage queue execute       Manually execute all pending commands"
+  echo ""
   printf "${C_BOLD}Thread management:${C_RESET}\n"
   echo "  start [name]              Create thread (default: current tmux session)"
   echo "  stop [name]               Archive thread (default: current tmux session)"
@@ -1665,6 +1837,7 @@ case "$CMD" in
   start)      cmd_start "$@" ;;
   stop)       cmd_stop "$@" ;;
   auto)       cmd_auto "$@" ;;
+  usage)      cmd_usage "$@" ;;
   uninstall)  cmd_uninstall "$@" ;;
   help|-h|--help) cmd_help ;;
   version|-v|--version) cmd_version ;;
