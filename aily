@@ -24,7 +24,14 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_self="$0"
+# Resolve symlinks to find the actual repo directory
+if [[ -L "$_self" ]]; then
+  _self="$(readlink "$_self")"
+  # Handle relative symlinks
+  [[ "$_self" != /* ]] && _self="$(cd "$(dirname "$0")" && cd "$(dirname "$_self")" && pwd)/$(basename "$_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 ENV_FILE="${AILY_ENV:-$HOME/.claude/hooks/.notify-env}"
 HOOKS_DIR="$(dirname "$ENV_FILE")"
 AILY_VERSION="2026.2.18"
