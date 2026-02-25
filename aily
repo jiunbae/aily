@@ -823,31 +823,54 @@ _start_local_dashboard() {
 
 _dashboard_via_uv() {
   local port="$1"
-  info "Installing dependencies with uv..."
-  uv pip install -q -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
-    # Try with --system flag
-    uv pip install -q --system -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
-      warn "Failed to install dependencies with uv"
+  local venv_dir="${SCRIPT_DIR}/.venv"
+
+  if [[ ! -d "$venv_dir" ]]; then
+    info "Creating virtualenv..."
+    uv venv "$venv_dir" >/dev/null 2>&1 || {
+      warn "Failed to create virtualenv with uv"
       return 1
     }
+  fi
+
+  info "Installing dependencies with uv..."
+  uv pip install -q -p "${venv_dir}/bin/python" \
+    -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
+    warn "Failed to install dependencies with uv"
+    return 1
   }
   ok "Dependencies installed"
-  _dashboard_start_process "$port"
+  _dashboard_start_process "$port" "${venv_dir}/bin/python"
 }
 
 _dashboard_via_pip() {
   local port="$1"
-  local pip_cmd="pip3"
-  command -v pip3 >/dev/null 2>&1 || pip_cmd="pip"
+  local venv_dir="${SCRIPT_DIR}/.venv"
 
-  info "Installing dependencies with ${pip_cmd}..."
-  "$pip_cmd" install -q -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
-    warn "Failed to install dependencies with ${pip_cmd}"
-    info "Try: ${pip_cmd} install -r ${SCRIPT_DIR}/requirements.txt"
+  if [[ ! -d "$venv_dir" ]]; then
+    info "Creating virtualenv..."
+    local py=""
+    for cmd in python3 python; do
+      command -v "$cmd" >/dev/null 2>&1 && { py="$cmd"; break; }
+    done
+    if [[ -z "$py" ]]; then
+      warn "Python not found"
+      return 1
+    fi
+    "$py" -m venv "$venv_dir" 2>/dev/null || {
+      warn "Failed to create virtualenv"
+      return 1
+    }
+  fi
+
+  info "Installing dependencies with pip..."
+  "${venv_dir}/bin/pip" install -q \
+    -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
+    warn "Failed to install dependencies with pip"
     return 1
   }
   ok "Dependencies installed"
-  _dashboard_start_process "$port"
+  _dashboard_start_process "$port" "${venv_dir}/bin/python"
 }
 
 _dashboard_via_docker() {
@@ -881,17 +904,30 @@ _dashboard_via_docker() {
 
 _dashboard_start_process() {
   local port="$1"
-  local py=""
-  for cmd in python3 python; do
-    command -v "$cmd" >/dev/null 2>&1 && { py="$cmd"; break; }
-  done
+  local py="${2:-}"
+
+  # Fallback: find system python if no venv python provided
+  if [[ -z "$py" ]]; then
+    for cmd in python3 python; do
+      command -v "$cmd" >/dev/null 2>&1 && { py="$cmd"; break; }
+    done
+  fi
   if [[ -z "$py" ]]; then
     warn "Python not found"
     return 1
   fi
 
+  # Local DB path (Docker uses /app/data, local uses ~/.local/share/aily)
+  local db_dir="${HOME}/.local/share/aily"
+  mkdir -p "$db_dir" 2>/dev/null || {
+    db_dir="/tmp/aily-data"
+    mkdir -p "$db_dir"
+  }
+
   info "Starting dashboard on port ${port}..."
-  DASHBOARD_HOST="0.0.0.0" DASHBOARD_PORT="$port" \
+  PYTHONPATH="${SCRIPT_DIR}" \
+    DASHBOARD_HOST="0.0.0.0" DASHBOARD_PORT="$port" \
+    DASHBOARD_DB_PATH="${db_dir}/aily.db" \
     AGENT_BRIDGE_ENV="$ENV_FILE" \
     nohup "$py" -m dashboard >/tmp/aily-dashboard.log 2>&1 &
   local pid=$!
