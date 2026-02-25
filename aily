@@ -148,7 +148,7 @@ redact() {
 # Dashboard API helpers
 # ---------------------------------------------------------------------------
 dashboard_url() {
-  env_get "AILY_DASHBOARD_URL" "https://aily.jiun.dev"
+  env_get "AILY_DASHBOARD_URL" "http://localhost:8080"
 }
 
 dashboard_token() {
@@ -290,9 +290,9 @@ cmd_init() {
   # -- 1. Dashboard URL --
   local url
   if [[ "$non_interactive" == "true" ]]; then
-    url="${AILY_DASHBOARD_URL:-https://aily.jiun.dev}"
+    url="${AILY_DASHBOARD_URL:-http://localhost:8080}"
   else
-    url=$(prompt_value "1) Dashboard URL" "$(env_get AILY_DASHBOARD_URL "https://aily.jiun.dev")")
+    url=$(prompt_value "1) Dashboard URL" "$(env_get AILY_DASHBOARD_URL "http://localhost:8080")")
   fi
   # Strip trailing slash
   url="${url%/}"
