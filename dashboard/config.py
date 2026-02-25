@@ -69,6 +69,10 @@ class Config:
     enable_command_queue: bool = False
     usage_retention_hours: int = 168  # 7 days
 
+    # Agent auto-launch on !new
+    new_session_agent: str = ""       # "claude", "codex", "gemini", "opencode", or ""
+    claude_remote_control: bool = False
+
     # .notify-env path
     env_file: str = ""
 
@@ -169,6 +173,14 @@ class Config:
                 config.usage_retention_hours,
             )
 
+        # Agent auto-launch
+        config.new_session_agent = (
+            os.environ.get("NEW_SESSION_AGENT", "").lower().strip()
+        )
+        config.claude_remote_control = (
+            os.environ.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
+        )
+
         # Fallback: load .notify-env file (same format as bridges)
         env_file = os.environ.get("AGENT_BRIDGE_ENV", "")
         if env_file and Path(env_file).exists():
@@ -217,5 +229,13 @@ def _load_notify_env(config: Config, path: str) -> None:
         config.anthropic_api_key = env.get("ANTHROPIC_API_KEY", "")
     if not config.openai_api_key:
         config.openai_api_key = env.get("OPENAI_API_KEY", "")
+
+    # Agent auto-launch from .notify-env if not already set
+    if not config.new_session_agent:
+        config.new_session_agent = env.get("NEW_SESSION_AGENT", "").lower().strip()
+    if not config.claude_remote_control:
+        config.claude_remote_control = (
+            env.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
+        )
 
     logger.info("Loaded config from %s", path)
