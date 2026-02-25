@@ -768,37 +768,6 @@ cmd_init() {
 
 _start_local_dashboard() {
   local url="$1"
-  local dashboard_dir="${SCRIPT_DIR}/dashboard"
-
-  if [[ ! -d "$dashboard_dir" ]]; then
-    warn "Dashboard source not found at ${dashboard_dir}"
-    info "Clone the repo first: git clone https://github.com/jiunbae/aily.git"
-    return 1
-  fi
-
-  # Check Python
-  local py=""
-  for cmd in python3 python; do
-    if command -v "$cmd" >/dev/null 2>&1; then
-      py="$cmd"
-      break
-    fi
-  done
-  if [[ -z "$py" ]]; then
-    warn "Python not found — install Python 3.10+ to run the dashboard"
-    return 1
-  fi
-
-  # Check dependencies
-  if ! "$py" -c "import aiohttp" 2>/dev/null; then
-    info "Installing dashboard dependencies..."
-    "$py" -m pip install -q -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
-      warn "Failed to install dependencies"
-      info "Run manually: pip install -r ${SCRIPT_DIR}/requirements.txt"
-      return 1
-    }
-    ok "Dependencies installed"
-  fi
 
   # Extract port from URL
   local port=8080
@@ -812,33 +781,142 @@ _start_local_dashboard() {
     return 1
   fi
 
-  # Start dashboard in background
+  # Detect available methods
+  local _methods=() _descs=()
+  if command -v uv >/dev/null 2>&1 && [[ -d "${SCRIPT_DIR}/dashboard" ]]; then
+    _methods[${#_methods[@]}]="uv"
+    _descs[${#_descs[@]}]="fast, recommended"
+  fi
+  if command -v pip3 >/dev/null 2>&1 || command -v pip >/dev/null 2>&1; then
+    if [[ -d "${SCRIPT_DIR}/dashboard" ]]; then
+      _methods[${#_methods[@]}]="pip"
+      _descs[${#_descs[@]}]="classic"
+    fi
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    _methods[${#_methods[@]}]="docker"
+    _descs[${#_descs[@]}]="containerized, no local deps"
+  fi
+
+  if [[ ${#_methods[@]} -eq 0 ]]; then
+    warn "No install method available (need uv, pip, or docker)"
+    info "Install one of: uv (https://docs.astral.sh/uv), pip, docker"
+    return 1
+  fi
+
+  # Let user choose if multiple methods available
+  local method="${_methods[0]}"
+  if [[ ${#_methods[@]} -gt 1 ]]; then
+    local method_idx=0
+    ui_select method_idx "Install method" "${_methods[@]}" -- "${_descs[@]}"
+    method="${_methods[$method_idx]}"
+  else
+    info "Using ${method}"
+  fi
+
+  case "$method" in
+    uv)     _dashboard_via_uv "$port" ;;
+    pip)    _dashboard_via_pip "$port" ;;
+    docker) _dashboard_via_docker "$port" ;;
+  esac
+}
+
+_dashboard_via_uv() {
+  local port="$1"
+  info "Installing dependencies with uv..."
+  uv pip install -q -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
+    # Try with --system flag
+    uv pip install -q --system -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
+      warn "Failed to install dependencies with uv"
+      return 1
+    }
+  }
+  ok "Dependencies installed"
+  _dashboard_start_process "$port"
+}
+
+_dashboard_via_pip() {
+  local port="$1"
+  local pip_cmd="pip3"
+  command -v pip3 >/dev/null 2>&1 || pip_cmd="pip"
+
+  info "Installing dependencies with ${pip_cmd}..."
+  "$pip_cmd" install -q -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
+    warn "Failed to install dependencies with ${pip_cmd}"
+    info "Try: ${pip_cmd} install -r ${SCRIPT_DIR}/requirements.txt"
+    return 1
+  }
+  ok "Dependencies installed"
+  _dashboard_start_process "$port"
+}
+
+_dashboard_via_docker() {
+  local port="$1"
+  local image="aily-dashboard"
+
+  info "Building Docker image..."
+  if ! docker build -q -t "$image" "${SCRIPT_DIR}" >/dev/null 2>&1; then
+    warn "Docker build failed"
+    return 1
+  fi
+  ok "Image built"
+
+  info "Starting container on port ${port}..."
+  local cid
+  cid=$(docker run -d --rm \
+    --name aily-dashboard \
+    -p "${port}:8080" \
+    -v "${ENV_FILE}:/app/.notify-env:ro" \
+    -e AGENT_BRIDGE_ENV=/app/.notify-env \
+    "$image" 2>/dev/null) || {
+    warn "Failed to start container"
+    return 1
+  }
+
+  _dashboard_wait_healthy "http://localhost:${port}" || return 1
+  ok "Dashboard running (container: ${cid:0:12})"
+  info "Stop: docker stop aily-dashboard"
+  return 0
+}
+
+_dashboard_start_process() {
+  local port="$1"
+  local py=""
+  for cmd in python3 python; do
+    command -v "$cmd" >/dev/null 2>&1 && { py="$cmd"; break; }
+  done
+  if [[ -z "$py" ]]; then
+    warn "Python not found"
+    return 1
+  fi
+
   info "Starting dashboard on port ${port}..."
   DASHBOARD_HOST="0.0.0.0" DASHBOARD_PORT="$port" \
     AGENT_BRIDGE_ENV="$ENV_FILE" \
     nohup "$py" -m dashboard >/tmp/aily-dashboard.log 2>&1 &
   local pid=$!
 
-  # Wait for startup
+  _dashboard_wait_healthy "http://localhost:${port}" || {
+    info "Check logs: /tmp/aily-dashboard.log"
+    return 1
+  }
+  ok "Dashboard running (PID ${pid})"
+  info "Logs: /tmp/aily-dashboard.log"
+  info "Stop: kill ${pid}"
+  return 0
+}
+
+_dashboard_wait_healthy() {
+  local url="$1"
   local attempts=0
-  while [[ $attempts -lt 10 ]]; do
+  while [[ $attempts -lt 15 ]]; do
     sleep 0.5
-    if ! kill -0 "$pid" 2>/dev/null; then
-      warn "Dashboard process exited unexpectedly"
-      info "Check logs: /tmp/aily-dashboard.log"
-      return 1
-    fi
     if curl -sf --connect-timeout 1 "${url}/healthz" >/dev/null 2>&1; then
-      ok "Dashboard running (PID ${pid})"
-      info "Logs: /tmp/aily-dashboard.log"
-      info "Stop: kill ${pid}"
       return 0
     fi
     attempts=$((attempts + 1))
   done
-
-  warn "Dashboard started (PID ${pid}) but slow to respond"
-  info "Check logs: /tmp/aily-dashboard.log"
+  warn "Dashboard not responding after 7s"
   return 1
 }
 
