@@ -342,6 +342,17 @@ redact() {
   fi
 }
 
+_generate_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c "import secrets; print(secrets.token_hex(32))"
+  else
+    LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64
+    echo ""
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Dashboard API helpers
 # ---------------------------------------------------------------------------
@@ -494,16 +505,31 @@ cmd_init() {
   fi
   url="${url%/}"
 
+  local _is_localhost=false
+  if [[ "$url" == *"localhost"* || "$url" == *"127.0.0.1"* ]]; then
+    _is_localhost=true
+  fi
+
+  # -- Auth token (determine early so we can pass it to dashboard startup) --
+  local token=""
+  local existing_token
+  existing_token="${AILY_AUTH_TOKEN:-$(env_get AILY_AUTH_TOKEN "")}"
+
   local _dashboard_ok=false
   if ui_spin "Testing connectivity" curl -sf --connect-timeout 3 "${url}/healthz"; then
     _dashboard_ok=true
   else
     info "Dashboard not reachable"
-    # Offer to start local dashboard if URL points to localhost
-    if [[ "$non_interactive" == "false" && ( "$url" == *"localhost"* || "$url" == *"127.0.0.1"* ) ]]; then
+    if [[ "$non_interactive" == "false" && "$_is_localhost" == true ]]; then
       if ui_confirm "Start local dashboard server?" "y"; then
-        _start_local_dashboard "$url"
-        # Recheck connectivity
+        # Auto-generate token before starting dashboard
+        if [[ -z "$existing_token" ]]; then
+          token="$(_generate_token)"
+          ok "Generated auth token"
+        else
+          token="$existing_token"
+        fi
+        _start_local_dashboard "$url" "$token"
         if ui_spin "Checking dashboard" curl -sf --connect-timeout 5 "${url}/healthz"; then
           _dashboard_ok=true
         else
@@ -518,22 +544,50 @@ cmd_init() {
   fi
   echo ""
 
-  # -- Auth token (only ask if dashboard is reachable) --
-  local token=""
-  if [[ "$_dashboard_ok" == true ]]; then
+  # -- Auth token (finalize) --
+  if [[ "$_dashboard_ok" == true && -z "$token" ]]; then
+    # Dashboard was already running (we didn't start it)
     if [[ "$non_interactive" == "true" ]]; then
-      token="${AILY_AUTH_TOKEN:-}"
+      token="$existing_token"
+      if [[ -z "$token" && "$_is_localhost" == true ]]; then
+        token="$(_generate_token)"
+      fi
     else
-      token=$(prompt_value "Auth token" "$(env_get AILY_AUTH_TOKEN "")" true)
+      if [[ -z "$existing_token" && "$_is_localhost" == true ]]; then
+        token="$(_generate_token)"
+        ok "Generated auth token"
+        warn "Restart dashboard to activate token auth"
+      else
+        token=$(prompt_value "Auth token" "$existing_token" true)
+      fi
     fi
+  elif [[ -z "$token" ]]; then
+    # Dashboard not reachable and we didn't start it
+    if [[ "$non_interactive" == "true" ]]; then
+      token="$existing_token"
+      if [[ -z "$token" && "$_is_localhost" == true ]]; then
+        token="$(_generate_token)"
+      fi
+    else
+      if [[ -z "$existing_token" && "$_is_localhost" == true ]]; then
+        token="$(_generate_token)"
+        info "Auto-generated auth token (will apply when dashboard starts)"
+      elif [[ -n "$existing_token" ]]; then
+        token="$existing_token"
+      fi
+    fi
+  fi
 
-    if [[ -n "$token" ]]; then
-      ui_spin "Validating token" curl -sf --connect-timeout 3 \
-        -H "Authorization: Bearer ${token}" "${url}/api/stats" || \
-        warn "Could not validate — dashboard may be unavailable"
-    fi
-  else
-    token="${AILY_AUTH_TOKEN:-$(env_get AILY_AUTH_TOKEN "")}"
+  # Show token info and let user confirm/override
+  if [[ -n "$token" && "$non_interactive" == "false" ]]; then
+    info "Auth token: $(redact "$token")"
+  fi
+
+  # Validate token against running dashboard
+  if [[ "$_dashboard_ok" == true && -n "$token" ]]; then
+    ui_spin "Validating token" curl -sf --connect-timeout 3 \
+      -H "Authorization: Bearer ${token}" "${url}/api/stats" || \
+      warn "Could not validate — token may take effect after restart"
   fi
   echo ""
 
@@ -768,6 +822,7 @@ cmd_init() {
 
 _start_local_dashboard() {
   local url="$1"
+  local token="${2:-}"
 
   # Extract port from URL
   local port=8080
@@ -815,14 +870,15 @@ _start_local_dashboard() {
   fi
 
   case "$method" in
-    uv)     _dashboard_via_uv "$port" ;;
-    pip)    _dashboard_via_pip "$port" ;;
-    docker) _dashboard_via_docker "$port" ;;
+    uv)     _dashboard_via_uv "$port" "$token" ;;
+    pip)    _dashboard_via_pip "$port" "$token" ;;
+    docker) _dashboard_via_docker "$port" "$token" ;;
   esac
 }
 
 _dashboard_via_uv() {
   local port="$1"
+  local token="${2:-}"
   local venv_dir="${SCRIPT_DIR}/.venv"
 
   if [[ ! -d "$venv_dir" ]]; then
@@ -840,11 +896,12 @@ _dashboard_via_uv() {
     return 1
   }
   ok "Dependencies installed"
-  _dashboard_start_process "$port" "${venv_dir}/bin/python"
+  _dashboard_start_process "$port" "${venv_dir}/bin/python" "$token"
 }
 
 _dashboard_via_pip() {
   local port="$1"
+  local token="${2:-}"
   local venv_dir="${SCRIPT_DIR}/.venv"
 
   if [[ ! -d "$venv_dir" ]]; then
@@ -870,11 +927,12 @@ _dashboard_via_pip() {
     return 1
   }
   ok "Dependencies installed"
-  _dashboard_start_process "$port" "${venv_dir}/bin/python"
+  _dashboard_start_process "$port" "${venv_dir}/bin/python" "$token"
 }
 
 _dashboard_via_docker() {
   local port="$1"
+  local token="${2:-}"
   local image="aily-dashboard"
 
   info "Building Docker image..."
@@ -891,6 +949,7 @@ _dashboard_via_docker() {
     -p "${port}:8080" \
     -v "${ENV_FILE}:/app/.notify-env:ro" \
     -e AGENT_BRIDGE_ENV=/app/.notify-env \
+    ${token:+-e DASHBOARD_TOKEN="$token"} \
     "$image" 2>/dev/null) || {
     warn "Failed to start container"
     return 1
@@ -905,6 +964,7 @@ _dashboard_via_docker() {
 _dashboard_start_process() {
   local port="$1"
   local py="${2:-}"
+  local token="${3:-}"
 
   # Fallback: find system python if no venv python provided
   if [[ -z "$py" ]]; then
@@ -929,6 +989,7 @@ _dashboard_start_process() {
     DASHBOARD_HOST="0.0.0.0" DASHBOARD_PORT="$port" \
     DASHBOARD_DB_PATH="${db_dir}/aily.db" \
     AGENT_BRIDGE_ENV="$ENV_FILE" \
+    ${token:+DASHBOARD_TOKEN="$token"} \
     nohup "$py" -m dashboard >/tmp/aily-dashboard.log 2>&1 &
   local pid=$!
 
