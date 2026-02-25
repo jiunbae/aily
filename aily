@@ -64,6 +64,197 @@ json_output() {
 }
 
 # ---------------------------------------------------------------------------
+# Interactive UI toolkit (pure bash + ANSI)
+# ---------------------------------------------------------------------------
+
+# Cleanup state
+_UI_CURSOR_HIDDEN=false
+_UI_SPINNER_PID=""
+
+_ui_cleanup() {
+  if [[ "$_UI_CURSOR_HIDDEN" == true ]]; then
+    printf '\033[?25h' >&2
+    _UI_CURSOR_HIDDEN=false
+  fi
+  if [[ -n "$_UI_SPINNER_PID" ]] && kill -0 "$_UI_SPINNER_PID" 2>/dev/null; then
+    kill "$_UI_SPINNER_PID" 2>/dev/null
+    wait "$_UI_SPINNER_PID" 2>/dev/null || true
+    _UI_SPINNER_PID=""
+  fi
+}
+trap '_ui_cleanup' EXIT
+trap '_ui_cleanup; exit 130' INT
+trap '_ui_cleanup; exit 143' TERM
+
+ui_spin() {
+  # Usage: ui_spin "label" command [args...]
+  # Animated braille spinner while command runs. Returns command exit code.
+  local _label="$1"; shift
+
+  # Non-TTY fallback
+  if [[ ! -t 2 ]]; then
+    printf "  %s... " "$_label" >&2
+    local _rc=0
+    "$@" >/dev/null 2>&1 || _rc=$?
+    if [[ $_rc -eq 0 ]]; then
+      printf "OK\n" >&2
+    else
+      printf "FAILED\n" >&2
+    fi
+    return $_rc
+  fi
+
+  local _frames="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+  local _nframes=10
+
+  printf '\033[?25l' >&2
+  _UI_CURSOR_HIDDEN=true
+
+  "$@" >/dev/null 2>&1 &
+  _UI_SPINNER_PID=$!
+
+  local _i=0
+  while kill -0 "$_UI_SPINNER_PID" 2>/dev/null; do
+    local _f="${_frames:$(( _i % _nframes )):1}"
+    printf '\r\033[2K  %b%s%b %s' "$C_CYAN" "$_f" "$C_RESET" "$_label" >&2
+    sleep 0.08
+    _i=$(( _i + 1 ))
+  done
+
+  set +e
+  wait "$_UI_SPINNER_PID" 2>/dev/null
+  local _rc=$?
+  set -e
+  _UI_SPINNER_PID=""
+
+  if [[ $_rc -eq 0 ]]; then
+    printf '\r\033[2K  %b✓%b %s\n' "$C_GREEN" "$C_RESET" "$_label" >&2
+  else
+    printf '\r\033[2K  %b✗%b %s\n' "$C_RED" "$C_RESET" "$_label" >&2
+  fi
+
+  printf '\033[?25h' >&2
+  _UI_CURSOR_HIDDEN=false
+  return $_rc
+}
+
+ui_select() {
+  # Usage: ui_select <var_name> <label> <opt1> <opt2> ... [-- <desc1> <desc2> ...]
+  # Arrow-key / j,k navigation. Sets var to 0-based index.
+  local _var="$1" _label="$2"; shift 2
+
+  local _opts=() _descs=() _in_opts=true
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--" ]]; then
+      _in_opts=false; shift; continue
+    fi
+    if [[ "$_in_opts" == true ]]; then
+      _opts[${#_opts[@]}]="$1"
+    else
+      _descs[${#_descs[@]}]="$1"
+    fi
+    shift
+  done
+
+  local _n=${#_opts[@]}
+  local _sel=0
+
+  # Non-TTY fallback: numbered list
+  if [[ ! -t 0 ]]; then
+    printf "  %s\n" "$_label" >&2
+    local _i
+    for (( _i=0; _i<_n; _i++ )); do
+      local _d=""
+      [[ ${#_descs[@]} -gt $_i ]] && _d="  (${_descs[$_i]})"
+      printf "    %d) %s%s\n" "$((_i+1))" "${_opts[$_i]}" "$_d" >&2
+    done
+    local _choice
+    read -rp "  Choice [1]: " _choice 2>&1
+    _choice="${_choice:-1}"
+    eval "$_var=$(( _choice - 1 ))"
+    return
+  fi
+
+  printf '\033[?25l' >&2
+  _UI_CURSOR_HIDDEN=true
+
+  # Print label with hint
+  printf "  %b%s%b  %b(↑↓/jk to move, enter to select)%b\n" \
+    "$C_BOLD" "$_label" "$C_RESET" "$C_DIM" "$C_RESET" >&2
+
+  # Render options
+  _ui_sel_draw() {
+    local _i
+    for (( _i=0; _i<_n; _i++ )); do
+      printf '\033[2K' >&2
+      local _d=""
+      [[ ${#_descs[@]} -gt $_i ]] && _d="  ${C_DIM}${_descs[$_i]}${C_RESET}"
+      if [[ $_i -eq $_sel ]]; then
+        printf "    %b>%b %b%s%b%b\n" "$C_CYAN" "$C_RESET" "$C_BOLD" "${_opts[$_i]}" "$C_RESET" "$_d" >&2
+      else
+        printf "      %s%b\n" "${_opts[$_i]}" "$_d" >&2
+      fi
+    done
+  }
+  _ui_sel_draw
+
+  while true; do
+    local _key=""
+    IFS= read -rsn1 _key
+
+    if [[ "$_key" == $'\033' ]]; then
+      local _seq=""
+      read -rsn2 -t 1 _seq || true
+      case "$_seq" in
+        '[A') [[ $_sel -gt 0 ]] && _sel=$(( _sel - 1 )) ;;
+        '[B') [[ $_sel -lt $(( _n - 1 )) ]] && _sel=$(( _sel + 1 )) ;;
+      esac
+    elif [[ "$_key" == "k" ]]; then
+      [[ $_sel -gt 0 ]] && _sel=$(( _sel - 1 ))
+    elif [[ "$_key" == "j" ]]; then
+      [[ $_sel -lt $(( _n - 1 )) ]] && _sel=$(( _sel + 1 ))
+    elif [[ "$_key" == "" ]]; then
+      break
+    fi
+
+    # Move up _n lines and redraw
+    printf "\033[${_n}A" >&2
+    _ui_sel_draw
+  done
+
+  printf '\033[?25h' >&2
+  _UI_CURSOR_HIDDEN=false
+
+  eval "$_var=$_sel"
+}
+
+ui_confirm() {
+  # Usage: ui_confirm "label" [default: y|n]
+  # Returns 0 for yes, 1 for no.
+  local _label="$1" _default="${2:-y}"
+
+  if [[ ! -t 0 ]]; then
+    [[ "$_default" == "y" ]] && return 0 || return 1
+  fi
+
+  local _hint
+  if [[ "$_default" == "y" ]]; then
+    _hint="${C_BOLD}Y${C_RESET}${C_DIM}/n${C_RESET}"
+  else
+    _hint="${C_DIM}y/${C_RESET}${C_BOLD}N${C_RESET}"
+  fi
+  local _answer
+  printf "  %s [%b]: " "$_label" "$_hint" >&2
+  read -rn1 _answer </dev/tty
+  echo "" >&2
+  _answer="${_answer:-$_default}"
+  case "$_answer" in
+    [Yy]) return 0 ;;
+    *)    return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
 # Dependency check
 # ---------------------------------------------------------------------------
 require_cmd() {
@@ -235,9 +426,9 @@ prompt_value() {
   prompt="  ${label}"
   if [[ -n "$default" ]]; then
     if [[ "$secret" == "true" ]]; then
-      prompt+=" [$(redact "$default")]"
+      prompt+=" ${C_DIM}[$(redact "$default")]${C_RESET}"
     else
-      prompt+=" [${default}]"
+      prompt+=" ${C_DIM}[${default}]${C_RESET}"
     fi
   fi
   prompt+=": "
@@ -287,26 +478,19 @@ cmd_init() {
   hdr "aily setup wizard"
   echo ""
 
-  # -- 1. Dashboard URL --
+  # -- Dashboard URL --
   local url
   if [[ "$non_interactive" == "true" ]]; then
     url="${AILY_DASHBOARD_URL:-http://localhost:8080}"
   else
-    url=$(prompt_value "1) Dashboard URL" "$(env_get AILY_DASHBOARD_URL "http://localhost:8080")")
+    url=$(prompt_value "Dashboard URL" "$(env_get AILY_DASHBOARD_URL "http://localhost:8080")")
   fi
-  # Strip trailing slash
   url="${url%/}"
 
-  # Test connectivity
-  printf "  Testing connectivity... "
-  local health
-  if health=$(curl -sf --connect-timeout 5 "${url}/healthz" 2>/dev/null); then
-    printf "${C_GREEN}OK${C_RESET}\n"
-  else
-    printf "${C_RED}FAILED${C_RESET}\n"
+  if ! ui_spin "Testing connectivity" curl -sf --connect-timeout 5 "${url}/healthz"; then
     warn "Could not reach ${url}/healthz"
     if [[ "$non_interactive" == "false" ]]; then
-      if ! prompt_yn "Continue anyway?" "n"; then
+      if ! ui_confirm "Continue anyway?" "n"; then
         echo "  Aborted."
         exit 1
       fi
@@ -314,29 +498,24 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 2. Auth token --
+  # -- Auth token --
   local token
   if [[ "$non_interactive" == "true" ]]; then
     token="${AILY_AUTH_TOKEN:-}"
   else
-    token=$(prompt_value "2) Auth token" "$(env_get AILY_AUTH_TOKEN "")" true)
+    token=$(prompt_value "Auth token" "$(env_get AILY_AUTH_TOKEN "")" true)
   fi
 
   if [[ -n "$token" ]]; then
-    printf "  Validating token... "
-    local stats_resp
-    if stats_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bearer ${token}" "${url}/api/stats" 2>/dev/null); then
-      printf "${C_GREEN}OK${C_RESET}\n"
-    else
-      printf "${C_YELLOW}WARN${C_RESET} (could not validate — dashboard may be unavailable)\n"
-    fi
+    ui_spin "Validating token" curl -sf --connect-timeout 5 \
+      -H "Authorization: Bearer ${token}" "${url}/api/stats" || \
+      warn "Could not validate — dashboard may be unavailable"
   else
     info "No auth token set (dashboard access may be limited)"
   fi
   echo ""
 
-  # -- 3. Platform setup --
-  echo "  3) Platform setup"
+  # -- Platform setup --
   local discord_token="" discord_channel=""
   local slack_token="" slack_app_token="" slack_channel=""
 
@@ -348,21 +527,19 @@ cmd_init() {
     slack_channel="${SLACK_CHANNEL_ID:-$(env_get SLACK_CHANNEL_ID "")}"
   else
     # Discord
-    if prompt_yn "Enable Discord?" "$(if [[ -n "$(env_get DISCORD_BOT_TOKEN "")" ]]; then echo y; else echo n; fi)"; then
+    if ui_confirm "Enable Discord?" "$(if [[ -n "$(env_get DISCORD_BOT_TOKEN "")" ]]; then echo y; else echo n; fi)"; then
       discord_token=$(prompt_value "Discord bot token" "$(env_get DISCORD_BOT_TOKEN "")" true)
       discord_channel=$(prompt_value "Discord channel ID" "$(env_get DISCORD_CHANNEL_ID "")")
 
       if [[ -n "$discord_token" && -n "$discord_channel" ]]; then
-        printf "  Validating Discord... "
-        local discord_resp
+        local discord_resp=""
         discord_resp=$(curl -sf -H "Authorization: Bot ${discord_token}" \
           "https://discord.com/api/v10/channels/${discord_channel}" 2>/dev/null || echo "")
         if [[ -n "$discord_resp" ]] && echo "$discord_resp" | jq -e '.id' >/dev/null 2>&1; then
           local chan_name
           chan_name=$(echo "$discord_resp" | jq -r '.name // "unknown"')
-          printf "${C_GREEN}OK${C_RESET} (channel: %s)\n" "$chan_name"
+          ok "Discord: ${chan_name}"
         else
-          printf "${C_RED}FAILED${C_RESET}\n"
           warn "Could not validate Discord credentials"
         fi
       fi
@@ -370,22 +547,20 @@ cmd_init() {
     echo ""
 
     # Slack
-    if prompt_yn "Enable Slack?" "$(if [[ -n "$(env_get SLACK_BOT_TOKEN "")" ]]; then echo y; else echo n; fi)"; then
+    if ui_confirm "Enable Slack?" "$(if [[ -n "$(env_get SLACK_BOT_TOKEN "")" ]]; then echo y; else echo n; fi)"; then
       slack_token=$(prompt_value "Slack bot token (xoxb-...)" "$(env_get SLACK_BOT_TOKEN "")" true)
       slack_app_token=$(prompt_value "Slack app token (xapp-...)" "$(env_get SLACK_APP_TOKEN "")" true)
       slack_channel=$(prompt_value "Slack channel ID" "$(env_get SLACK_CHANNEL_ID "")")
 
       if [[ -n "$slack_token" && -n "$slack_channel" ]]; then
-        printf "  Validating Slack... "
-        local slack_resp
+        local slack_resp=""
         slack_resp=$(curl -sf -H "Authorization: Bearer ${slack_token}" \
           "https://slack.com/api/conversations.info?channel=${slack_channel}" 2>/dev/null || echo "")
         if [[ -n "$slack_resp" ]] && echo "$slack_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
           local chan_name
           chan_name=$(echo "$slack_resp" | jq -r '.channel.name // "unknown"')
-          printf "${C_GREEN}OK${C_RESET} (channel: #%s)\n" "$chan_name"
+          ok "Slack: #${chan_name}"
         else
-          printf "${C_RED}FAILED${C_RESET}\n"
           warn "Could not validate Slack credentials"
         fi
       fi
@@ -393,70 +568,59 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 4. SSH hosts --
+  # -- SSH hosts --
   local ssh_hosts
   if [[ "$non_interactive" == "true" ]]; then
     ssh_hosts="${SSH_HOSTS:-$(env_get SSH_HOSTS "localhost")}"
   else
-    ssh_hosts=$(prompt_value "4) SSH hosts (comma-separated)" "$(env_get SSH_HOSTS "localhost")")
+    ssh_hosts=$(prompt_value "SSH hosts (comma-separated)" "$(env_get SSH_HOSTS "localhost")")
   fi
 
   if [[ "$non_interactive" == "false" && -n "$ssh_hosts" && "$ssh_hosts" != "localhost" ]]; then
     IFS=',' read -ra host_list <<< "$ssh_hosts"
     for host in "${host_list[@]}"; do
       host=$(echo "$host" | tr -d ' ')
-      printf "  Testing SSH to %s... " "$host"
-      if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "echo ok" >/dev/null 2>&1; then
-        printf "${C_GREEN}OK${C_RESET}\n"
-      else
-        printf "${C_RED}FAILED${C_RESET}\n"
-      fi
+      ui_spin "Testing SSH to ${host}" ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "echo ok" || true
     done
   fi
   echo ""
 
-  # -- 5. Thread cleanup --
+  # -- Thread cleanup --
   local thread_cleanup
   if [[ "$non_interactive" == "true" ]]; then
     thread_cleanup="${THREAD_CLEANUP:-archive}"
   else
-    echo "  5) Thread cleanup"
-    info "When a tmux session is destroyed, what should happen to its thread?"
-    echo "    1) archive — archive/lock thread (keeps history)"
-    echo "    2) delete  — delete thread entirely"
-    local cleanup_choice
-    read -rp "  Choice [1]: " cleanup_choice
-    case "${cleanup_choice:-1}" in
-      2|delete) thread_cleanup="delete" ;;
-      *)        thread_cleanup="archive" ;;
+    local cleanup_idx=0
+    ui_select cleanup_idx "Thread cleanup" \
+      "archive" "delete" \
+      -- "keeps history" "removes thread"
+    case "$cleanup_idx" in
+      1) thread_cleanup="delete" ;;
+      *) thread_cleanup="archive" ;;
     esac
     ok "Thread cleanup: ${thread_cleanup}"
   fi
   echo ""
 
-  # -- 6. Agent auto-launch --
+  # -- Agent auto-launch --
   local new_session_agent="" claude_remote_control="false"
   if [[ "$non_interactive" == "true" ]]; then
     new_session_agent="${NEW_SESSION_AGENT:-$(env_get NEW_SESSION_AGENT "")}"
     claude_remote_control="${CLAUDE_REMOTE_CONTROL:-$(env_get CLAUDE_REMOTE_CONTROL "false")}"
   else
-    echo "  6) Agent auto-launch on !new"
-    info "Auto-launch an agent when creating sessions with !new"
-    echo "    0) none    — just create tmux session"
-    echo "    1) claude  — start Claude Code"
-    echo "    2) codex   — start Codex CLI"
-    echo "    3) gemini  — start Gemini CLI"
-    local agent_choice
-    read -rp "  Choice [0]: " agent_choice
-    case "${agent_choice:-0}" in
-      1|claude)  new_session_agent="claude" ;;
-      2|codex)   new_session_agent="codex" ;;
-      3|gemini)  new_session_agent="gemini" ;;
-      *)         new_session_agent="" ;;
+    local agent_idx=0
+    ui_select agent_idx "Agent auto-launch on !new" \
+      "none" "claude" "codex" "gemini" \
+      -- "just create tmux session" "start Claude Code" "start Codex CLI" "start Gemini CLI"
+    case "$agent_idx" in
+      1) new_session_agent="claude" ;;
+      2) new_session_agent="codex" ;;
+      3) new_session_agent="gemini" ;;
+      *) new_session_agent="" ;;
     esac
 
     if [[ "$new_session_agent" == "claude" ]]; then
-      if prompt_yn "Enable remote-control mode for Claude?" "n"; then
+      if ui_confirm "Enable remote-control mode for Claude?" "n"; then
         claude_remote_control="true"
       fi
     fi
@@ -471,8 +635,7 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 7. Write config --
-  echo "  7) Writing configuration"
+  # -- Write config --
   mkdir -p "$(dirname "$ENV_FILE")"
 
   # Build the config file content
@@ -529,8 +692,7 @@ cmd_init() {
   ok "Saved to ${ENV_FILE} (chmod 600)"
   echo ""
 
-  # -- 8. Install hooks --
-  echo "  8) Installing hooks"
+  # -- Install hooks --
   if [[ -x "${SCRIPT_DIR}/install.sh" ]]; then
     bash "${SCRIPT_DIR}/install.sh" 2>&1 | while IFS= read -r line; do
       echo "  $line"
@@ -541,8 +703,7 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 8. Install shell completions --
-  echo "  9) Shell completions"
+  # -- Shell completions --
   local comp_dir
   if [[ -n "${ZSH_VERSION:-}" || "$SHELL" == */zsh ]]; then
     comp_dir="${ZDOTDIR:-$HOME}/.zfunc"
@@ -566,10 +727,9 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 9. Test notification --
-  echo "  10) Test notification"
+  # -- Test notification --
   if [[ "$non_interactive" == "false" ]]; then
-    if prompt_yn "Send a test notification?" "y"; then
+    if ui_confirm "Send a test notification?" "y"; then
       _send_test_notification
     else
       info "Skipped"
