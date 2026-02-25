@@ -101,6 +101,8 @@ GUILD_ID: str = ""
 SSH_HOSTS: list[str] = []
 DEFAULT_HOST: str = ""
 THREAD_CLEANUP: str = "archive"
+NEW_SESSION_AGENT: str = ""
+CLAUDE_REMOTE_CONTROL: bool = False
 _announced: bool = False
 
 # Track background tasks to prevent GC and surface exceptions
@@ -221,6 +223,21 @@ def capture_pane_content(host: str, session: str) -> str:
     safe_session = shlex.quote(session)
     rc, out = run_ssh(host, f"tmux capture-pane -t {safe_session} -p", timeout=10)
     return out if rc == 0 else ""
+
+
+def _build_agent_command(agent: str, remote_control: bool) -> str | None:
+    """Build the shell command to launch an agent. Returns None if agent is empty."""
+    if not agent:
+        return None
+    if agent == "claude":
+        return "claude remote-control" if remote_control else "claude"
+    if agent == "codex":
+        return "codex"
+    if agent == "gemini":
+        return "gemini"
+    if agent == "opencode":
+        return "opencode"
+    return None
 
 
 def capture_shell_output(
@@ -459,6 +476,18 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
             f"Failed to create tmux session `{session_name}` on `{host}`.")
         return
 
+    # Launch agent in session (if configured)
+    agent_cmd = _build_agent_command(NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL)
+    agent_label = ""
+    if agent_cmd:
+        # Small delay for shell initialization
+        await asyncio.sleep(0.5)
+        launched = await asyncio.to_thread(send_to_tmux, host, session_name, agent_cmd)
+        if launched:
+            agent_label = f" | agent: `{agent_cmd}`"
+        else:
+            agent_label = f" | failed to launch `{agent_cmd}`"
+
     # Create Discord thread
     cwd_label = f" in `{working_dir}`" if working_dir else ""
     thread_name = f"{AGENT_PREFIX}{session_name}"
@@ -467,12 +496,12 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
 
     if thread_id:
         await post_message(http, token, thread_id,
-            f"Session `{session_name}` created on `{host}`{cwd_label}.")
+            f"Session `{session_name}` created on `{host}`{cwd_label}.{agent_label}")
         await post_message(http, token, reply_to,
-            f"Created `{session_name}` on `{host}`{cwd_label} + thread <#{thread_id}>")
+            f"Created `{session_name}` on `{host}`{cwd_label} + thread <#{thread_id}>{agent_label}")
     else:
         await post_message(http, token, reply_to,
-            f"Created tmux `{session_name}` on `{host}`{cwd_label} but failed to create thread.")
+            f"Created tmux `{session_name}` on `{host}`{cwd_label} but failed to create thread.{agent_label}")
 
 
 async def cmd_kill(http: aiohttp.ClientSession, token: str,
@@ -894,6 +923,7 @@ async def heartbeat_loop(ws, interval: float, get_sequence):
 
 async def main():
     global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, THREAD_CLEANUP, DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
+    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL
 
     env_path = os.environ.get("AGENT_BRIDGE_ENV",
         os.path.expanduser("~/.claude/hooks/.notify-env"))
@@ -925,6 +955,10 @@ async def main():
     if THREAD_CLEANUP not in ("archive", "delete"):
         THREAD_CLEANUP = "archive"
 
+    # Agent auto-launch on !new
+    NEW_SESSION_AGENT = env.get("NEW_SESSION_AGENT", "").lower().strip()
+    CLAUDE_REMOTE_CONTROL = env.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
+
     if not token:
         print("DISCORD_BOT_TOKEN not set", file=sys.stderr)
         sys.exit(1)
@@ -937,6 +971,9 @@ async def main():
     print(f"[bridge] Channel: {CHANNEL_ID}")
     print(f"[bridge] Thread prefix: '{AGENT_PREFIX}'")
     print(f"[bridge] Thread cleanup: {THREAD_CLEANUP}")
+    if NEW_SESSION_AGENT:
+        rc_label = " + remote-control" if NEW_SESSION_AGENT == "claude" and CLAUDE_REMOTE_CONTROL else ""
+        print(f"[bridge] Auto-launch agent: {NEW_SESSION_AGENT}{rc_label}")
     if DASHBOARD_URL:
         print(f"[bridge] Dashboard: {DASHBOARD_URL}")
     else:
