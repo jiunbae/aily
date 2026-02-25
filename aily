@@ -232,20 +232,20 @@ load_slack_env() {
 prompt_value() {
   local label="$1" default="${2:-}" secret="${3:-false}"
   local value
+  printf "  %s" "$label" >&2
+  if [[ -n "$default" ]]; then
+    if [[ "$secret" == "true" ]]; then
+      printf " [%s]" "$(redact "$default")" >&2
+    else
+      printf " [%s]" "$default" >&2
+    fi
+  fi
+  printf ": " >&2
+
   if [[ "$secret" == "true" ]]; then
-    printf "  %s" "$label"
-    if [[ -n "$default" ]]; then
-      printf " [%s]" "$(redact "$default")"
-    fi
-    printf ": "
     read -rs value
-    echo ""
+    echo "" >&2
   else
-    printf "  %s" "$label"
-    if [[ -n "$default" ]]; then
-      printf " [%s]" "$default"
-    fi
-    printf ": "
     read -r value
   fi
   echo "${value:-$default}"
@@ -261,7 +261,10 @@ prompt_yn() {
   local answer
   read -r answer
   answer="${answer:-$default}"
-  [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]
+  case "$answer" in
+    [Yy]|[Yy][Ee][Ss]) return 0 ;;
+    *)                 return 1 ;;
+  esac
 }
 
 # ===================================================================
@@ -773,7 +776,9 @@ cmd_sessions() {
     echo ""
   else
     # Fall back to SSH-based session listing
-    info "Dashboard unavailable, falling back to SSH..."
+    if [[ "$output_json" != "true" && "$AILY_JSON" != true ]]; then
+      info "Dashboard unavailable, falling back to SSH..."
+    fi
     _sessions_ssh "$output_json"
   fi
 }
@@ -996,9 +1001,32 @@ cmd_export() {
   local token
   token="$(dashboard_token)"
 
-  local output_file="${session_name}.${format#mark}"
-  [[ "$format" == "markdown" ]] && output_file="${session_name}.md"
-  [[ "$format" == "json" ]] && output_file="${session_name}.json"
+  # Build a safe local filename from session name to prevent path traversal.
+  local output_stem="$session_name"
+  output_stem="${output_stem##*/}"
+  output_stem="${output_stem##*\\}"
+  output_stem="$(printf '%s' "$output_stem" | tr -c 'A-Za-z0-9._-:' '_')"
+  if [[ -z "$output_stem" || "$output_stem" == "." || "$output_stem" == ".." ]]; then
+    output_stem="session"
+  fi
+
+  local output_file
+  if [[ "$format" == "json" ]]; then
+    output_file="${output_stem}.json"
+  else
+    output_file="${output_stem}.md"
+  fi
+
+  local session_name_encoded
+  if command -v python3 >/dev/null 2>&1; then
+    session_name_encoded="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$session_name" 2>/dev/null || echo "")"
+  elif command -v jq >/dev/null 2>&1; then
+    session_name_encoded="$(jq -rn --arg v "$session_name" '$v|@uri' 2>/dev/null || echo "")"
+  fi
+  if [[ -z "$session_name_encoded" ]]; then
+    err "Could not encode session name for export URL (requires python3 or jq)"
+    return 1
+  fi
 
   printf "Exporting session '%s' as %s...\n" "$session_name" "$format"
 
@@ -1007,7 +1035,7 @@ cmd_export() {
     curl_args+=(-H "Authorization: Bearer $token")
   fi
 
-  if curl "${curl_args[@]}" "${dashboard_url_value}/api/sessions/${session_name}/export?format=${format}" -o "$output_file"; then
+  if curl "${curl_args[@]}" "${dashboard_url_value}/api/sessions/${session_name_encoded}/export?format=${format}" -o "$output_file"; then
     if [[ -f "$output_file" ]]; then
       ok "Exported to $output_file ($(wc -c < "$output_file" | tr -d ' ') bytes)"
       return 0
@@ -1619,10 +1647,13 @@ cmd_uninstall() {
   printf "  ${C_BOLD}Continue? (y/N):${C_RESET} "
   local answer
   read -r answer
-  if [[ "${answer,,}" != "y" && "${answer,,}" != "yes" ]]; then
-    echo "  Aborted."
-    exit 0
-  fi
+  case "$answer" in
+    [Yy]|[Yy][Ee][Ss]) ;;
+    *)
+      echo "  Aborted."
+      exit 0
+      ;;
+  esac
   echo ""
 
   # 1. Remove hook symlinks
