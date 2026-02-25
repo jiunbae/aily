@@ -491,7 +491,23 @@ cmd_init() {
   if ui_spin "Testing connectivity" curl -sf --connect-timeout 3 "${url}/healthz"; then
     _dashboard_ok=true
   else
-    info "Dashboard not reachable — that's OK, hooks work without it"
+    info "Dashboard not reachable"
+    # Offer to start local dashboard if URL points to localhost
+    if [[ "$non_interactive" == "false" && ( "$url" == *"localhost"* || "$url" == *"127.0.0.1"* ) ]]; then
+      if ui_confirm "Start local dashboard server?" "y"; then
+        _start_local_dashboard "$url"
+        # Recheck connectivity
+        if ui_spin "Checking dashboard" curl -sf --connect-timeout 5 "${url}/healthz"; then
+          _dashboard_ok=true
+        else
+          warn "Dashboard started but not responding yet — continuing without it"
+        fi
+      else
+        info "Skipped — hooks work without the dashboard"
+      fi
+    else
+      info "Hooks work without the dashboard"
+    fi
   fi
   echo ""
 
@@ -741,6 +757,82 @@ cmd_init() {
   info "Run 'aily status' to verify configuration"
   info "Run 'aily doctor' to diagnose issues"
   echo ""
+}
+
+_start_local_dashboard() {
+  local url="$1"
+  local dashboard_dir="${SCRIPT_DIR}/dashboard"
+
+  if [[ ! -d "$dashboard_dir" ]]; then
+    warn "Dashboard source not found at ${dashboard_dir}"
+    info "Clone the repo first: git clone https://github.com/jiunbae/aily.git"
+    return 1
+  fi
+
+  # Check Python
+  local py=""
+  for cmd in python3 python; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      py="$cmd"
+      break
+    fi
+  done
+  if [[ -z "$py" ]]; then
+    warn "Python not found — install Python 3.10+ to run the dashboard"
+    return 1
+  fi
+
+  # Check dependencies
+  if ! "$py" -c "import aiohttp" 2>/dev/null; then
+    info "Installing dashboard dependencies..."
+    "$py" -m pip install -q -r "${SCRIPT_DIR}/requirements.txt" 2>/dev/null || {
+      warn "Failed to install dependencies"
+      info "Run manually: pip install -r ${SCRIPT_DIR}/requirements.txt"
+      return 1
+    }
+    ok "Dependencies installed"
+  fi
+
+  # Extract port from URL
+  local port=8080
+  if [[ "$url" =~ :([0-9]+) ]]; then
+    port="${BASH_REMATCH[1]}"
+  fi
+
+  # Check if port is already in use
+  if lsof -i ":${port}" >/dev/null 2>&1; then
+    warn "Port ${port} is already in use"
+    return 1
+  fi
+
+  # Start dashboard in background
+  info "Starting dashboard on port ${port}..."
+  DASHBOARD_HOST="0.0.0.0" DASHBOARD_PORT="$port" \
+    AGENT_BRIDGE_ENV="$ENV_FILE" \
+    nohup "$py" -m dashboard >/tmp/aily-dashboard.log 2>&1 &
+  local pid=$!
+
+  # Wait for startup
+  local attempts=0
+  while [[ $attempts -lt 10 ]]; do
+    sleep 0.5
+    if ! kill -0 "$pid" 2>/dev/null; then
+      warn "Dashboard process exited unexpectedly"
+      info "Check logs: /tmp/aily-dashboard.log"
+      return 1
+    fi
+    if curl -sf --connect-timeout 1 "${url}/healthz" >/dev/null 2>&1; then
+      ok "Dashboard running (PID ${pid})"
+      info "Logs: /tmp/aily-dashboard.log"
+      info "Stop: kill ${pid}"
+      return 0
+    fi
+    attempts=$((attempts + 1))
+  done
+
+  warn "Dashboard started (PID ${pid}) but slow to respond"
+  info "Check logs: /tmp/aily-dashboard.log"
+  return 1
 }
 
 _send_test_notification() {
