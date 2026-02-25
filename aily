@@ -487,31 +487,30 @@ cmd_init() {
   fi
   url="${url%/}"
 
-  if ! ui_spin "Testing connectivity" curl -sf --connect-timeout 5 "${url}/healthz"; then
-    warn "Could not reach ${url}/healthz"
-    if [[ "$non_interactive" == "false" ]]; then
-      if ! ui_confirm "Continue anyway?" "n"; then
-        echo "  Aborted."
-        exit 1
-      fi
-    fi
+  local _dashboard_ok=false
+  if ui_spin "Testing connectivity" curl -sf --connect-timeout 3 "${url}/healthz"; then
+    _dashboard_ok=true
+  else
+    info "Dashboard not reachable — that's OK, hooks work without it"
   fi
   echo ""
 
-  # -- Auth token --
-  local token
-  if [[ "$non_interactive" == "true" ]]; then
-    token="${AILY_AUTH_TOKEN:-}"
-  else
-    token=$(prompt_value "Auth token" "$(env_get AILY_AUTH_TOKEN "")" true)
-  fi
+  # -- Auth token (only ask if dashboard is reachable) --
+  local token=""
+  if [[ "$_dashboard_ok" == true ]]; then
+    if [[ "$non_interactive" == "true" ]]; then
+      token="${AILY_AUTH_TOKEN:-}"
+    else
+      token=$(prompt_value "Auth token" "$(env_get AILY_AUTH_TOKEN "")" true)
+    fi
 
-  if [[ -n "$token" ]]; then
-    ui_spin "Validating token" curl -sf --connect-timeout 5 \
-      -H "Authorization: Bearer ${token}" "${url}/api/stats" || \
-      warn "Could not validate — dashboard may be unavailable"
+    if [[ -n "$token" ]]; then
+      ui_spin "Validating token" curl -sf --connect-timeout 3 \
+        -H "Authorization: Bearer ${token}" "${url}/api/stats" || \
+        warn "Could not validate — dashboard may be unavailable"
+    fi
   else
-    info "No auth token set (dashboard access may be limited)"
+    token="${AILY_AUTH_TOKEN:-$(env_get AILY_AUTH_TOKEN "")}"
   fi
   echo ""
 
