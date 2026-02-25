@@ -231,22 +231,22 @@ load_slack_env() {
 # ---------------------------------------------------------------------------
 prompt_value() {
   local label="$1" default="${2:-}" secret="${3:-false}"
-  local value
-  printf "  %s" "$label" >&2
+  local value prompt
+  prompt="  ${label}"
   if [[ -n "$default" ]]; then
     if [[ "$secret" == "true" ]]; then
-      printf " [%s]" "$(redact "$default")" >&2
+      prompt+=" [$(redact "$default")]"
     else
-      printf " [%s]" "$default" >&2
+      prompt+=" [${default}]"
     fi
   fi
-  printf ": " >&2
+  prompt+=": "
 
   if [[ "$secret" == "true" ]]; then
-    read -rs value
+    read -rsp "$prompt" value
     echo "" >&2
   else
-    read -r value
+    read -rp "$prompt" value
   fi
   echo "${value:-$default}"
 }
@@ -257,9 +257,8 @@ prompt_yn() {
   if [[ "$default" == "n" ]]; then
     hint="y/N"
   fi
-  printf "  %s (%s): " "$label" "$hint"
   local answer
-  read -r answer
+  read -rp "  ${label} (${hint}): " answer
   answer="${answer:-$default}"
   case "$answer" in
     [Yy]|[Yy][Ee][Ss]) return 0 ;;
@@ -289,12 +288,11 @@ cmd_init() {
   echo ""
 
   # -- 1. Dashboard URL --
-  printf "  ${C_BOLD}1) Dashboard URL${C_RESET}\n"
   local url
   if [[ "$non_interactive" == "true" ]]; then
     url="${AILY_DASHBOARD_URL:-https://aily.jiun.dev}"
   else
-    url=$(prompt_value "Dashboard URL" "$(env_get AILY_DASHBOARD_URL "https://aily.jiun.dev")")
+    url=$(prompt_value "1) Dashboard URL" "$(env_get AILY_DASHBOARD_URL "https://aily.jiun.dev")")
   fi
   # Strip trailing slash
   url="${url%/}"
@@ -317,12 +315,11 @@ cmd_init() {
   echo ""
 
   # -- 2. Auth token --
-  printf "  ${C_BOLD}2) Auth token${C_RESET}\n"
   local token
   if [[ "$non_interactive" == "true" ]]; then
     token="${AILY_AUTH_TOKEN:-}"
   else
-    token=$(prompt_value "Auth token" "$(env_get AILY_AUTH_TOKEN "")" true)
+    token=$(prompt_value "2) Auth token" "$(env_get AILY_AUTH_TOKEN "")" true)
   fi
 
   if [[ -n "$token" ]]; then
@@ -339,7 +336,7 @@ cmd_init() {
   echo ""
 
   # -- 3. Platform setup --
-  printf "  ${C_BOLD}3) Platform setup${C_RESET}\n"
+  echo "  3) Platform setup"
   local discord_token="" discord_channel=""
   local slack_token="" slack_app_token="" slack_channel=""
 
@@ -397,12 +394,11 @@ cmd_init() {
   echo ""
 
   # -- 4. SSH hosts --
-  printf "  ${C_BOLD}4) SSH hosts${C_RESET}\n"
   local ssh_hosts
   if [[ "$non_interactive" == "true" ]]; then
     ssh_hosts="${SSH_HOSTS:-$(env_get SSH_HOSTS "localhost")}"
   else
-    ssh_hosts=$(prompt_value "SSH hosts (comma-separated)" "$(env_get SSH_HOSTS "localhost")")
+    ssh_hosts=$(prompt_value "4) SSH hosts (comma-separated)" "$(env_get SSH_HOSTS "localhost")")
   fi
 
   if [[ "$non_interactive" == "false" && -n "$ssh_hosts" && "$ssh_hosts" != "localhost" ]]; then
@@ -420,17 +416,16 @@ cmd_init() {
   echo ""
 
   # -- 5. Thread cleanup --
-  printf "  ${C_BOLD}5) Thread cleanup${C_RESET}\n"
   local thread_cleanup
   if [[ "$non_interactive" == "true" ]]; then
     thread_cleanup="${THREAD_CLEANUP:-archive}"
   else
+    echo "  5) Thread cleanup"
     info "When a tmux session is destroyed, what should happen to its thread?"
-    printf "    1) ${C_BOLD}archive${C_RESET} — archive/lock thread (keeps history)\n"
-    printf "    2) ${C_BOLD}delete${C_RESET}  — delete thread entirely\n"
+    echo "    1) archive — archive/lock thread (keeps history)"
+    echo "    2) delete  — delete thread entirely"
     local cleanup_choice
-    printf "  Choice [1]: "
-    read -r cleanup_choice
+    read -rp "  Choice [1]: " cleanup_choice
     case "${cleanup_choice:-1}" in
       2|delete) thread_cleanup="delete" ;;
       *)        thread_cleanup="archive" ;;
@@ -439,8 +434,45 @@ cmd_init() {
   fi
   echo ""
 
-  # -- 6. Write config --
-  printf "  ${C_BOLD}6) Writing configuration${C_RESET}\n"
+  # -- 6. Agent auto-launch --
+  local new_session_agent="" claude_remote_control="false"
+  if [[ "$non_interactive" == "true" ]]; then
+    new_session_agent="${NEW_SESSION_AGENT:-$(env_get NEW_SESSION_AGENT "")}"
+    claude_remote_control="${CLAUDE_REMOTE_CONTROL:-$(env_get CLAUDE_REMOTE_CONTROL "false")}"
+  else
+    echo "  6) Agent auto-launch on !new"
+    info "Auto-launch an agent when creating sessions with !new"
+    echo "    0) none    — just create tmux session"
+    echo "    1) claude  — start Claude Code"
+    echo "    2) codex   — start Codex CLI"
+    echo "    3) gemini  — start Gemini CLI"
+    local agent_choice
+    read -rp "  Choice [0]: " agent_choice
+    case "${agent_choice:-0}" in
+      1|claude)  new_session_agent="claude" ;;
+      2|codex)   new_session_agent="codex" ;;
+      3|gemini)  new_session_agent="gemini" ;;
+      *)         new_session_agent="" ;;
+    esac
+
+    if [[ "$new_session_agent" == "claude" ]]; then
+      if prompt_yn "Enable remote-control mode for Claude?" "n"; then
+        claude_remote_control="true"
+      fi
+    fi
+
+    if [[ -n "$new_session_agent" ]]; then
+      local rc_label=""
+      [[ "$claude_remote_control" == "true" ]] && rc_label=" + remote-control"
+      ok "Agent: ${new_session_agent}${rc_label}"
+    else
+      ok "Agent: none"
+    fi
+  fi
+  echo ""
+
+  # -- 7. Write config --
+  echo "  7) Writing configuration"
   mkdir -p "$(dirname "$ENV_FILE")"
 
   # Build the config file content
@@ -478,6 +510,18 @@ cmd_init() {
   config_content+="SSH_HOSTS=\"${ssh_hosts}\"\n"
   config_content+="TMUX_THREAD_SYNC=\"true\"\n"
   config_content+="THREAD_CLEANUP=\"${thread_cleanup}\"\n"
+  config_content+="\n"
+  config_content+="# --- Agent Auto-Launch ---\n"
+  if [[ -n "$new_session_agent" ]]; then
+    config_content+="NEW_SESSION_AGENT=\"${new_session_agent}\"\n"
+  else
+    config_content+="# NEW_SESSION_AGENT=\"\"\n"
+  fi
+  if [[ "$claude_remote_control" == "true" ]]; then
+    config_content+="CLAUDE_REMOTE_CONTROL=\"true\"\n"
+  else
+    config_content+="# CLAUDE_REMOTE_CONTROL=\"false\"\n"
+  fi
 
   # Preserve any extra keys from existing config
   printf '%b' "$config_content" > "$ENV_FILE"
@@ -485,8 +529,8 @@ cmd_init() {
   ok "Saved to ${ENV_FILE} (chmod 600)"
   echo ""
 
-  # -- 7. Install hooks --
-  printf "  ${C_BOLD}7) Installing hooks${C_RESET}\n"
+  # -- 8. Install hooks --
+  echo "  8) Installing hooks"
   if [[ -x "${SCRIPT_DIR}/install.sh" ]]; then
     bash "${SCRIPT_DIR}/install.sh" 2>&1 | while IFS= read -r line; do
       echo "  $line"
@@ -498,7 +542,7 @@ cmd_init() {
   echo ""
 
   # -- 8. Install shell completions --
-  printf "  ${C_BOLD}8) Shell completions${C_RESET}\n"
+  echo "  9) Shell completions"
   local comp_dir
   if [[ -n "${ZSH_VERSION:-}" || "$SHELL" == */zsh ]]; then
     comp_dir="${ZDOTDIR:-$HOME}/.zfunc"
@@ -523,7 +567,7 @@ cmd_init() {
   echo ""
 
   # -- 9. Test notification --
-  printf "  ${C_BOLD}9) Test notification${C_RESET}\n"
+  echo "  10) Test notification"
   if [[ "$non_interactive" == "false" ]]; then
     if prompt_yn "Send a test notification?" "y"; then
       _send_test_notification
