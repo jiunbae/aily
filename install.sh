@@ -291,9 +291,9 @@ if [[ -x "$SYNC_SCRIPT" ]]; then
   if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
     session_count=$(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')
 
-    # Ask before enabling auto-sync
+    # Ask before enabling auto-sync (default yes in non-interactive)
     _reply="y"
-    if [[ -e /dev/tty ]]; then
+    if (echo -n < /dev/tty) 2>/dev/null; then
       printf "  Enable auto thread sync for tmux sessions? [Y/n]: " > /dev/tty
       read -r _reply < /dev/tty 2>/dev/null || _reply="y"
     fi
@@ -311,8 +311,12 @@ if [[ -x "$SYNC_SCRIPT" ]]; then
 
       # Offer to sync existing sessions
       if [[ "$session_count" -gt 0 ]]; then
-        printf "  Sync %d existing tmux session(s)? [y/N]: " "$session_count" > /dev/tty
-        read -r _reply2 < /dev/tty 2>/dev/null || _reply2="n"
+        if (echo -n < /dev/tty) 2>/dev/null; then
+          printf "  Sync %d existing tmux session(s)? [y/N]: " "$session_count" > /dev/tty
+          read -r _reply2 < /dev/tty 2>/dev/null || _reply2="n"
+        else
+          _reply2="n"
+        fi
         if [[ "${_reply2:-n}" =~ ^[Yy]$ ]]; then
           while IFS= read -r _sess; do
             "$SYNC_SCRIPT" create "$_sess" 2>/dev/null &
