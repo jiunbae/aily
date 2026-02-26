@@ -2120,6 +2120,67 @@ _usage_queue() {
 }
 
 # -------------------------------------------------------------------
+# aily deploy
+# -------------------------------------------------------------------
+cmd_deploy() {
+  local host="${1:-}"
+  if [[ -z "$host" ]]; then
+    err "Usage: aily deploy <host>"
+    exit 1
+  fi
+
+  require_deps
+  load_env
+
+  hdr "aily deploy → ${host}"
+  echo ""
+
+  # 1. Test SSH
+  if ! ui_spin "Testing SSH to ${host}" \
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "echo ok"; then
+    err "Cannot reach ${host} via SSH"
+    info "Ensure 'ssh ${host}' works with key auth (no password)"
+    exit 1
+  fi
+
+  # 2. Sync repo to remote ~/aily
+  local remote_dir="~/aily"
+  if command -v rsync >/dev/null 2>&1; then
+    ui_spin "Syncing aily to ${host}:${remote_dir}" \
+      rsync -az --exclude '.env' --exclude '__pycache__' --exclude '.git' \
+      "${SCRIPT_DIR}/" "${host}:${remote_dir}/"
+  else
+    ui_spin "Copying aily to ${host}:${remote_dir}" \
+      scp -rq "${SCRIPT_DIR}" "${host}:${remote_dir}"
+  fi
+
+  # 3. Copy config
+  ui_spin "Copying config to ${host}" \
+    ssh -o BatchMode=yes "$host" "mkdir -p ~/.config/aily && chmod 700 ~/.config/aily"
+  scp -q "${ENV_FILE}" "${host}:~/.config/aily/env"
+  ssh -o BatchMode=yes "$host" "chmod 600 ~/.config/aily/env"
+  ok "Config copied"
+
+  # 4. Run init on remote
+  printf "\n"
+  info "Running init on ${host}..."
+  ssh -o BatchMode=yes "$host" "cd ${remote_dir} && ./aily init --non-interactive"
+  echo ""
+  ok "Deployed to ${host}"
+
+  # 5. Auto-add to SSH_HOSTS if not already listed
+  local current_hosts
+  current_hosts=$(env_get "SSH_HOSTS" "localhost")
+  if [[ ",$current_hosts," != *",$host,"* ]]; then
+    env_set "SSH_HOSTS" "${current_hosts},${host}"
+    ok "Added ${host} to SSH_HOSTS"
+  fi
+
+  echo ""
+  info "Verify: aily status"
+}
+
+# -------------------------------------------------------------------
 # aily uninstall
 # -------------------------------------------------------------------
 cmd_uninstall() {
@@ -2289,6 +2350,7 @@ cmd_help() {
   echo "    --non-interactive         Read from env vars instead of prompting"
   echo "  status                    Show configuration and connectivity"
   echo "  doctor                    Diagnose common issues"
+  echo "  deploy <host>             Deploy aily to a remote host via SSH"
   echo "  uninstall                 Remove hooks and agent configurations"
   echo ""
   printf "${C_BOLD}Dashboard:${C_RESET}\n"
@@ -2365,6 +2427,7 @@ case "$CMD" in
   stop)       cmd_stop "$@" ;;
   auto)       cmd_auto "$@" ;;
   usage)      cmd_usage "$@" ;;
+  deploy)     cmd_deploy "$@" ;;
   uninstall)  cmd_uninstall "$@" ;;
   help|-h|--help) cmd_help ;;
   version|-v|--version) cmd_version ;;
