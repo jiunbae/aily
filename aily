@@ -2245,6 +2245,7 @@ with open(path, 'w') as f:
 
   echo ""
   ok "Uninstall complete"
+  info "To re-install, run: ./aily init (from the repo directory)"
   echo ""
 }
 
