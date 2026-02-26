@@ -7,13 +7,29 @@ to find and manage platform threads for tmux sessions.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from typing import Any
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
-AGENT_PREFIX = "[agent] "
+AGENT_PREFIX = "[agent] "  # legacy fallback
+THREAD_NAME_FORMAT = os.environ.get("THREAD_NAME_FORMAT", "[agent] {session} - {host}")
+
+
+def parse_thread_name(thread_name: str) -> str | None:
+    """Extract session name from a thread name using the format template."""
+    fmt = re.escape(THREAD_NAME_FORMAT)
+    fmt = fmt.replace(re.escape("{session}"), r"([a-zA-Z0-9_-]+)")
+    fmt = fmt.replace(re.escape("{host}"), r".+")
+    m = re.match(f"^{fmt}$", thread_name)
+    if m:
+        return m.group(1)
+    if thread_name.startswith(AGENT_PREFIX):
+        return thread_name[len(AGENT_PREFIX):]
+    return None
 
 
 class PlatformService:
@@ -81,7 +97,6 @@ class PlatformService:
         if not self.has_discord:
             return None
 
-        thread_name = f"{AGENT_PREFIX}{session_name}"
         headers = {"Authorization": f"Bot {self.discord_token}"}
         api = "https://discord.com/api/v10"
 
@@ -107,8 +122,9 @@ class PlatformService:
                     if resp.status == 200:
                         data = await resp.json()
                         for t in data.get("threads", []):
+                            name = t.get("name", "")
                             if (
-                                t.get("name") == thread_name
+                                parse_thread_name(name) == session_name
                                 and t.get("parent_id") == self.discord_channel_id
                             ):
                                 return t["id"]
@@ -121,7 +137,7 @@ class PlatformService:
                 if resp.status == 200:
                     data = await resp.json()
                     for t in data.get("threads", []):
-                        if t.get("name") == thread_name:
+                        if parse_thread_name(t.get("name", "")) == session_name:
                             return t["id"]
         except Exception:
             logger.exception("Error finding Discord thread for '%s'", session_name)
@@ -144,7 +160,6 @@ class PlatformService:
         if not self.has_slack:
             return None
 
-        thread_name = f"{AGENT_PREFIX}{session_name}"
         headers = {"Authorization": f"Bearer {self.slack_token}"}
 
         try:
@@ -160,10 +175,7 @@ class PlatformService:
                         for msg in data.get("messages", []):
                             text = msg.get("text", "")
                             first_line = text.split("\n")[0].strip()
-                            if (
-                                first_line == thread_name
-                                or text.startswith(thread_name)
-                            ):
+                            if parse_thread_name(first_line) == session_name:
                                 return msg["ts"]
         except Exception:
             logger.exception("Error finding Slack thread for '%s'", session_name)

@@ -89,9 +89,36 @@ INTENT_GUILDS = 1 << 0
 INTENT_GUILD_MESSAGES = 1 << 9
 INTENT_MESSAGE_CONTENT = 1 << 15
 
-AGENT_PREFIX = "[agent] "
+AGENT_PREFIX = "[agent] "  # legacy fallback
+THREAD_NAME_FORMAT: str = "[agent] {session} - {host}"
 SEND_KEYS_DELAY = 0.3
 SESSION_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def format_thread_name(session: str, host: str = "") -> str:
+    """Build thread name from format template."""
+    if not host:
+        host = DEFAULT_HOST or "localhost"
+    return THREAD_NAME_FORMAT.replace("{session}", session).replace("{host}", host)
+
+
+def parse_thread_name(thread_name: str) -> str | None:
+    """Extract session name from a thread name using the format template.
+
+    Builds a regex from THREAD_NAME_FORMAT by replacing {session} with a capture
+    group and {host} with a wildcard, then matches against the thread name.
+    Falls back to legacy AGENT_PREFIX stripping.
+    """
+    fmt = re.escape(THREAD_NAME_FORMAT)
+    fmt = fmt.replace(re.escape("{session}"), r"([a-zA-Z0-9_-]+)")
+    fmt = fmt.replace(re.escape("{host}"), r".+")
+    m = re.match(f"^{fmt}$", thread_name)
+    if m:
+        return m.group(1)
+    # Legacy fallback: [agent] <session>
+    if thread_name.startswith(AGENT_PREFIX):
+        return thread_name[len(AGENT_PREFIX):]
+    return None
 
 API_BASE = "https://discord.com/api/v10"
 
@@ -377,7 +404,7 @@ async def create_thread(http: aiohttp.ClientSession, token: str,
         f"/channels/{CHANNEL_ID}/messages/{msg_id}/threads", {"name": thread_name})
     thread_id = thread.get("id") if isinstance(thread, dict) else None
     if thread_id:
-        session_name = thread_name.removeprefix(AGENT_PREFIX) if thread_name.startswith(AGENT_PREFIX) else thread_name
+        session_name = parse_thread_name(thread_name) or thread_name
         welcome = (
             f"**Welcome to {thread_name}** \U0001f44b\n\n"
             "Type a message here to forward it to the tmux session.\n\n"
@@ -490,7 +517,7 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
 
     # Create Discord thread
     cwd_label = f" in `{working_dir}`" if working_dir else ""
-    thread_name = f"{AGENT_PREFIX}{session_name}"
+    thread_name = format_thread_name(session_name, host)
     thread_id = await ensure_thread(http, token, thread_name,
         f"tmux session: **{thread_name}** (`{host}`{cwd_label})")
 
@@ -528,7 +555,7 @@ async def cmd_kill(http: aiohttp.ClientSession, token: str,
         tmux_killed = (rc == 0)
 
     # Clean up Discord thread
-    thread_name = f"{AGENT_PREFIX}{session_name}"
+    thread_name = format_thread_name(session_name, host or DEFAULT_HOST)
     thread_id = await find_thread(http, token, thread_name)
     thread_cleaned = False
     cleanup_action = "archived"
@@ -595,8 +622,10 @@ async def cmd_sessions(http: aiohttp.ClientSession, token: str, reply_to: str):
         if isinstance(data, dict):
             for t in data.get("threads", []):
                 name = t.get("name", "")
-                if name.startswith(AGENT_PREFIX) and t.get("parent_id") == CHANNEL_ID:
-                    active_threads.add(name[len(AGENT_PREFIX):])
+                if t.get("parent_id") == CHANNEL_ID:
+                    parsed = parse_thread_name(name)
+                    if parsed:
+                        active_threads.add(parsed)
 
     if not all_sessions and not active_threads:
         await post_message(http, token, reply_to, "No sessions found.")
@@ -749,10 +778,9 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
         return
 
     thread_name = ch.get("name", "")
-    if not thread_name.startswith(AGENT_PREFIX):
+    session_name = parse_thread_name(thread_name)
+    if not session_name:
         return
-
-    session_name = thread_name[len(AGENT_PREFIX):]
     user_message = content
     user_name = author.get("username", "unknown")
 
@@ -923,7 +951,7 @@ async def heartbeat_loop(ws, interval: float, get_sequence):
 
 async def main():
     global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, THREAD_CLEANUP, DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
-    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL
+    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL, THREAD_NAME_FORMAT
 
     _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
     _default_path = os.path.join(_xdg_config, "aily", "env")
@@ -956,6 +984,9 @@ async def main():
     if THREAD_CLEANUP not in ("archive", "delete"):
         THREAD_CLEANUP = "archive"
 
+    # Thread name format
+    THREAD_NAME_FORMAT = env.get("THREAD_NAME_FORMAT", "[agent] {session} - {host}")
+
     # Agent auto-launch on !new
     NEW_SESSION_AGENT = env.get("NEW_SESSION_AGENT", "").lower().strip()
     CLAUDE_REMOTE_CONTROL = env.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
@@ -970,7 +1001,7 @@ async def main():
     print(f"[bridge] Starting agent bridge...")
     print(f"[bridge] SSH hosts: {SSH_HOSTS}")
     print(f"[bridge] Channel: {CHANNEL_ID}")
-    print(f"[bridge] Thread prefix: '{AGENT_PREFIX}'")
+    print(f"[bridge] Thread format: '{THREAD_NAME_FORMAT}'")
     print(f"[bridge] Thread cleanup: {THREAD_CLEANUP}")
     if NEW_SESSION_AGENT:
         rc_label = " + remote-control" if NEW_SESSION_AGENT == "claude" and CLAUDE_REMOTE_CONTROL else ""

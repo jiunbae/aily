@@ -90,9 +90,30 @@ async def dashboard_api(method: str, path: str, json_body: dict = None) -> dict 
         return None
 
 
-AGENT_PREFIX = "[agent] "
+AGENT_PREFIX = "[agent] "  # legacy fallback
+THREAD_NAME_FORMAT: str = "[agent] {session} - {host}"
 SEND_KEYS_DELAY = 0.3
 SESSION_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def format_thread_name(session: str, host: str = "") -> str:
+    """Build thread name from format template."""
+    if not host:
+        host = DEFAULT_HOST or "localhost"
+    return THREAD_NAME_FORMAT.replace("{session}", session).replace("{host}", host)
+
+
+def parse_thread_name(thread_name: str) -> str | None:
+    """Extract session name from a thread name using the format template."""
+    fmt = re.escape(THREAD_NAME_FORMAT)
+    fmt = fmt.replace(re.escape("{session}"), r"([a-zA-Z0-9_-]+)")
+    fmt = fmt.replace(re.escape("{host}"), r".+")
+    m = re.match(f"^{fmt}$", thread_name)
+    if m:
+        return m.group(1)
+    if thread_name.startswith(AGENT_PREFIX):
+        return thread_name[len(AGENT_PREFIX):]
+    return None
 
 # Globals set at startup
 CHANNEL_ID: str = ""
@@ -346,11 +367,7 @@ async def create_thread(
         if not parent_ts:
             return None
 
-        session_name = (
-            thread_name.removeprefix(AGENT_PREFIX)
-            if thread_name.startswith(AGENT_PREFIX)
-            else thread_name
-        )
+        session_name = parse_thread_name(thread_name) or thread_name
         welcome = (
             f"*Welcome to {thread_name}*\n\n"
             "Type a message here to forward it to the tmux session.\n\n"
@@ -450,15 +467,13 @@ async def get_thread_session(
         return None
 
     first_line = parent_text.split("\n")[0].strip()
-    if first_line.startswith(AGENT_PREFIX):
-        session_name = first_line[len(AGENT_PREFIX) :]
-        # Strip any trailing text after session name
-        session_name = session_name.split()[0] if " " in session_name else session_name
+    session_name = parse_thread_name(first_line)
+    if session_name:
         _cache_thread(thread_ts, session_name)
         return session_name
 
-    if parent_text.startswith(AGENT_PREFIX):
-        session_name = parent_text[len(AGENT_PREFIX) :].split()[0]
+    session_name = parse_thread_name(parent_text.split("\n")[0])
+    if session_name:
         _cache_thread(thread_ts, session_name)
         return session_name
 
@@ -574,7 +589,7 @@ async def cmd_new(
 
     # Create Slack thread
     cwd_label = f" in `{working_dir}`" if working_dir else ""
-    thread_name = f"{AGENT_PREFIX}{session_name}"
+    thread_name = format_thread_name(session_name, host)
     new_ts = await ensure_thread(
         client, thread_name, f"tmux session: *{thread_name}* (`{host}`{cwd_label})"
     )
@@ -636,7 +651,7 @@ async def cmd_kill(
         tmux_killed = rc == 0
 
     # Clean up Slack thread
-    thread_name = f"{AGENT_PREFIX}{session_name}"
+    thread_name = format_thread_name(session_name, host or DEFAULT_HOST)
     ts = await find_thread_ts(client, thread_name)
     thread_cleaned = False
     cleanup_action = "archived"
@@ -713,8 +728,8 @@ async def cmd_sessions(
         for msg in result.get("messages", []):
             text = msg.get("text", "")
             first_line = text.split("\n")[0].strip()
-            if first_line.startswith(AGENT_PREFIX):
-                session = first_line[len(AGENT_PREFIX) :].split()[0]
+            session = parse_thread_name(first_line)
+            if session:
                 # Skip archived threads (those with :lock: reaction)
                 reactions = msg.get("reactions", [])
                 is_locked = any(r.get("name") == "lock" for r in reactions)
@@ -987,7 +1002,7 @@ async def handle_socket_event(
 async def main():
     global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, BOT_USER_ID, THREAD_CLEANUP
     global DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
-    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL
+    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL, THREAD_NAME_FORMAT
 
     _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
     _default_path = os.path.join(_xdg_config, "aily", "env")
@@ -1021,6 +1036,9 @@ async def main():
     if THREAD_CLEANUP not in ("archive", "delete"):
         THREAD_CLEANUP = "archive"
 
+    # Thread name format
+    THREAD_NAME_FORMAT = env.get("THREAD_NAME_FORMAT", "[agent] {session} - {host}")
+
     # Agent auto-launch on !new
     NEW_SESSION_AGENT = env.get("NEW_SESSION_AGENT", "").lower().strip()
     CLAUDE_REMOTE_CONTROL = env.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
@@ -1043,7 +1061,7 @@ async def main():
     print(f"[slack-bridge] Connected as {auth.get('user', '')} ({BOT_USER_ID})")
     print(f"[slack-bridge] Channel: {CHANNEL_ID}")
     print(f"[slack-bridge] SSH hosts: {SSH_HOSTS}")
-    print(f"[slack-bridge] Thread prefix: '{AGENT_PREFIX}'")
+    print(f"[slack-bridge] Thread format: '{THREAD_NAME_FORMAT}'")
     print(f"[slack-bridge] Thread cleanup: {THREAD_CLEANUP}")
     if NEW_SESSION_AGENT:
         rc_label = " + remote-control" if NEW_SESSION_AGENT == "claude" and CLAUDE_REMOTE_CONTROL else ""
