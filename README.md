@@ -21,7 +21,7 @@ Built for developers running AI coding agents in tmux sessions across SSH hosts.
 ```
 Install aily — AI agent notification relay for Discord/Slack (https://github.com/jiunbae/aily).
 Run `npm install -g aily-cli` then `aily init` to start the interactive setup wizard.
-The wizard will ask for: dashboard URL, auth token, Discord/Slack credentials, and SSH hosts.
+The wizard will ask for: notification platform (Discord/Slack), credentials, and optional advanced settings.
 After setup, run `aily status` to verify connectivity and `aily doctor` to check for issues.
 ```
 
@@ -41,28 +41,18 @@ $ aily init
 
 === aily setup wizard ===
 
-  1) Dashboard URL
-     Dashboard URL [https://aily.jiun.dev]: ... OK
+  1) Notification platform
+     > discord / slack / both
 
-  2) Auth token ... OK
+  Discord bot token [****...abcd]: ... OK
+  Discord channel ID [12345...]: ... OK
+  ✓ Discord: ai-notifications
 
-  3) Platform setup
-     Enable Discord? ... OK (channel: ai-notifications)
-     Enable Slack? ... skipped
+  Defaults: SSH=localhost, cleanup=archive, no agent, no dashboard
+  Use defaults? [Y/n]: y
 
-  4) SSH hosts
-     SSH hosts [localhost]: myhost.ts.net ... OK
-
-  5) Thread cleanup
-     Choice [1: archive]: ... OK
-
-  6) Writing configuration
-     ✓ Saved to ~/.claude/hooks/.notify-env (chmod 600)
-
-  7) Installing hooks
-     ✓ Claude Code, Codex CLI, Gemini CLI configured
-
-  8) Shell completions ... installed
+  ✓ Saved to ~/.config/aily/env (chmod 600)
+  ✓ Claude Code, Codex CLI, Gemini CLI configured
 
 === Setup complete ===
 ```
@@ -167,10 +157,10 @@ See [API Reference](docs/api.md) for dashboard routes and REST endpoints.
 
 ## Configuration
 
-`aily init` creates `~/.claude/hooks/.notify-env` with all credentials. Run `aily config show` to inspect.
+`aily init` creates `~/.config/aily/env` with all credentials. Run `aily config show` to inspect.
 
 <details>
-<summary><b>.notify-env reference</b></summary>
+<summary><b>Config reference (~/.config/aily/env)</b></summary>
 
 ```env
 # Discord (optional)

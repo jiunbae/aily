@@ -116,7 +116,7 @@ There are two independent data flows:
 **Configuration:**
 - `#workspace` channel is set to `allow: false` in Clawdia bot's Discord config so the bot ignores it
 - Agent bridge exclusively handles `[agent]` threads in that channel
-- SSH hosts: configured via `SSH_HOSTS` in `.notify-env`
+- SSH hosts: configured via `SSH_HOSTS` in config (`~/.config/aily/env`)
 
 ### 4. SSH Infrastructure
 
@@ -129,7 +129,7 @@ There are two independent data flows:
 
 - SSH keys managed outside this repo
 - `~/.zshenv` on target hosts ensures `/opt/homebrew/bin` is in PATH for non-interactive SSH
-- Configure hosts via `SSH_HOSTS` in `.notify-env` (comma-separated)
+- Configure hosts via `SSH_HOSTS` in config (`~/.config/aily/env`) (comma-separated)
 
 ## Thread Naming Convention
 
@@ -233,8 +233,8 @@ macOS ships with Bash 3.x which doesn't support negative indices in substring ex
 
 **tmux hook setup** (set by `install.sh` or manually in `~/.tmux.conf`):
 ```bash
-set-hook -g session-created "run-shell '~/.claude/hooks/thread-sync.sh create #{session_name}'"
-set-hook -g session-closed  "run-shell '~/.claude/hooks/thread-sync.sh delete #{hook_session_name}'"
+set-hook -g session-created "run-shell '$HOME/.claude/hooks/thread-sync.sh create #{session_name}'"
+set-hook -g session-closed  "run-shell '$HOME/.claude/hooks/thread-sync.sh delete #{hook_session_name}'"
 ```
 
 Note: `discord-thread-sync.sh` still exists as a backward-compat wrapper.
@@ -259,7 +259,7 @@ Command-line tool for managing thread sync from the terminal.
 |---------|--------|
 | `aily start [name]` | Create/unarchive thread for current or named tmux session |
 | `aily stop [name]` | Archive thread for current or named tmux session |
-| `aily auto [on\|off]` | Toggle `TMUX_THREAD_SYNC` in `.notify-env` |
+| `aily auto [on\|off]` | Toggle `TMUX_THREAD_SYNC` in config (`~/.config/aily/env`) |
 | `aily sessions` | List tmux sessions across SSH hosts |
 | `aily status` | Show which platforms are configured |
 
@@ -276,7 +276,7 @@ notify-claude.sh / notify-gemini.sh / notify-codex.py
         → slack-post.sh (if Slack configured)
 ```
 
-Each platform is dispatched in parallel (backgrounded). Override with `NOTIFY_PLATFORMS="discord,slack"` in `.notify-env`.
+Each platform is dispatched in parallel (backgrounded). Override with `NOTIFY_PLATFORMS="discord,slack"` in config (`~/.config/aily/env`).
 
 ### 9. Welcome Message
 
@@ -285,6 +285,9 @@ When a new thread is created (via tmux hooks, `aily start`, or `!new`), a welcom
 ## File Layout
 
 ```
+~/.config/aily/
+└── env                            # Secrets (not in repo, chmod 600)
+
 ~/.claude/
 ├── settings.json          # Hook configuration (Notification + PreToolUse)
 └── hooks/
@@ -293,8 +296,7 @@ When a new thread is created (via tmux hooks, `aily start`, or `!new`), a welcom
     ├── post.sh                    # Symlink → aily repo (multi-platform dispatcher)
     ├── discord-lib.sh             # Symlink → aily repo
     ├── slack-lib.sh               # Symlink → aily repo
-    ├── thread-sync.sh             # Symlink → aily repo (tmux lifecycle hooks)
-    └── .notify-env                # Secrets (not in repo)
+    └── thread-sync.sh             # Symlink → aily repo (tmux lifecycle hooks)
 
 aily/                      # GitHub repo
 ├── hooks/
@@ -330,14 +332,14 @@ aily/                      # GitHub repo
 ### Notification Hooks (Claude Code → Discord/Slack)
 - [ ] Clone repo: `git clone https://github.com/your-user/aily.git`
 - [ ] Run `./install.sh` to symlink hooks + set tmux hooks
-- [ ] Create `~/.claude/hooks/.notify-env` with platform credentials
+- [ ] Create `~/.config/aily/env` with platform credentials (or run `aily init`)
 - [ ] Add `Notification` hook to `~/.claude/settings.json`
 - [ ] Ensure tmux is running (hook only fires inside tmux sessions)
 - [ ] Run `aily status` to verify platform detection
 
 ### Discord Bridge (optional)
 - [ ] Set up Python venv: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
-- [ ] Configure `.notify-env` with `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`
+- [ ] Configure `~/.config/aily/env` with `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`
 - [ ] Ensure SSH access from bridge host to tmux hosts (configured in `SSH_HOSTS`)
 - [ ] Run: `.venv/bin/python agent-bridge.py` (typically in a dedicated tmux session)
 
@@ -348,7 +350,7 @@ aily/                      # GitHub repo
 - [ ] Enable Event Subscriptions → subscribe to `message.channels`, `message.groups`
 - [ ] Install app to workspace → copy Bot User OAuth Token (`xoxb-...`)
 - [ ] Invite bot to channel (`/invite @app-name`)
-- [ ] Configure `.notify-env` with `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID`
+- [ ] Configure `~/.config/aily/env` with `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID`
 - [ ] Set up Python venv: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 - [ ] Run: `.venv/bin/python slack-bridge.py` (typically in a dedicated tmux session)
 - [ ] Verify: `aily status` should show `slack: configured`

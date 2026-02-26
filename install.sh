@@ -27,45 +27,115 @@ for f in "$SCRIPT_DIR/hooks/"*; do
   echo "  ✓ $name"
 done
 
-# Check for .notify-env
-if [[ ! -f "$HOOKS_DIR/.notify-env" ]]; then
-  echo ""
-  echo "  ⚠️  No .notify-env found. Copy and fill in your tokens:"
-  echo "     cp $SCRIPT_DIR/.env.example $HOOKS_DIR/.notify-env"
-  echo "     chmod 600 $HOOKS_DIR/.notify-env"
-else
-  # Enforce restrictive permissions on credentials file
-  chmod 600 "$HOOKS_DIR/.notify-env" 2>/dev/null || true
-  echo "  ✓ .notify-env exists (chmod 600)"
+# Check for config file (new: ~/.config/aily/env, old: ~/.claude/hooks/.notify-env)
+AILY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/aily"
+AILY_ENV_FILE="${AILY_CONFIG_DIR}/env"
+AILY_OLD_ENV="$HOOKS_DIR/.notify-env"
 
-  # Show platform status
+if [[ -f "$AILY_ENV_FILE" ]]; then
+  chmod 600 "$AILY_ENV_FILE" 2>/dev/null || true
+  echo "  ✓ Config: $AILY_ENV_FILE (chmod 600)"
   # shellcheck source=/dev/null
-  source "$HOOKS_DIR/.notify-env" 2>/dev/null || true
-  if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
-    echo "  ✓ Discord: configured"
-  else
-    echo "  · Discord: not configured (optional)"
-  fi
-  if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
-    echo "  ✓ Slack: configured"
-  else
-    echo "  · Slack: not configured (optional)"
-  fi
+  source "$AILY_ENV_FILE" 2>/dev/null || true
+elif [[ -f "$AILY_OLD_ENV" ]]; then
+  # Auto-migrate from old path
+  mkdir -p "$AILY_CONFIG_DIR"
+  cp "$AILY_OLD_ENV" "$AILY_ENV_FILE"
+  chmod 600 "$AILY_ENV_FILE"
+  echo "  ✓ Migrated config: $AILY_OLD_ENV → $AILY_ENV_FILE"
+  # shellcheck source=/dev/null
+  source "$AILY_ENV_FILE" 2>/dev/null || true
+else
+  echo ""
+  echo "  ⚠️  No config found. Run 'aily init' to set up."
+fi
+
+if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
+  echo "  ✓ Discord: configured"
+else
+  echo "  · Discord: not configured (optional)"
+fi
+if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
+  echo "  ✓ Slack: configured"
+else
+  echo "  · Slack: not configured (optional)"
 fi
 
 # --- 2. Claude Code ---
 echo ""
 echo "=== Claude Code ==="
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-if [[ -f "$CLAUDE_SETTINGS" ]]; then
-  if grep -q "notify-clawdia\|notify-claude" "$CLAUDE_SETTINGS" 2>/dev/null; then
-    echo "  ✓ Notification hook already configured"
-  else
-    echo "  ⚠️  Add to $CLAUDE_SETTINGS:"
-    echo '  {"hooks":{"Notification":[{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/notify-claude.sh"}]}]}}'
-  fi
+CLAUDE_HOOK_CMD="bash $HOOKS_DIR/notify-claude.sh"
+
+if python3 - "$CLAUDE_SETTINGS" "$CLAUDE_HOOK_CMD" <<'PY' 2>/dev/null
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1]).expanduser()
+hook_cmd = sys.argv[2]
+
+desired_hook = {
+    "type": "command",
+    "command": hook_cmd,
+}
+
+settings = {}
+try:
+    raw = settings_path.read_text(encoding="utf-8")
+    settings = json.loads(raw) if raw.strip() else {}
+except FileNotFoundError:
+    settings = {}
+except Exception:
+    settings = {}
+
+if not isinstance(settings, dict):
+    settings = {}
+
+hooks = settings.get("hooks")
+if not isinstance(hooks, dict):
+    hooks = {}
+    settings["hooks"] = hooks
+
+notification = hooks.get("Notification")
+if notification is None:
+    notification = []
+elif not isinstance(notification, list):
+    notification = []
+hooks["Notification"] = notification
+
+# Check if our hook already exists
+def is_our_hook(h: dict) -> bool:
+    cmd = h.get("command", "")
+    return "notify-clawdia" in cmd or "notify-claude" in cmd
+
+found = False
+for group in notification:
+    if not isinstance(group, dict):
+        continue
+    group_hooks = group.get("hooks")
+    if not isinstance(group_hooks, list):
+        continue
+    for h in group_hooks:
+        if not isinstance(h, dict):
+            continue
+        if is_our_hook(h):
+            found = True
+            break
+    if found:
+        break
+
+if not found:
+    notification.append({"hooks": [desired_hook]})
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+PY
+then
+  echo "  ✓ Notification hook configured"
 else
-  echo "  ⚠️  $CLAUDE_SETTINGS not found"
+  echo "  ⚠️  Failed to update $CLAUDE_SETTINGS. Add manually:"
+  echo "     bash $HOOKS_DIR/notify-claude.sh"
 fi
 
 # --- 3. Codex CLI ---

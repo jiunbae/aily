@@ -925,8 +925,11 @@ async def main():
     global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, THREAD_CLEANUP, DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
     global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL
 
-    env_path = os.environ.get("AGENT_BRIDGE_ENV",
-        os.path.expanduser("~/.claude/hooks/.notify-env"))
+    _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+    _new_path = os.path.join(_xdg_config, "aily", "env")
+    _old_path = os.path.expanduser("~/.claude/hooks/.notify-env")
+    _default_path = _new_path if os.path.exists(_new_path) else _old_path
+    env_path = os.environ.get("AGENT_BRIDGE_ENV", _default_path)
 
     if not os.path.exists(env_path):
         print(f"Config not found: {env_path}", file=sys.stderr)

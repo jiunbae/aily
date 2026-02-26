@@ -2,7 +2,8 @@
 """Extract the last meaningful assistant text message from Claude Code session JSONL."""
 import hashlib, json, os, sys, glob, re
 
-STATE_FILE = os.path.expanduser("~/.claude/hooks/.last-notified")
+_xdg_data = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
+STATE_FILE = os.path.join(_xdg_data, "aily", "last-notified")
 
 def get_project_dir(cwd):
     sanitized = cwd.replace("/", "-")

@@ -35,7 +35,8 @@ IFS=$'\n' read -r TRANSCRIPT_PATH GEMINI_CWD <<< "$PARSED"
 printf '%s\n' '{}'
 
 # Fast exits (after emitting stdout JSON).
-ENV_FILE="${HOOK_DIR}/.notify-env"
+ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
+[[ -f "$ENV_FILE" ]] || ENV_FILE="${HOOK_DIR}/.notify-env"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi
