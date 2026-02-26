@@ -413,6 +413,15 @@ detect_tmux_session() {
   fi
 }
 
+format_thread_name() {
+  local session="$1" host="$2"
+  local _default='[agent] {session} - {host}'
+  local fmt="${THREAD_NAME_FORMAT:-$_default}"
+  fmt="${fmt//\{session\}/$session}"
+  fmt="${fmt//\{host\}/$host}"
+  echo "$fmt"
+}
+
 # ---------------------------------------------------------------------------
 # Platform loaders (sourced from hooks dir)
 # ---------------------------------------------------------------------------
@@ -807,6 +816,8 @@ cmd_init() {
     else
       info "Skipped"
     fi
+  else
+    _send_test_notification
   fi
 
   echo ""
@@ -1021,13 +1032,14 @@ _send_test_notification() {
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
   local hostname_short
   hostname_short=$(hostname -s 2>/dev/null || hostname)
-  local message=":white_check_mark: *aily connected!*\n\n:desktop_computer: Host: \`${hostname_short}\`\n:clock1: Time: ${timestamp}\n\nAvailable commands:\n• \`!new [name]\` — Create a new tmux session\n• \`!sessions\` — List active sessions\n• \`!send <session> <message>\` — Send a message to a session"
+  local message
+  message=$(printf ':white_check_mark: *aily connected!*\n\n:desktop_computer: Host: `%s`\n:clock1: Time: %s\n\nAvailable commands:\n• `!new [name]` — Create a new tmux session\n• `!sessions` — List active sessions\n• `!send <session> <message>` — Send a message to a session' "$hostname_short" "$timestamp")
   local any_ok=false
 
   # Post directly to platform APIs (bypasses hook symlinks)
   if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
     local payload
-    payload=$(python3 -c "import json; print(json.dumps({'channel': '${SLACK_CHANNEL_ID}', 'text': '${message}', 'unfurl_links': False}))")
+    payload=$(jq -n --arg ch "$SLACK_CHANNEL_ID" --arg msg "$message" '{channel: $ch, text: $msg, unfurl_links: false}')
     local resp
     resp=$(curl -sf -X POST \
       -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
@@ -1040,12 +1052,15 @@ _send_test_notification() {
   fi
 
   if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
-    local discord_msg="✅ **aily connected!**\n\n🖥️ Host: \`${hostname_short}\`\n🕐 Time: ${timestamp}\n\nAvailable commands:\n• \`!new [name]\` — Create a new tmux session\n• \`!sessions\` — List active sessions\n• \`!send <session> <message>\` — Send a message to a session"
+    local discord_msg
+    discord_msg=$(printf '✅ **aily connected!**\n\n🖥️ Host: `%s`\n🕐 Time: %s\n\nAvailable commands:\n• `!new [name]` — Create a new tmux session\n• `!sessions` — List active sessions\n• `!send <session> <message>` — Send a message to a session' "$hostname_short" "$timestamp")
+    local payload
+    payload=$(jq -n --arg msg "$discord_msg" '{content: $msg}')
     local resp
     resp=$(curl -sf -X POST \
       -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
       -H "Content-Type: application/json" \
-      -d "{\"content\": \"${discord_msg}\"}" \
+      -d "$payload" \
       "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages" 2>/dev/null || echo "")
     if echo "$resp" | jq -e '.id' >/dev/null 2>&1; then
       any_ok=true
@@ -1863,9 +1878,10 @@ cmd_start() {
     exit 1
   fi
 
-  local thread_name="[agent] ${session_name}"
   local hostname_short
   hostname_short=$(hostname -s 2>/dev/null || hostname)
+  local thread_name
+  thread_name=$(format_thread_name "$session_name" "$hostname_short")
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
   local any_ok=false
@@ -1915,9 +1931,10 @@ cmd_stop() {
     exit 1
   fi
 
-  local thread_name="[agent] ${session_name}"
   local hostname_short
   hostname_short=$(hostname -s 2>/dev/null || hostname)
+  local thread_name
+  thread_name=$(format_thread_name "$session_name" "$hostname_short")
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 

@@ -51,7 +51,10 @@ HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
 PROJECT=$(basename "${PWD:-unknown}")
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-THREAD_NAME="[agent] ${TMUX_SESSION}"
+_DEFAULT_FMT='[agent] {session} - {host}'
+THREAD_NAME="${THREAD_NAME_FORMAT:-$_DEFAULT_FMT}"
+THREAD_NAME="${THREAD_NAME//\{session\}/$TMUX_SESSION}"
+THREAD_NAME="${THREAD_NAME//\{host\}/$HOSTNAME_SHORT}"
 
 # Source shared Slack API functions
 # shellcheck source=/dev/null

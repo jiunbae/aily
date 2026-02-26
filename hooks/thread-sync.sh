@@ -36,8 +36,11 @@ fi
     exit 0
   fi
 
-  THREAD_NAME="[agent] ${SESSION_NAME}"
   HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
+  _default='[agent] {session} - {host}'
+  THREAD_NAME="${THREAD_NAME_FORMAT:-$_default}"
+  THREAD_NAME="${THREAD_NAME//\{session\}/$SESSION_NAME}"
+  THREAD_NAME="${THREAD_NAME//\{host\}/$HOSTNAME_SHORT}"
   TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
   # --- Discord ---
