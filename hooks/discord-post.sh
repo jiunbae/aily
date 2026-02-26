@@ -22,7 +22,8 @@ else
 fi
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${HOOK_DIR}/.notify-env"
+ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
+[[ -f "$ENV_FILE" ]] || ENV_FILE="${HOOK_DIR}/.notify-env"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi

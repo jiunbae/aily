@@ -8,7 +8,8 @@ set -euo pipefail
 # Read stdin BEFORE forking (not available in background)
 TOOL_INPUT=$(cat)
 
-ENV_FILE="$(dirname "$0")/.notify-env"
+ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
+[[ -f "$ENV_FILE" ]] || ENV_FILE="$(dirname "$0")/.notify-env"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi

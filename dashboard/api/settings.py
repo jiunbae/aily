@@ -472,6 +472,7 @@ set -euo pipefail
 REPO="https://raw.githubusercontent.com/{github_repo}/main"
 INSTALL_DIR="${{AILY_INSTALL_DIR:-$HOME/.local/bin}}"
 HOOKS_DIR="$HOME/.claude/hooks"
+AILY_CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/aily"
 
 echo "=== aily CLI Installer ==="
 echo ""
@@ -485,7 +486,7 @@ for cmd in curl jq; do
 done
 
 # Create directories
-mkdir -p "$INSTALL_DIR" "$HOOKS_DIR"
+mkdir -p "$INSTALL_DIR" "$HOOKS_DIR" "$AILY_CONFIG_DIR"
 
 # Download aily CLI
 echo "Downloading aily CLI..."
@@ -507,7 +508,14 @@ done
 # Download install.sh and .env.example
 curl -sSL "$REPO/install.sh" -o "$INSTALL_DIR/aily-install.sh"
 chmod +x "$INSTALL_DIR/aily-install.sh"
-curl -sSL "$REPO/.env.example" -o "$HOOKS_DIR/.env.example" 2>/dev/null || true
+curl -sSL "$REPO/.env.example" -o "$AILY_CONFIG_DIR/env.example" 2>/dev/null || true
+
+# Migrate old config if exists
+if [[ -f "$HOOKS_DIR/.notify-env" && ! -f "$AILY_CONFIG_DIR/env" ]]; then
+  cp "$HOOKS_DIR/.notify-env" "$AILY_CONFIG_DIR/env"
+  chmod 600 "$AILY_CONFIG_DIR/env"
+  echo "  Migrated config: $HOOKS_DIR/.notify-env -> $AILY_CONFIG_DIR/env"
+fi
 
 # Check PATH
 if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
@@ -523,8 +531,7 @@ echo ""
 echo "Run setup wizard:"
 echo "  aily init"
 echo ""
-echo "Or with dashboard URL pre-configured:"
-echo "  AILY_DASHBOARD_URL={dashboard_url} aily init"
+echo "Config: $AILY_CONFIG_DIR/env"
 echo ""
 '''
     return web.Response(

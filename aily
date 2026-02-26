@@ -32,7 +32,21 @@ if [[ -L "$_self" ]]; then
   [[ "$_self" != /* ]] && _self="$(cd "$(dirname "$0")" && cd "$(dirname "$_self")" && pwd)/$(basename "$_self")"
 fi
 SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
-ENV_FILE="${AILY_ENV:-$HOME/.claude/hooks/.notify-env}"
+_AILY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/aily"
+_AILY_OLD_ENV="$HOME/.claude/hooks/.notify-env"
+if [[ -n "${AILY_ENV:-}" ]]; then
+  ENV_FILE="$AILY_ENV"
+elif [[ -f "$_AILY_CONFIG_DIR/env" ]]; then
+  ENV_FILE="$_AILY_CONFIG_DIR/env"
+elif [[ -f "$_AILY_OLD_ENV" ]]; then
+  # Auto-migrate from old path
+  mkdir -p "$_AILY_CONFIG_DIR"
+  cp "$_AILY_OLD_ENV" "$_AILY_CONFIG_DIR/env"
+  chmod 600 "$_AILY_CONFIG_DIR/env"
+  ENV_FILE="$_AILY_CONFIG_DIR/env"
+else
+  ENV_FILE="$_AILY_CONFIG_DIR/env"
+fi
 HOOKS_DIR="$(dirname "$ENV_FILE")"
 AILY_VERSION="2026.2.18"
 AILY_JSON=false
@@ -452,8 +466,13 @@ prompt_value() {
   prompt+=": "
 
   if [[ "$secret" == "true" ]]; then
+    # Use -s for hidden input; show **** feedback so user knows paste worked
     read -rsp "$prompt" value
-    echo "" >&2
+    if [[ -n "$value" ]]; then
+      printf '****\n' >&2
+    else
+      echo "" >&2
+    fi
   else
     read -rp "$prompt" value
   fi
@@ -496,102 +515,7 @@ cmd_init() {
   hdr "aily setup wizard"
   echo ""
 
-  # -- Dashboard URL --
-  local url
-  if [[ "$non_interactive" == "true" ]]; then
-    url="${AILY_DASHBOARD_URL:-http://localhost:8080}"
-  else
-    url=$(prompt_value "Dashboard URL" "$(env_get AILY_DASHBOARD_URL "http://localhost:8080")")
-  fi
-  url="${url%/}"
-
-  local _is_localhost=false
-  if [[ "$url" == *"localhost"* || "$url" == *"127.0.0.1"* ]]; then
-    _is_localhost=true
-  fi
-
-  # -- Auth token (determine early so we can pass it to dashboard startup) --
-  local token=""
-  local existing_token
-  existing_token="${AILY_AUTH_TOKEN:-$(env_get AILY_AUTH_TOKEN "")}"
-
-  local _dashboard_ok=false
-  if ui_spin "Testing connectivity" curl -sf --connect-timeout 3 "${url}/healthz"; then
-    _dashboard_ok=true
-  else
-    info "Dashboard not reachable"
-    if [[ "$non_interactive" == "false" && "$_is_localhost" == true ]]; then
-      if ui_confirm "Start local dashboard server?" "y"; then
-        # Auto-generate token before starting dashboard
-        if [[ -z "$existing_token" ]]; then
-          token="$(_generate_token)"
-          ok "Generated auth token"
-        else
-          token="$existing_token"
-        fi
-        _start_local_dashboard "$url" "$token"
-        if ui_spin "Checking dashboard" curl -sf --connect-timeout 5 "${url}/healthz"; then
-          _dashboard_ok=true
-        else
-          warn "Dashboard started but not responding yet — continuing without it"
-        fi
-      else
-        info "Skipped — hooks work without the dashboard"
-      fi
-    else
-      info "Hooks work without the dashboard"
-    fi
-  fi
-  echo ""
-
-  # -- Auth token (finalize) --
-  if [[ "$_dashboard_ok" == true && -z "$token" ]]; then
-    # Dashboard was already running (we didn't start it)
-    if [[ "$non_interactive" == "true" ]]; then
-      token="$existing_token"
-      if [[ -z "$token" && "$_is_localhost" == true ]]; then
-        token="$(_generate_token)"
-      fi
-    else
-      if [[ -z "$existing_token" && "$_is_localhost" == true ]]; then
-        token="$(_generate_token)"
-        ok "Generated auth token"
-        warn "Restart dashboard to activate token auth"
-      else
-        token=$(prompt_value "Auth token" "$existing_token" true)
-      fi
-    fi
-  elif [[ -z "$token" ]]; then
-    # Dashboard not reachable and we didn't start it
-    if [[ "$non_interactive" == "true" ]]; then
-      token="$existing_token"
-      if [[ -z "$token" && "$_is_localhost" == true ]]; then
-        token="$(_generate_token)"
-      fi
-    else
-      if [[ -z "$existing_token" && "$_is_localhost" == true ]]; then
-        token="$(_generate_token)"
-        info "Auto-generated auth token (will apply when dashboard starts)"
-      elif [[ -n "$existing_token" ]]; then
-        token="$existing_token"
-      fi
-    fi
-  fi
-
-  # Show token info and let user confirm/override
-  if [[ -n "$token" && "$non_interactive" == "false" ]]; then
-    info "Auth token: $(redact "$token")"
-  fi
-
-  # Validate token against running dashboard
-  if [[ "$_dashboard_ok" == true && -n "$token" ]]; then
-    ui_spin "Validating token" curl -sf --connect-timeout 3 \
-      -H "Authorization: Bearer ${token}" "${url}/api/stats" || \
-      warn "Could not validate — token may take effect after restart"
-  fi
-  echo ""
-
-  # -- Platform setup --
+  # -- 1. Platform setup (required) --
   local discord_token="" discord_channel=""
   local slack_token="" slack_app_token="" slack_channel=""
 
@@ -602,8 +526,21 @@ cmd_init() {
     slack_app_token="${SLACK_APP_TOKEN:-$(env_get SLACK_APP_TOKEN "")}"
     slack_channel="${SLACK_CHANNEL_ID:-$(env_get SLACK_CHANNEL_ID "")}"
   else
-    # Discord
-    if ui_confirm "Enable Discord?" "$(if [[ -n "$(env_get DISCORD_BOT_TOKEN "")" ]]; then echo y; else echo n; fi)"; then
+    # Determine default based on existing config
+    local _plat_default=0
+    if [[ -n "$(env_get DISCORD_BOT_TOKEN "")" && -n "$(env_get SLACK_BOT_TOKEN "")" ]]; then
+      _plat_default=2
+    elif [[ -n "$(env_get SLACK_BOT_TOKEN "")" ]]; then
+      _plat_default=1
+    fi
+
+    local platform_idx="$_plat_default"
+    ui_select platform_idx "Notification platform" \
+      "discord" "slack" "both" \
+      -- "Discord bot" "Slack bot" "Discord + Slack"
+
+    # Discord tokens
+    if [[ "$platform_idx" == 0 || "$platform_idx" == 2 ]]; then
       discord_token=$(prompt_value "Discord bot token" "$(env_get DISCORD_BOT_TOKEN "")" true)
       discord_channel=$(prompt_value "Discord channel ID" "$(env_get DISCORD_CHANNEL_ID "")")
 
@@ -619,11 +556,11 @@ cmd_init() {
           warn "Could not validate Discord credentials"
         fi
       fi
+      echo ""
     fi
-    echo ""
 
-    # Slack
-    if ui_confirm "Enable Slack?" "$(if [[ -n "$(env_get SLACK_BOT_TOKEN "")" ]]; then echo y; else echo n; fi)"; then
+    # Slack tokens
+    if [[ "$platform_idx" == 1 || "$platform_idx" == 2 ]]; then
       slack_token=$(prompt_value "Slack bot token (xoxb-...)" "$(env_get SLACK_BOT_TOKEN "")" true)
       slack_app_token=$(prompt_value "Slack app token (xapp-...)" "$(env_get SLACK_APP_TOKEN "")" true)
       slack_channel=$(prompt_value "Slack channel ID" "$(env_get SLACK_CHANNEL_ID "")")
@@ -640,32 +577,50 @@ cmd_init() {
           warn "Could not validate Slack credentials"
         fi
       fi
+      echo ""
     fi
   fi
-  echo ""
 
-  # -- SSH hosts --
-  local ssh_hosts
+  # -- 2. Quick-start defaults gate --
+  local use_defaults=true
+  local ssh_hosts="localhost"
+  local thread_cleanup="archive"
+  local new_session_agent="" claude_remote_control="false"
+  local url="" token=""
+
   if [[ "$non_interactive" == "true" ]]; then
     ssh_hosts="${SSH_HOSTS:-$(env_get SSH_HOSTS "localhost")}"
-  else
-    ssh_hosts=$(prompt_value "SSH hosts (comma-separated)" "$(env_get SSH_HOSTS "localhost")")
-  fi
-
-  if [[ "$non_interactive" == "false" && -n "$ssh_hosts" && "$ssh_hosts" != "localhost" ]]; then
-    IFS=',' read -ra host_list <<< "$ssh_hosts"
-    for host in "${host_list[@]}"; do
-      host=$(echo "$host" | tr -d ' ')
-      ui_spin "Testing SSH to ${host}" ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "echo ok" || true
-    done
-  fi
-  echo ""
-
-  # -- Thread cleanup --
-  local thread_cleanup
-  if [[ "$non_interactive" == "true" ]]; then
     thread_cleanup="${THREAD_CLEANUP:-archive}"
+    new_session_agent="${NEW_SESSION_AGENT:-$(env_get NEW_SESSION_AGENT "")}"
+    claude_remote_control="${CLAUDE_REMOTE_CONTROL:-$(env_get CLAUDE_REMOTE_CONTROL "false")}"
+    url="${AILY_DASHBOARD_URL:-$(env_get AILY_DASHBOARD_URL "")}"
+    token="${AILY_AUTH_TOKEN:-$(env_get AILY_AUTH_TOKEN "")}"
+    # Auto-generate token for localhost if not set
+    if [[ -n "$url" && -z "$token" && ( "$url" == *"localhost"* || "$url" == *"127.0.0.1"* ) ]]; then
+      token="$(_generate_token)"
+    fi
   else
+    info "Defaults: SSH=localhost, cleanup=archive, no agent, no dashboard"
+    if ! ui_confirm "Use defaults?" "y"; then
+      use_defaults=false
+    fi
+    echo ""
+  fi
+
+  # -- 3. SSH hosts (advanced) --
+  if [[ "$use_defaults" == "false" ]]; then
+    ssh_hosts=$(prompt_value "SSH hosts (comma-separated)" "$(env_get SSH_HOSTS "localhost")")
+
+    if [[ -n "$ssh_hosts" && "$ssh_hosts" != "localhost" ]]; then
+      IFS=',' read -ra host_list <<< "$ssh_hosts"
+      for host in "${host_list[@]}"; do
+        host=$(echo "$host" | tr -d ' ')
+        ui_spin "Testing SSH to ${host}" ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" "echo ok" || true
+      done
+    fi
+    echo ""
+
+    # -- 4. Thread cleanup (advanced) --
     local cleanup_idx=0
     ui_select cleanup_idx "Thread cleanup" \
       "archive" "delete" \
@@ -675,15 +630,9 @@ cmd_init() {
       *) thread_cleanup="archive" ;;
     esac
     ok "Thread cleanup: ${thread_cleanup}"
-  fi
-  echo ""
+    echo ""
 
-  # -- Agent auto-launch --
-  local new_session_agent="" claude_remote_control="false"
-  if [[ "$non_interactive" == "true" ]]; then
-    new_session_agent="${NEW_SESSION_AGENT:-$(env_get NEW_SESSION_AGENT "")}"
-    claude_remote_control="${CLAUDE_REMOTE_CONTROL:-$(env_get CLAUDE_REMOTE_CONTROL "false")}"
-  else
+    # -- 5. Agent auto-launch (advanced) --
     local agent_idx=0
     ui_select agent_idx "Agent auto-launch on !new" \
       "none" "claude" "codex" "gemini" \
@@ -708,22 +657,57 @@ cmd_init() {
     else
       ok "Agent: none"
     fi
+    echo ""
+
+    # -- 6. Dashboard (optional) --
+    if ui_confirm "Enable dashboard?" "n"; then
+      url=$(prompt_value "Dashboard URL" "$(env_get AILY_DASHBOARD_URL "http://localhost:8080")")
+      url="${url%/}"
+
+      local _is_localhost=false
+      [[ "$url" == *"localhost"* || "$url" == *"127.0.0.1"* ]] && _is_localhost=true
+
+      # Determine auth token
+      local existing_token
+      existing_token="$(env_get AILY_AUTH_TOKEN "")"
+
+      if [[ "$_is_localhost" == true ]]; then
+        # Localhost: always auto-generate, never prompt
+        token="${existing_token:-$(_generate_token)}"
+        ok "Auth token: $(redact "$token")"
+
+        if ui_spin "Testing dashboard" curl -sf --connect-timeout 3 "${url}/healthz"; then
+          : # dashboard already running
+        else
+          if ui_confirm "Start local dashboard?" "y"; then
+            _start_local_dashboard "$url" "$token"
+            ui_spin "Checking dashboard" curl -sf --connect-timeout 5 "${url}/healthz" || \
+              warn "Dashboard not responding — will work on next start"
+          fi
+        fi
+      else
+        # Remote: prompt for token
+        token=$(prompt_value "Auth token" "$existing_token" true)
+        if ui_spin "Testing dashboard" curl -sf --connect-timeout 3 "${url}/healthz"; then
+          if [[ -n "$token" ]]; then
+            ui_spin "Validating token" curl -sf --connect-timeout 3 \
+              -H "Authorization: Bearer ${token}" "${url}/api/stats" || \
+              warn "Token validation failed"
+          fi
+        else
+          warn "Dashboard not reachable — continuing"
+        fi
+      fi
+    fi
   fi
   echo ""
 
   # -- Write config --
   mkdir -p "$(dirname "$ENV_FILE")"
 
-  # Build the config file content
   local config_content=""
   config_content+="# aily configuration — generated by aily init\n"
   config_content+="# $(date '+%Y-%m-%d %H:%M:%S')\n"
-  config_content+="\n"
-  config_content+="# --- Dashboard ---\n"
-  config_content+="AILY_DASHBOARD_URL=\"${url}\"\n"
-  if [[ -n "$token" ]]; then
-    config_content+="AILY_AUTH_TOKEN=\"${token}\"\n"
-  fi
   config_content+="\n"
   config_content+="# --- Discord ---\n"
   if [[ -n "$discord_token" ]]; then
@@ -761,8 +745,16 @@ cmd_init() {
   else
     config_content+="# CLAUDE_REMOTE_CONTROL=\"false\"\n"
   fi
+  config_content+="\n"
+  config_content+="# --- Dashboard (optional) ---\n"
+  if [[ -n "$url" ]]; then
+    config_content+="AILY_DASHBOARD_URL=\"${url}\"\n"
+    [[ -n "$token" ]] && config_content+="AILY_AUTH_TOKEN=\"${token}\"\n"
+  else
+    config_content+="# AILY_DASHBOARD_URL=\"\"\n"
+    config_content+="# AILY_AUTH_TOKEN=\"\"\n"
+  fi
 
-  # Preserve any extra keys from existing config
   printf '%b' "$config_content" > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
   ok "Saved to ${ENV_FILE} (chmod 600)"
