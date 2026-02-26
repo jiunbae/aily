@@ -510,12 +510,6 @@ curl -sSL "$REPO/install.sh" -o "$INSTALL_DIR/aily-install.sh"
 chmod +x "$INSTALL_DIR/aily-install.sh"
 curl -sSL "$REPO/.env.example" -o "$AILY_CONFIG_DIR/env.example" 2>/dev/null || true
 
-# Migrate old config if exists
-if [[ -f "$HOOKS_DIR/.notify-env" && ! -f "$AILY_CONFIG_DIR/env" ]]; then
-  cp "$HOOKS_DIR/.notify-env" "$AILY_CONFIG_DIR/env"
-  chmod 600 "$AILY_CONFIG_DIR/env"
-  echo "  Migrated config: $HOOKS_DIR/.notify-env -> $AILY_CONFIG_DIR/env"
-fi
 
 # Check PATH
 if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then

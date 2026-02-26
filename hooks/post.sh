@@ -4,15 +4,14 @@
 # Usage: post.sh <agent_name> <message_text>
 #    OR: post.sh --raw <pre_formatted_message>
 #
-# Auto-detects enabled platforms from available tokens in .notify-env.
-# Override with NOTIFY_PLATFORMS="discord,slack" in .notify-env.
+# Auto-detects enabled platforms from available tokens in env.
+# Override with NOTIFY_PLATFORMS="discord,slack" in env.
 # Retries failed posts with exponential backoff.
 
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
-[[ -f "$ENV_FILE" ]] || ENV_FILE="${HOOK_DIR}/.notify-env"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi

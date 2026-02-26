@@ -27,22 +27,13 @@ for f in "$SCRIPT_DIR/hooks/"*; do
   echo "  ✓ $name"
 done
 
-# Check for config file (new: ~/.config/aily/env, old: ~/.claude/hooks/.notify-env)
+# Check for config file
 AILY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/aily"
 AILY_ENV_FILE="${AILY_CONFIG_DIR}/env"
-AILY_OLD_ENV="$HOOKS_DIR/.notify-env"
 
 if [[ -f "$AILY_ENV_FILE" ]]; then
   chmod 600 "$AILY_ENV_FILE" 2>/dev/null || true
   echo "  ✓ Config: $AILY_ENV_FILE (chmod 600)"
-  # shellcheck source=/dev/null
-  source "$AILY_ENV_FILE" 2>/dev/null || true
-elif [[ -f "$AILY_OLD_ENV" ]]; then
-  # Auto-migrate from old path
-  mkdir -p "$AILY_CONFIG_DIR"
-  cp "$AILY_OLD_ENV" "$AILY_ENV_FILE"
-  chmod 600 "$AILY_ENV_FILE"
-  echo "  ✓ Migrated config: $AILY_OLD_ENV → $AILY_ENV_FILE"
   # shellcheck source=/dev/null
   source "$AILY_ENV_FILE" 2>/dev/null || true
 else

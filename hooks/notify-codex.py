@@ -40,11 +40,8 @@ def main():
 
     hook_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # Check for config: XDG path first, then old hook-dir path
     _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
     _config_file = os.path.join(_xdg_config, "aily", "env")
-    if not os.path.isfile(_config_file):
-        _config_file = os.path.join(hook_dir, ".notify-env")
     if not os.path.isfile(_config_file):
         return
 
