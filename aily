@@ -47,7 +47,7 @@ elif [[ -f "$_AILY_OLD_ENV" ]]; then
 else
   ENV_FILE="$_AILY_CONFIG_DIR/env"
 fi
-HOOKS_DIR="$(dirname "$ENV_FILE")"
+HOOKS_DIR="$HOME/.claude/hooks"
 AILY_VERSION="2026.2.18"
 AILY_JSON=false
 

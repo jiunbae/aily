@@ -298,15 +298,43 @@ echo "=== tmux session hooks ==="
 SYNC_SCRIPT="$HOOKS_DIR/thread-sync.sh"
 if [[ -x "$SYNC_SCRIPT" ]]; then
   if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
-    tmux set-hook -g session-created \
-      "run-shell '${SYNC_SCRIPT} create #{session_name}'" 2>/dev/null && \
-      echo "  ✓ session-created hook set" || \
-      echo "  ⚠️  Failed to set session-created hook"
+    session_count=$(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')
 
-    tmux set-hook -g session-closed \
-      "run-shell '${SYNC_SCRIPT} delete #{hook_session_name}'" 2>/dev/null && \
-      echo "  ✓ session-closed hook set" || \
-      echo "  ⚠️  Failed to set session-closed hook"
+    # Ask before enabling auto-sync
+    _reply="y"
+    if [[ -e /dev/tty ]]; then
+      printf "  Enable auto thread sync for tmux sessions? [Y/n]: " > /dev/tty
+      read -r _reply < /dev/tty 2>/dev/null || _reply="y"
+    fi
+
+    if [[ "${_reply:-y}" =~ ^[Yy]$ ]]; then
+      tmux set-hook -g session-created \
+        "run-shell '${SYNC_SCRIPT} create #{session_name}'" 2>/dev/null && \
+        echo "  ✓ session-created hook set" || \
+        echo "  ⚠️  Failed to set session-created hook"
+
+      tmux set-hook -g session-closed \
+        "run-shell '${SYNC_SCRIPT} delete #{hook_session_name}'" 2>/dev/null && \
+        echo "  ✓ session-closed hook set" || \
+        echo "  ⚠️  Failed to set session-closed hook"
+
+      # Offer to sync existing sessions
+      if [[ "$session_count" -gt 0 ]]; then
+        printf "  Sync %d existing tmux session(s)? [y/N]: " "$session_count" > /dev/tty
+        read -r _reply2 < /dev/tty 2>/dev/null || _reply2="n"
+        if [[ "${_reply2:-n}" =~ ^[Yy]$ ]]; then
+          while IFS= read -r _sess; do
+            "$SYNC_SCRIPT" create "$_sess" 2>/dev/null &
+            echo "  ✓ Synced: $_sess"
+          done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
+          wait
+        else
+          echo "  · Existing sessions skipped (threads created on next session)"
+        fi
+      fi
+    else
+      echo "  · Skipped (use 'aily auto on' to enable later)"
+    fi
   else
     echo "  ⚠️  tmux not running. Start tmux first, then re-run install.sh"
   fi
