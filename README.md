@@ -20,9 +20,11 @@ Built for developers running AI coding agents in tmux sessions across SSH hosts.
 
 ```
 Install aily — AI agent notification relay for Discord/Slack (https://github.com/jiunbae/aily).
-Run `npm install -g aily-cli` then `aily init` to start the interactive setup wizard.
-The wizard will ask for: notification platform (Discord/Slack), credentials, and optional advanced settings.
-After setup, run `aily status` to verify connectivity and `aily doctor` to check for issues.
+Install: `git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init`
+  (or: `npm install -g aily-cli && aily init`)
+The wizard asks: platform (Discord/Slack/both) → bot token → channel ID → done.
+Dashboard, SSH hosts, and agent auto-launch are optional (shown when "Use defaults?" is declined).
+Config is saved to ~/.config/aily/env. Run `aily status` to verify, `aily doctor` to diagnose.
 ```
 
 <div><img src="https://quickstart-for-agents.vercel.app/api/footer.svg?theme=claude-code" width="100%" /></div>
