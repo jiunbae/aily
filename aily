@@ -33,17 +33,8 @@ if [[ -L "$_self" ]]; then
 fi
 SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 _AILY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/aily"
-_AILY_OLD_ENV="$HOME/.claude/hooks/.notify-env"
 if [[ -n "${AILY_ENV:-}" ]]; then
   ENV_FILE="$AILY_ENV"
-elif [[ -f "$_AILY_CONFIG_DIR/env" ]]; then
-  ENV_FILE="$_AILY_CONFIG_DIR/env"
-elif [[ -f "$_AILY_OLD_ENV" ]]; then
-  # Auto-migrate from old path
-  mkdir -p "$_AILY_CONFIG_DIR"
-  cp "$_AILY_OLD_ENV" "$_AILY_CONFIG_DIR/env"
-  chmod 600 "$_AILY_CONFIG_DIR/env"
-  ENV_FILE="$_AILY_CONFIG_DIR/env"
 else
   ENV_FILE="$_AILY_CONFIG_DIR/env"
 fi
@@ -939,8 +930,8 @@ _dashboard_via_docker() {
   cid=$(docker run -d --rm \
     --name aily-dashboard \
     -p "${port}:8080" \
-    -v "${ENV_FILE}:/app/.notify-env:ro" \
-    -e AGENT_BRIDGE_ENV=/app/.notify-env \
+    -v "${ENV_FILE}:/app/env:ro" \
+    -e AGENT_BRIDGE_ENV=/app/env \
     ${token:+-e DASHBOARD_TOKEN="$token"} \
     "$image" 2>/dev/null) || {
     warn "Failed to start container"
@@ -1635,7 +1626,7 @@ cmd_doctor() {
   # Config file
   printf "\n  ${C_BOLD}Configuration${C_RESET}\n"
   if [[ -f "$ENV_FILE" ]]; then
-    ok ".notify-env exists at ${ENV_FILE}"
+    ok "Config exists at ${ENV_FILE}"
     local perms
     perms=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null || echo "unknown")
     if [[ "$perms" == "600" ]]; then
@@ -1645,7 +1636,7 @@ cmd_doctor() {
       issues=$((issues + 1))
     fi
   else
-    err ".notify-env not found at ${ENV_FILE}"
+    err "Config not found at ${ENV_FILE}"
     info "Run 'aily init' to create it"
     issues=$((issues + 1))
   fi
@@ -2111,7 +2102,7 @@ cmd_uninstall() {
 
   # Confirm
   printf "  This will remove aily hook symlinks and agent configurations.\n"
-  printf "  Your .notify-env credentials will NOT be deleted.\n"
+  printf "  Your credentials file will also be deleted.\n"
   echo ""
   printf "  ${C_BOLD}Continue? (y/N):${C_RESET} "
   local answer
@@ -2239,10 +2230,19 @@ with open(path, 'w') as f:
     info "No CLI symlink found"
   fi
 
-  echo ""
-  warn "Credentials file NOT deleted: ${ENV_FILE}"
-  info "Delete it manually if you no longer need it:"
-  info "  rm ${ENV_FILE}"
+  # 5. Remove credentials file
+  printf "\n  ${C_BOLD}Removing credentials${C_RESET}\n"
+  if [[ -f "$ENV_FILE" ]]; then
+    rm -f "$ENV_FILE"
+    ok "Removed ${ENV_FILE}"
+  else
+    info "No credentials file found"
+  fi
+  # Clean up config dir if empty
+  local config_dir
+  config_dir="$(dirname "$ENV_FILE")"
+  rmdir "$config_dir" 2>/dev/null && ok "Removed ${config_dir}" || true
+
   echo ""
   ok "Uninstall complete"
   echo ""

@@ -146,7 +146,7 @@ def _redact_secrets(text: str) -> str:
 
 
 def load_env(env_path: str) -> dict:
-    """Load .notify-env file."""
+    """Load env config file."""
     env = {}
     with open(env_path) as f:
         for line in f:
@@ -926,9 +926,7 @@ async def main():
     global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL
 
     _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-    _new_path = os.path.join(_xdg_config, "aily", "env")
-    _old_path = os.path.expanduser("~/.claude/hooks/.notify-env")
-    _default_path = _new_path if os.path.exists(_new_path) else _old_path
+    _default_path = os.path.join(_xdg_config, "aily", "env")
     env_path = os.environ.get("AGENT_BRIDGE_ENV", _default_path)
 
     if not os.path.exists(env_path):
@@ -939,7 +937,7 @@ async def main():
     token = env.get("DISCORD_BOT_TOKEN")
     CHANNEL_ID = env.get("DISCORD_CHANNEL_ID", "")
 
-    # Dashboard URL and auth token from env var (K8s) or .notify-env file
+    # Dashboard URL and auth token from env var (K8s) or config file
     if not DASHBOARD_URL:
         DASHBOARD_URL = env.get("AILY_DASHBOARD_URL", "")
     if not DASHBOARD_AUTH_TOKEN:

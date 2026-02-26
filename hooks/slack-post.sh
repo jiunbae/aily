@@ -3,7 +3,7 @@
 # Usage: slack-post.sh <agent_name> <message_text>
 #    OR: slack-post.sh --raw <pre_formatted_message>
 #
-# Required env vars (from .notify-env in same dir): SLACK_BOT_TOKEN, SLACK_CHANNEL_ID
+# Required env vars: SLACK_BOT_TOKEN, SLACK_CHANNEL_ID
 # Requires: running inside a tmux session (TMUX/TMUX_PANE set)
 #
 # NOTE: This script does NOT fork. Entrypoints should background it to avoid hook timeouts.
@@ -23,7 +23,6 @@ fi
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
-[[ -f "$ENV_FILE" ]] || ENV_FILE="${HOOK_DIR}/.notify-env"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi

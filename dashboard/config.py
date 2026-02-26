@@ -1,7 +1,7 @@
-"""Dashboard configuration from environment variables and .notify-env file.
+"""Dashboard configuration from environment variables and config file.
 
 Follows the same config loading pattern as agent-bridge.py and slack-bridge.py:
-reads from env vars first, then falls back to .notify-env file values.
+reads from env vars first, then falls back to config file values.
 """
 
 from __future__ import annotations
@@ -73,12 +73,12 @@ class Config:
     new_session_agent: str = ""       # "claude", "codex", "gemini", "opencode", or ""
     claude_remote_control: bool = False
 
-    # .notify-env path
+    # Config file path
     env_file: str = ""
 
     @classmethod
     def from_env(cls) -> Config:
-        """Load configuration from environment variables, falling back to .notify-env."""
+        """Load configuration from environment variables, falling back to config file."""
         config = cls()
 
         # Server settings
@@ -181,7 +181,7 @@ class Config:
             os.environ.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
         )
 
-        # Fallback: load .notify-env file (same format as bridges)
+        # Fallback: load config file (same format as bridges)
         env_file = os.environ.get("AGENT_BRIDGE_ENV", "")
         if env_file and Path(env_file).exists():
             config.env_file = env_file
@@ -191,7 +191,7 @@ class Config:
 
 
 def _load_notify_env(config: Config, path: str) -> None:
-    """Load values from .notify-env file (same format bridges use).
+    """Load values from config file (same format bridges use).
 
     Only fills in values not already set by environment variables.
     This mirrors how agent-bridge.py and slack-bridge.py load config.
@@ -222,7 +222,7 @@ def _load_notify_env(config: Config, path: str) -> None:
     if not config.dashboard_token:
         config.dashboard_token = env.get("AILY_AUTH_TOKEN", "")
 
-    # SSH hosts from .notify-env if not already set from env var
+    # SSH hosts from config file if not already set from env var
     if config.ssh_hosts == ["localhost"]:
         hosts = env.get("SSH_HOSTS", "")
         if hosts:
@@ -234,7 +234,7 @@ def _load_notify_env(config: Config, path: str) -> None:
     if not config.openai_api_key:
         config.openai_api_key = env.get("OPENAI_API_KEY", "")
 
-    # Agent auto-launch from .notify-env if not already set
+    # Agent auto-launch from config file if not already set
     if not config.new_session_agent:
         config.new_session_agent = env.get("NEW_SESSION_AGENT", "").lower().strip()
     if not config.claude_remote_control:
