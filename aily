@@ -800,6 +800,7 @@ cmd_init() {
   echo ""
   info "Run 'aily status' to verify configuration"
   info "Run 'aily doctor' to diagnose issues"
+  info "To add SSH hosts: aily config set SSH_HOSTS \"localhost,your-server\""
   echo ""
 }
 
