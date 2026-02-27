@@ -187,12 +187,18 @@ def load_env(env_path: str) -> dict:
 
 
 def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
-    """Run a command over SSH. Returns (returncode, stdout)."""
+    """Run a command over SSH (or locally for localhost). Returns (returncode, stdout)."""
     try:
-        result = subprocess.run(
-            ["ssh", host, cmd],
-            capture_output=True, text=True, timeout=timeout
-        )
+        if host in ("localhost", "127.0.0.1", "::1"):
+            result = subprocess.run(
+                ["bash", "-c", cmd],
+                capture_output=True, text=True, timeout=timeout
+            )
+        else:
+            result = subprocess.run(
+                ["ssh", host, cmd],
+                capture_output=True, text=True, timeout=timeout
+            )
         return result.returncode, result.stdout.strip()
     except subprocess.TimeoutExpired:
         return 1, ""
