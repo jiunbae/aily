@@ -3,7 +3,7 @@
 import hashlib, json, os, sys, glob, re
 
 _xdg_data = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
-STATE_FILE = os.path.join(_xdg_data, "aily", "last-notified")
+STATE_DIR = os.path.join(_xdg_data, "aily", "dedup")
 
 def get_project_dir(cwd):
     sanitized = cwd.replace("/", "-")
@@ -100,21 +100,27 @@ def extract_last_assistant_text(jsonl_path, max_chars=1000):
     return None
 
 
-def was_already_sent(text):
-    """Check if this exact message was already sent (dedup)."""
+def _state_file_for(jsonl_path):
+    """Per-session dedup state file based on JSONL filename."""
+    basename = os.path.splitext(os.path.basename(jsonl_path))[0]
+    return os.path.join(STATE_DIR, basename)
+
+
+def was_already_sent(jsonl_path, text):
+    """Check if this exact message was already sent for this session."""
     msg_hash = hashlib.md5(text.encode()).hexdigest()
     try:
-        with open(STATE_FILE) as f:
+        with open(_state_file_for(jsonl_path)) as f:
             return f.read().strip() == msg_hash
     except FileNotFoundError:
         return False
 
 
-def mark_as_sent(text):
-    """Record this message hash to prevent re-sends."""
+def mark_as_sent(jsonl_path, text):
+    """Record this message hash to prevent re-sends for this session."""
     msg_hash = hashlib.md5(text.encode()).hexdigest()
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    with open(STATE_FILE, "w") as f:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(_state_file_for(jsonl_path), "w") as f:
         f.write(msg_hash)
 
 def main():
@@ -126,9 +132,9 @@ def main():
     text = extract_last_assistant_text(jsonl)
     if not text:
         sys.exit(0)
-    if was_already_sent(text):
+    if was_already_sent(jsonl, text):
         sys.exit(0)
-    mark_as_sent(text)
+    mark_as_sent(jsonl, text)
     print(text)
 
 if __name__ == "__main__":
