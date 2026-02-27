@@ -215,6 +215,24 @@ def find_session_host(session_name: str) -> str | None:
     return None
 
 
+def send_keys_raw(host: str, session: str, keys: str) -> bool:
+    """Send raw tmux key sequences (e.g., C-c, C-d, C-z) to a session."""
+    safe_session = shlex.quote(session)
+    rc, _ = run_ssh(host, f"tmux send-keys -t {safe_session} {keys}")
+    return rc == 0
+
+
+# Shortcut commands: Discord message → tmux key sequence
+_SHORTCUTS = {
+    "!c":     "C-c",
+    "!d":     "C-d",
+    "!z":     "C-z",
+    "!q":     "q",
+    "!enter": "Enter",
+    "!esc":   "Escape",
+}
+
+
 def send_to_tmux(host: str, session: str, message: str) -> bool:
     """Send a message to a tmux session's Claude Code."""
     safe_session = shlex.quote(session)
@@ -325,11 +343,39 @@ def capture_shell_output(
 
     new_lines = post_lines[common_len:]
 
-    # Strip trailing empty lines
-    while new_lines and not new_lines[-1].strip():
+    # Strip prompt/decoration lines from both ends
+    while new_lines and (not new_lines[-1].strip() or _is_prompt_line(new_lines[-1])):
         new_lines.pop()
+    while new_lines and (not new_lines[0].strip() or _is_prompt_line(new_lines[0])):
+        new_lines.pop(0)
+
+    # Also strip the command echo line (first line often repeats the sent command)
+    # e.g. " ls" or "❯ pwd" — matches if it looks like a typed command
+    if new_lines and re.match(r'^[❯$%>]\s+\S', new_lines[0].strip()):
+        new_lines.pop(0)
 
     return '\n'.join(new_lines)
+
+
+def _is_prompt_line(line: str) -> bool:
+    """Detect common shell prompt lines (powerline, starship, p10k, plain)."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    # Strip ANSI escape codes for clean matching
+    clean = re.sub(r'\x1b\[[0-9;]*m', '', stripped)
+
+    # Lines containing many box-drawing chars (─, ═, ━) — prompt decorations
+    decor_count = sum(1 for c in clean if c in '─═━')
+    if decor_count >= 5:
+        return True
+    # Lines ending with common prompt chars
+    if clean.rstrip().endswith(('❯', '$ ', '% ', '> ', '$', '%', '>')):
+        return True
+    # Lines starting with prompt indicators
+    if re.match(r'^\s*[❯$%>]\s*$', clean):
+        return True
+    return False
 
 
 # --- Discord REST helpers ---
@@ -410,7 +456,10 @@ async def create_thread(http: aiohttp.ClientSession, token: str,
             "Type a message here to forward it to the tmux session.\n\n"
             "**Commands:**\n"
             "`!sessions` \u2014 list all sessions\n"
-            f"`!kill {session_name}` \u2014 kill this session + archive thread"
+            f"`!kill {session_name}` \u2014 kill this session + archive thread\n\n"
+            "**Shortcuts:**\n"
+            "`!c` Ctrl+C \u2022 `!d` Ctrl+D \u2022 `!z` Ctrl+Z\n"
+            "`!q` quit pager \u2022 `!esc` Escape \u2022 `!enter` Enter"
         )
         await post_message(http, token, thread_id, welcome)
     return thread_id
@@ -502,6 +551,10 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
         await post_message(http, token, reply_to,
             f"Failed to create tmux session `{session_name}` on `{host}`.")
         return
+
+    # Set marker so thread-sync.sh skips this session (bridge handles the thread)
+    marker_cmd = f"tmux set-environment -t {safe_name} AILY_BRIDGE_MANAGED 1"
+    await asyncio.to_thread(run_ssh, host, marker_cmd)
 
     # Launch agent in session (if configured)
     agent_cmd = _build_agent_command(NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL)
@@ -766,15 +819,21 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
     channel_id = message.get("channel_id", "")
     content = message.get("content", "").strip()
 
-    # Handle ! commands (work in main channel AND threads)
-    if content.startswith("!"):
+    # Check if we're in an [agent] thread first (for shortcuts)
+    ch = await discord_request(http, token, "GET", f"/channels/{channel_id}")
+    is_agent_thread = (isinstance(ch, dict) and ch.get("type") in (11, 12)
+                       and parse_thread_name(ch.get("name", "")))
+
+    # In agent threads: handle shortcuts before global commands
+    if is_agent_thread and content.lower() in _SHORTCUTS:
+        pass  # fall through to thread handler below
+    elif content.startswith("!"):
         print(f"[bridge] command: {content[:80]}")
         await handle_command(http, token, channel_id, message)
         return
 
     # Forward messages in [agent] threads to tmux
-    ch = await discord_request(http, token, "GET", f"/channels/{channel_id}")
-    if not isinstance(ch, dict) or ch.get("type") not in (11, 12):
+    if not is_agent_thread:
         return
 
     thread_name = ch.get("name", "")
@@ -794,6 +853,17 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
         await post_message(http, token, channel_id,
             f"Session `{session_name}` not found on any host.\n"
             f"Available hosts: {', '.join(SSH_HOSTS)}")
+        return
+
+    # Handle shortcut commands (e.g., !c → Ctrl+C)
+    shortcut_key = _SHORTCUTS.get(user_message.lower())
+    if shortcut_key:
+        sent = await asyncio.to_thread(send_keys_raw, host, session_name, shortcut_key)
+        label = user_message.upper().replace("!", "")
+        if sent:
+            await post_message(http, token, channel_id, f"Sent `{shortcut_key}` to `{session_name}`")
+        else:
+            await post_message(http, token, channel_id, f"Failed to send `{shortcut_key}` to `{session_name}`")
         return
 
     await post_message(http, token, channel_id,
@@ -899,6 +969,7 @@ async def gateway_connect(token: str):
                     if s is not None:
                         sequence = s
 
+
                     # Hello — identify and start heartbeating
                     if op == 10:
                         heartbeat_interval = d["heartbeat_interval"] / 1000
@@ -933,10 +1004,24 @@ async def gateway_connect(token: str):
                               file=sys.stderr)
                         break
 
+                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                    print(f"[bridge] WebSocket CLOSE: code={ws.close_code} data={msg.data} extra={msg.extra}",
+                          file=sys.stderr)
+                    break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED,
                                   aiohttp.WSMsgType.ERROR):
-                    print(f"[bridge] WebSocket closed/error", file=sys.stderr)
+                    print(f"[bridge] WebSocket closed/error: type={msg.type} data={msg.data} extra={msg.extra}",
+                          file=sys.stderr)
                     break
+
+            # Log close reason for debugging
+            if ws.close_code:
+                print(f"[bridge] Gateway closed: code={ws.close_code}", file=sys.stderr)
+                if ws.close_code == 4014:
+                    print("[bridge] ERROR: Message Content Intent not enabled in Discord Developer Portal",
+                          file=sys.stderr)
+                    print("[bridge] Enable it at: https://discord.com/developers/applications → Bot → Privileged Intents",
+                          file=sys.stderr)
 
 
 async def heartbeat_loop(ws, interval: float, get_sequence):

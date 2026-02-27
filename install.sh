@@ -88,36 +88,34 @@ if not isinstance(hooks, dict):
     hooks = {}
     settings["hooks"] = hooks
 
-notification = hooks.get("Notification")
-if notification is None:
-    notification = []
-elif not isinstance(notification, list):
-    notification = []
-hooks["Notification"] = notification
-
-# Check if our hook already exists
 def is_our_hook(h: dict) -> bool:
     cmd = h.get("command", "")
     return "notify-clawdia" in cmd or "notify-claude" in cmd
 
-found = False
-for group in notification:
-    if not isinstance(group, dict):
-        continue
-    group_hooks = group.get("hooks")
-    if not isinstance(group_hooks, list):
-        continue
-    for h in group_hooks:
-        if not isinstance(h, dict):
-            continue
-        if is_our_hook(h):
-            found = True
-            break
-    if found:
-        break
+def ensure_hook(hooks: dict, event_name: str, desired: dict) -> bool:
+    """Ensure desired hook exists under event_name. Returns True if added."""
+    event = hooks.get(event_name)
+    if not isinstance(event, list):
+        event = []
+        hooks[event_name] = event
 
-if not found:
-    notification.append({"hooks": [desired_hook]})
+    for group in event:
+        if not isinstance(group, dict):
+            continue
+        group_hooks = group.get("hooks")
+        if not isinstance(group_hooks, list):
+            continue
+        for h in group_hooks:
+            if isinstance(h, dict) and is_our_hook(h):
+                return False
+    event.append({"hooks": [desired]})
+    return True
+
+changed = False
+changed |= ensure_hook(hooks, "Notification", desired_hook)
+changed |= ensure_hook(hooks, "Stop", desired_hook)
+
+if changed:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
@@ -289,7 +287,8 @@ echo "=== tmux session hooks ==="
 SYNC_SCRIPT="$HOOKS_DIR/thread-sync.sh"
 if [[ -x "$SYNC_SCRIPT" ]]; then
   if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
-    session_count=$(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')
+    # Exclude infrastructure sessions (aily-bridge, slack-bridge)
+    session_count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
 
     # Ask before enabling auto-sync (default yes in non-interactive)
     _reply="y"
@@ -319,6 +318,8 @@ if [[ -x "$SYNC_SCRIPT" ]]; then
         fi
         if [[ "${_reply2:-n}" =~ ^[Yy]$ ]]; then
           while IFS= read -r _sess; do
+            # Skip infrastructure sessions
+            [[ "$_sess" == "aily-bridge" || "$_sess" == "slack-bridge" || "$_sess" == "aily-dashboard" ]] && continue
             "$SYNC_SCRIPT" create "$_sess" 2>/dev/null &
             echo "  ✓ Synced: $_sess"
           done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)

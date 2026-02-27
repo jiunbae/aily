@@ -16,7 +16,12 @@ if [[ -z "$MODE" || -z "$SESSION_NAME" ]]; then
 fi
 
 # Skip infrastructure sessions
-if [[ "$SESSION_NAME" == "agent-bridge" || "$SESSION_NAME" == "slack-bridge" ]]; then
+if [[ "$SESSION_NAME" == "aily-bridge" || "$SESSION_NAME" == "slack-bridge" || "$SESSION_NAME" == "aily-dashboard" ]]; then
+  exit 0
+fi
+
+# Skip sessions created by the bridge (it handles thread creation itself)
+if [[ "$MODE" == "create" ]] && tmux show-environment -t "$SESSION_NAME" AILY_BRIDGE_MANAGED 2>/dev/null | grep -q '=1'; then
   exit 0
 fi
 
