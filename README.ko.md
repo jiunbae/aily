@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/banner.svg" alt="aily — AI 에이전트 세션 브릿지" width="700"/>
+<img src="docs/banner.svg" alt="aily — AI agent session bridge" width="700"/>
 
 <br/>
 
@@ -16,47 +16,59 @@ AI 코딩 에이전트의 tmux 세션과 채팅 플랫폼 간 완전한 I/O 브�
 
 </div>
 
-## 에이전트 빠른 시작
+## Quickstart for Agents
 
 <div><img src="https://quickstart-for-agents.vercel.app/api/header.svg?theme=claude-code&mascot=wave&title=Install+aily&lang=Agents" width="100%" /></div>
 
 ```
-aily 설치 — Discord/Slack용 AI 에이전트 세션 브릿지 (https://github.com/jiunbae/aily).
-설치: `git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init`
-  (또는: `npm install -g aily-cli && aily init`)
-위저드가 물어봅니다: 플랫폼 (Discord/Slack/both) → 봇 토큰 → 채널 ID → 완료.
-대시보드, SSH 호스트, 에이전트 자동 실행은 선택사항입니다 ("기본값 사용?" 거부 시 표시).
-설정은 ~/.config/aily/env에 저장됩니다. `aily status`로 확인, `aily doctor`로 진단.
+Install aily — AI agent session bridge for Discord/Slack (https://github.com/jiunbae/aily).
+Install: `git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init`
+  (or: `npm install -g aily-cli && aily init`)
+The wizard asks: platform (Discord/Slack/both) → bot token → channel ID → done.
+Dashboard, SSH hosts, and agent auto-launch are optional (shown when "Use defaults?" is declined).
+Config is saved to ~/.config/aily/env. Run `aily status` to verify, `aily doctor` to diagnose.
 ```
 
 <div><img src="https://quickstart-for-agents.vercel.app/api/footer.svg?theme=claude-code" width="100%" /></div>
 
-## 빠른 시작
+## Quick Start
 
-> **사전 요구:** [Node.js](https://nodejs.org/) >= 14
+> **사전 요구:** `bash`, `curl`, `jq`, `tmux`, `python3` — Node.js는 `npm install` 방식에만 필요합니다.
 
 `aily init`이 모든 것을 안내합니다:
 
 <details>
-<summary><code>$ aily init</code> — 위저드 출력</summary>
+<summary><code>$ aily init</code> — wizard output</summary>
 
 ```
 $ aily init
 
 === aily setup wizard ===
 
-  1) Notification platform
-     > discord / slack / both
+  Notification platform
+  > discord   Discord bot
+    slack     Slack bot
+    both      Discord + Slack
 
-  Discord bot token [****...abcd]: ... OK
-  Discord channel ID [12345...]: ... OK
-  ✓ Discord: ai-notifications
+  Discord bot token [****]: ✓
+  Discord channel ID [1234...]: ✓
+  ✓ Discord: #ai-notifications
+    ✓ Send Messages
+    ✓ Manage Threads
 
   Defaults: SSH=localhost, cleanup=archive, no agent, no dashboard
   Use defaults? [Y/n]: y
 
   ✓ Saved to ~/.config/aily/env (chmod 600)
-  ✓ Claude Code, Codex CLI, Gemini CLI configured
+
+  === Installing notification hooks ===
+    ✓ notify-claude.sh
+    ✓ notify-codex.py
+    ✓ notify-gemini.sh
+    ✓ notify-opencode.mjs
+
+  Start Discord bridge bot? [Y/n]: y
+  ✓ Bridge started (tmux session: aily-bridge)
 
 === Setup complete ===
 ```
@@ -64,36 +76,33 @@ $ aily init
 </details>
 
 <details>
-<summary><b>수동 설치</b></summary>
+<summary><b>Manual Install</b></summary>
 
-사전 요구: macOS 또는 Linux, `curl`, `jq`, `tmux`, Node.js >= 14, 대상 호스트에 SSH 키 기반 접근.
+사전 요구: macOS 또는 Linux, `bash`, `curl`, `jq`, `tmux`, `python3`, 대상 호스트에 SSH 키 기반 접근. Node.js는 npm 방식에만 필요합니다.
 
 ```bash
-# npm (권장)
+# npm
 npm install -g aily-cli && aily init
 
-# npx (설치 없이)
+# npx (no install)
 npx aily-cli init
 
-# curl로 대시보드에서
-curl -sSL https://aily.jiun.dev/api/install.sh | bash
-
-# git clone
-git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
+# git clone (recommended)
+git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init
 ```
 
 </details>
 
 <details>
-<summary><b>CLI 레퍼런스</b></summary>
+<summary><b>CLI Reference</b></summary>
 
-| 명령어 | 설명 |
-|--------|------|
+| Command | Description |
+|---------|-------------|
 | `aily init` | 대화형 설정 위저드 (인증정보, 훅, 에이전트) |
 | `aily init --non-interactive` | 헤드리스 모드 — 환경변수에서 읽음 |
 | `aily status` | 플랫폼 연결 상태 및 설정 표시 |
 | `aily doctor` | 일반적인 문제 진단 |
-| `aily sessions` | 대시보드에서 활성 세션 목록 |
+| `aily sessions` | 활성 세션 목록 |
 | `aily sync [name]` | 세션의 메시지 동기화 트리거 |
 | `aily logs [name]` | 세션의 최근 메시지 조회 |
 | `aily config show` | 현재 설정 표시 (토큰 가려짐) |
@@ -113,7 +122,7 @@ git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
 
 </details>
 
-## 설정 후 동작
+## What Happens After Setup
 
 설치 후 aily는 백그라운드에서 자동으로 동작합니다:
 
@@ -126,31 +135,31 @@ git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
 
 Discord/Slack에서 직접 세션을 관리할 수도 있습니다: `!new <name> [host]`, `!kill <name>`, `!sessions`. 스레드 안에서는 단축키로 키 시퀀스를 보낼 수 있습니다: `!c` (Ctrl+C), `!d` (Ctrl+D), `!z` (Ctrl+Z), `!q`, `!enter`, `!esc`.
 
-단방향 알림 도구와 달리, aily는 **완전한 세션 브릿지**를 제공합니다 — 출력 모니터링, 입력 전달, 그리고 `aily attach`로 동일한 터미널 화면에 바로 연결할 수 있습니다.
+단방향 알림 도구와 달리, aily는 **완전한 세션 브릿지**를 제공합니다 — 출력 모니터링, 입력 전달, `aily attach`로 동일한 터미널 화면에 바로 연결할 수 있습니다.
 
-## 브릿지
+## Bridge
 
 브릿지 봇은 Discord/Slack에 연결되어 양방향 통신을 가능하게 합니다 — 메시지를 tmux 세션으로 전달하고 출력을 다시 릴레이합니다. `aily init`이 자동 시작을 제안합니다.
 
 ```bash
-aily bridge start     # tmux 세션에서 실행 (aily-bridge)
-aily bridge status    # 실행 상태 확인
-aily bridge logs      # 최근 출력 보기
-aily bridge restart   # 설정 변경 후 재시작
+aily bridge start     # runs in a tmux session (aily-bridge)
+aily bridge status    # check if running
+aily bridge logs      # view recent output
+aily bridge restart   # restart after config changes
 ```
 
-**브릿지 명령어** (Discord/Slack에서):
+**Bridge commands** (Discord/Slack에서):
 
-| 명령어 | 설명 |
-|--------|------|
+| Command | Description |
+|---------|-------------|
 | `!new <name> [host]` | 새 tmux 세션 + 스레드 생성 |
 | `!kill <name>` | tmux 세션 종료 및 스레드 보관 |
 | `!sessions` | 전체 호스트의 활성 세션 목록 |
 
-**스레드 단축키** (에이전트 스레드 안에서):
+**Thread shortcuts** (에이전트 스레드 안에서):
 
-| 단축키 | 전송 |
-|--------|------|
+| Shortcut | Sends |
+|----------|-------|
 | `!c` | Ctrl+C |
 | `!d` | Ctrl+D |
 | `!z` | Ctrl+Z |
@@ -160,78 +169,78 @@ aily bridge restart   # 설정 변경 후 재시작
 
 스레드에 입력하는 다른 모든 메시지는 `tmux send-keys`를 통해 세션으로 직접 전달됩니다.
 
-## 동작 원리
+## How It Works
 
 ```mermaid
 flowchart LR
-    A["에이전트\n(Claude / Codex / Gemini)"] --> B["Hook\n(post.sh)"]
-    B --> C["Discord 스레드"]
-    B --> D["Slack 스레드"]
-    B --> E["대시보드 API"]
+    A["Agent\n(Claude / Codex / Gemini)"] --> B["Hook\n(post.sh)"]
+    B --> C["Discord thread"]
+    B --> D["Slack thread"]
+    B --> E["Dashboard API"]
 
-    C --> F["브릿지"]
+    C --> F["Bridge"]
     D --> F
     F -->|"SSH + tmux send-keys"| A
     A -.->|"capture-pane"| F
 ```
 
-각 tmux 세션은 플랫폼마다 전용 스레드(`[agent] <세션명>`)를 갖습니다. 작업 완료, 대화형 프롬프트, 오류가 해당 스레드에 게시됩니다. 스레드에 답장하면 에이전트에게 입력이 전달됩니다.
+각 tmux 세션은 플랫폼마다 전용 스레드(`[agent] <session-name>`)를 갖습니다. 작업 완료, 대화형 프롬프트, 오류가 해당 스레드에 게시됩니다. 스레드에 답장하면 에이전트에게 입력이 전달됩니다.
 
-자세한 내용은 [아키텍처](docs/architecture.md)를 참고하세요.
+자세한 내용은 [Architecture](docs/architecture.md)를 참고하세요.
 
-## 대시보드
+## Dashboard
 
 웹 대시보드는 호스트 간 세션을 모니터링하고 관리하는 실시간 UI를 제공합니다. WebSocket을 통한 실시간 세션 상태, 전체 메시지 기록, 입력 전송 컨트롤, 로그인 인증, 다크/라이트 테마, 모바일 친화적 레이아웃을 포함합니다.
 
 ```bash
-aily dashboard start   # 백그라운드 프로세스로 실행
-aily dashboard status  # 실행 상태 확인
-aily dashboard logs    # 최근 출력 보기
-aily dashboard stop    # 프로세스 중지
+aily dashboard start   # runs as a background process
+aily dashboard status  # check if running
+aily dashboard logs    # tail recent output
+aily dashboard stop    # stop the process
 ```
 
-API 라우트와 REST 엔드포인트는 [API 레퍼런스](docs/api.md)를 참고하세요.
+API 라우트와 REST 엔드포인트는 [API Reference](docs/api.md)를 참고하세요.
 
-## 지원 에이전트
+## Supported Agents
 
-| 에이전트 | 훅 타입 | 추출기 |
-|----------|---------|--------|
-| [![Claude Code](https://img.shields.io/badge/Claude_Code-hook-blueviolet)](https://docs.anthropic.com/en/docs/claude-code) | `Notification` + `Stop` | JSONL 세션 파서 |
-| [![Codex CLI](https://img.shields.io/badge/Codex_CLI-hook-green)](https://github.com/openai/codex) | `notify` | stdin 메시지 |
+| Agent | Hook Type | Extractor |
+|-------|-----------|-----------|
+| [![Claude Code](https://img.shields.io/badge/Claude_Code-hook-blueviolet)](https://docs.anthropic.com/en/docs/claude-code) | `Notification` + `Stop` | JSONL session parser |
+| [![Codex CLI](https://img.shields.io/badge/Codex_CLI-hook-green)](https://github.com/openai/codex) | `notify` | stdin message |
 | [![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-hook-orange)](https://github.com/google-gemini/gemini-cli) | `AfterAgent` | stdin JSON |
-| [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-teal)](https://github.com/opencode-ai/opencode) | 플러그인 (`aily-notify.mjs`) | 이벤트 훅 |
+| [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-teal)](https://github.com/opencode-ai/opencode) | Plugin (`aily-notify.mjs`) | Event hook |
 
-## 설정
+## Configuration
 
 `aily init`이 모든 인증정보를 포함한 `~/.config/aily/env`를 생성합니다. `aily config show`로 확인하세요.
 
 <details>
-<summary><b>설정 레퍼런스 (~/.config/aily/env)</b></summary>
+<summary><b>Config reference (~/.config/aily/env)</b></summary>
 
 ```env
-# Discord (선택)
+# Discord (optional)
 DISCORD_BOT_TOKEN="your-bot-token"
 DISCORD_CHANNEL_ID="your-channel-id"
 
-# Slack (선택)
+# Slack (optional)
 SLACK_BOT_TOKEN="xoxb-your-slack-bot-token"
 SLACK_APP_TOKEN="xapp-your-slack-app-level-token"
 SLACK_CHANNEL_ID="C0123456789"
 
-# 대시보드
+# Dashboard
 AILY_DASHBOARD_URL="https://aily.jiun.dev"
 AILY_AUTH_TOKEN="your-auth-token"
 
-# 멀티호스트 (쉼표로 구분된 SSH 대상)
+# Multi-host (comma-separated SSH targets)
 SSH_HOSTS="host1,host2"
 
-# 세션 종료 시 스레드 처리: "archive" (기본값) 또는 "delete"
+# Thread cleanup on session kill: "archive" (default) or "delete"
 THREAD_CLEANUP="archive"
 
-# tmux 세션 시작/종료 시 자동 스레드 생성/보관 (기본값: true)
+# Auto-create/archive threads on tmux session start/close (default: true)
 # TMUX_THREAD_SYNC="true"
 
-# 특정 플랫폼 강제 지정 (기본값: 토큰에서 자동 감지)
+# Force specific platforms (default: auto-detect from tokens)
 # NOTIFY_PLATFORMS="discord,slack"
 ```
 
@@ -240,9 +249,9 @@ THREAD_CLEANUP="archive"
 </details>
 
 <details>
-<summary><b>Discord 봇 설정</b></summary>
+<summary><b>Discord Bot Setup</b></summary>
 
-1. [Discord 개발자 포털](https://discord.com/developers/applications)에서 새 애플리케이션 생성
+1. [Discord Developer Portal](https://discord.com/developers/applications)에서 새 애플리케이션 생성
 2. **Bot**에서 토큰을 리셋 (이것이 `DISCORD_BOT_TOKEN`)하고 **Message Content Intent** 활성화
 3. **OAuth2 > URL Generator**에서 스코프 `bot` 선택, 권한: Send Messages, Create/Send/Manage Threads, Read Message History
 4. 생성된 URL로 봇을 초대한 뒤, 대상 채널의 ID를 복사 (`DISCORD_CHANNEL_ID`)
@@ -250,7 +259,7 @@ THREAD_CLEANUP="archive"
 </details>
 
 <details>
-<summary><b>Slack 앱 설정</b></summary>
+<summary><b>Slack App Setup</b></summary>
 
 1. [api.slack.com/apps](https://api.slack.com/apps)에서 새 앱 생성 후 **Socket Mode** 활성화 (`SLACK_APP_TOKEN` 생성됨)
 2. 봇 토큰 스코프 추가: `chat:write`, `channels:history`, `channels:read`, `reactions:write`
@@ -260,40 +269,40 @@ THREAD_CLEANUP="archive"
 
 </details>
 
-## 멀티호스트 설정
+## Multi-host Setup
 
-다른 머신에서 실행 중인 에이전트의 알림을 릴레이하려면 원격 SSH 호스트를 추가하세요:
+원격 머신의 tmux 세션도 Discord/Slack 채널에 브릿지할 수 있습니다:
 
 ```bash
-# 원격 호스트에 aily 배포 (파일 복사, 설정 복사, init 실행)
+# Deploy aily to a remote host (copies files, config, runs init)
 aily deploy my-server
 
-# 또는 수동으로 호스트 추가
+# Or manually add a host
 aily config set SSH_HOSTS "localhost,my-server"
 ```
 
-`aily deploy`는: SSH 연결 테스트 → 원격 호스트에 aily 클론 → 설정 복사 → `aily init --non-interactive` 실행 → `SSH_HOSTS`에 추가. 키 기반 SSH 접근이 필요합니다 (비밀번호 프롬프트 없이). 편의를 위해 `~/.ssh/config` 호스트 별칭을 사용하세요.
+`aily deploy`는: SSH 연결 테스트 → 원격 호스트에 aily 클론 → 설정 복사 → `aily init --non-interactive` 실행 → `SSH_HOSTS`에 추가. 키 기반 SSH 접근이 필요합니다 (비밀번호 프롬프트 없이). `~/.ssh/config` 호스트 별칭을 사용하세요.
 
-## Docker / Kubernetes
+## Docker
 
 Dockerfile은 `BRIDGE_MODE`를 통해 세 가지 모드를 지원합니다:
 
 ```bash
-# Discord 브릿지
+# Discord bridge
 docker run -e BRIDGE_MODE=discord \
   -e DISCORD_BOT_TOKEN=... -e DISCORD_CHANNEL_ID=... \
   -e SSH_HOSTS=... aily
 
-# Slack 브릿지
+# Slack bridge
 docker run -e BRIDGE_MODE=slack \
   -e SLACK_BOT_TOKEN=... -e SLACK_APP_TOKEN=... -e SLACK_CHANNEL_ID=... \
   -e SSH_HOSTS=... aily
 
-# 대시보드
+# Dashboard
 docker run -e BRIDGE_MODE=dashboard -p 8080:8080 aily
 ```
 
-Docker 외부에서 브릿지를 실행하려면 Python 3.10+이 필요합니다. Kubernetes의 경우 포함된 kustomize 오버레이로 ArgoCD를 통해 배포하세요. CI 파이프라인(Gitea Actions)이 멀티 아키텍처 이미지를 빌드하고 IaC 저장소를 자동 업데이트합니다.
+Docker 외부에서 브릿지를 실행하려면 Python 3.10+과 `aiohttp`가 필요합니다.
 
 ---
 
@@ -377,6 +386,6 @@ For the full English documentation, see [README.md](README.md).
 
 </details>
 
-## 라이선스
+## License
 
 [MIT](LICENSE)
