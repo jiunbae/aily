@@ -6,7 +6,7 @@ Monitors Discord threads named [agent] <session> and forwards user messages
 to the corresponding tmux session's Claude Code instance via SSH.
 
 Also handles ! commands for session/thread lifecycle management:
-  !new <name> [host]  — create tmux session + Discord thread
+  !new <name> [host|dir] [dir] [-- cmd] — create tmux session + Discord thread
   !kill <name>        — kill tmux session + archive Discord thread
   !sessions           — list all sessions with sync status
 
@@ -518,7 +518,8 @@ async def handle_command(http: aiohttp.ClientSession, token: str,
     cmd = parts[0].lower() if parts else ""
 
     if cmd == "!new":
-        await cmd_new(http, token, channel_id, parts)
+        raw_after_cmd = content[len("!new"):].strip()
+        await cmd_new(http, token, channel_id, raw_after_cmd)
     elif cmd == "!kill":
         await cmd_kill(http, token, channel_id, parts)
     elif cmd in ("!sessions", "!ls"):
@@ -527,21 +528,47 @@ async def handle_command(http: aiohttp.ClientSession, token: str,
         await cmd_queue(http, token, channel_id, parts)
     else:
         await post_message(http, token, channel_id,
-            "Unknown command. Available: `!new <name> [host] [pwd]`, `!kill <name>`, `!sessions`, `!queue`")
+            "Unknown command. Available: `!new <name> [host|dir] [dir] [-- cmd]`, `!kill <name>`, `!sessions`, `!queue`")
 
 
 async def cmd_new(http: aiohttp.ClientSession, token: str,
-                  reply_to: str, parts: list[str]):
-    """!new <session_name> [host] [pwd] — create tmux session + Discord thread."""
-    if len(parts) < 2:
+                  reply_to: str, raw_args: str):
+    """!new <name> [host|dir] [dir] [-- cmd] — create tmux session + Discord thread."""
+    if not raw_args:
         await post_message(http, token, reply_to,
-            "Usage: `!new <session_name> [host] [pwd]`\n"
+            "Usage: `!new <name> [host|dir] [dir] [-- command]`\n"
             f"Available hosts: `{'`, `'.join(SSH_HOSTS)}`")
         return
 
-    session_name = parts[1]
-    host = parts[2] if len(parts) > 2 else DEFAULT_HOST
-    working_dir = parts[3] if len(parts) > 3 else DEFAULT_WORKING_DIR or None
+    # Split off shell command after --
+    shell_cmd = None
+    if " -- " in raw_args:
+        args_part, shell_cmd = raw_args.split(" -- ", 1)
+        shell_cmd = shell_cmd.strip()
+    else:
+        args_part = raw_args
+
+    parts = args_part.split()
+    if not parts:
+        await post_message(http, token, reply_to,
+            "Usage: `!new <name> [host|dir] [dir] [-- command]`\n"
+            f"Available hosts: `{'`, `'.join(SSH_HOSTS)}`")
+        return
+
+    session_name = parts[0]
+
+    # Parse host and working_dir: !new <name> [host] [dir] or !new <name> [dir]
+    # If the arg starts with / or ~ it's a directory, not a host
+    host = DEFAULT_HOST
+    working_dir = DEFAULT_WORKING_DIR or None
+    rest = parts[1:]
+    if rest:
+        if rest[0].startswith("/") or rest[0].startswith("~"):
+            working_dir = rest[0]
+        else:
+            host = rest[0]
+            if len(rest) > 1:
+                working_dir = rest[1]
 
     if not is_valid_session_name(session_name):
         await post_message(http, token, reply_to,
@@ -575,17 +602,26 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
     marker_cmd = f"tmux set-environment -t {safe_name} AILY_BRIDGE_MANAGED 1"
     await asyncio.to_thread(run_ssh, host, marker_cmd)
 
-    # Launch agent in session (if configured)
-    agent_cmd = _build_agent_command(NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL)
+    # Launch shell command or agent in session
     agent_label = ""
-    if agent_cmd:
-        # Small delay for shell initialization
+    if shell_cmd:
+        # User-provided command takes priority over auto-launch agent
         await asyncio.sleep(0.5)
-        launched = await asyncio.to_thread(send_to_tmux, host, session_name, agent_cmd)
+        launched = await asyncio.to_thread(send_to_tmux, host, session_name, shell_cmd)
         if launched:
-            agent_label = f" | agent: `{agent_cmd}`"
+            agent_label = f" | cmd: `{shell_cmd}`"
         else:
-            agent_label = f" | failed to launch `{agent_cmd}`"
+            agent_label = f" | failed to run `{shell_cmd}`"
+    else:
+        # Launch agent in session (if configured)
+        agent_cmd = _build_agent_command(NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL)
+        if agent_cmd:
+            await asyncio.sleep(0.5)
+            launched = await asyncio.to_thread(send_to_tmux, host, session_name, agent_cmd)
+            if launched:
+                agent_label = f" | agent: `{agent_cmd}`"
+            else:
+                agent_label = f" | failed to launch `{agent_cmd}`"
 
     # Create Discord thread
     cwd_label = f" in `{working_dir}`" if working_dir else ""
@@ -859,8 +895,17 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
     session_name = parse_thread_name(thread_name)
     if not session_name:
         return
-    user_message = content
     user_name = author.get("username", "unknown")
+
+    # Build message: text content + attachment URLs
+    parts_msg = []
+    if content:
+        parts_msg.append(content)
+    for att in message.get("attachments", []):
+        url = att.get("url", "")
+        if url:
+            parts_msg.append(url)
+    user_message = " ".join(parts_msg)
 
     if not user_message:
         return
@@ -884,6 +929,9 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
         else:
             await post_message(http, token, channel_id, f"Failed to send `{shortcut_key}` to `{session_name}`")
         return
+
+    # Show typing indicator for faster perceived response
+    await discord_request(http, token, "POST", f"/channels/{channel_id}/typing")
 
     await post_message(http, token, channel_id,
         f"Forwarding to `{session_name}` on `{host}`...")
@@ -945,7 +993,7 @@ async def gateway_connect(token: str):
             lines = [
                 "**aily bridge connected**",
                 "Available commands:",
-                "- `!new <name> [host] [pwd]` — create tmux session",
+                "- `!new <name> [host|dir] [dir] [-- cmd]` — create tmux session",
                 "- `!kill <name>` — kill tmux session",
                 "- `!sessions` — list active sessions",
                 "- `!queue` — list / add / execute deferred commands",
