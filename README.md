@@ -33,7 +33,7 @@ Config is saved to ~/.config/aily/env. Run `aily status` to verify, `aily doctor
 
 ## Quick Start
 
-> **Prerequisite:** [Node.js](https://nodejs.org/) >= 14
+> **Prerequisites:** `bash`, `curl`, `jq`, `tmux`, `python3` — Node.js only needed for `npm install` method.
 
 `aily init` walks you through everything:
 
@@ -45,18 +45,30 @@ $ aily init
 
 === aily setup wizard ===
 
-  1) Notification platform
-     > discord / slack / both
+  Notification platform
+  > discord   Discord bot
+    slack     Slack bot
+    both      Discord + Slack
 
-  Discord bot token [****...abcd]: ... OK
-  Discord channel ID [12345...]: ... OK
-  ✓ Discord: ai-notifications
+  Discord bot token [****]: ✓
+  Discord channel ID [1234...]: ✓
+  ✓ Discord: #ai-notifications
+    ✓ Send Messages
+    ✓ Manage Threads
 
   Defaults: SSH=localhost, cleanup=archive, no agent, no dashboard
   Use defaults? [Y/n]: y
 
   ✓ Saved to ~/.config/aily/env (chmod 600)
-  ✓ Claude Code, Codex CLI, Gemini CLI configured
+
+  === Installing notification hooks ===
+    ✓ notify-claude.sh
+    ✓ notify-codex.py
+    ✓ notify-gemini.sh
+    ✓ notify-opencode.mjs
+
+  Start Discord bridge bot? [Y/n]: y
+  ✓ Bridge started (tmux session: aily-bridge)
 
 === Setup complete ===
 ```
@@ -66,20 +78,17 @@ $ aily init
 <details>
 <summary><b>Manual Install</b></summary>
 
-Prerequisites: macOS or Linux, `curl`, `jq`, `tmux`, Node.js >= 14, SSH key-based access to target hosts.
+Prerequisites: macOS or Linux, `bash`, `curl`, `jq`, `tmux`, `python3`, SSH key-based access to target hosts. Node.js only needed for npm method.
 
 ```bash
-# npm (recommended)
+# npm
 npm install -g aily-cli && aily init
 
 # npx (no install)
 npx aily-cli init
 
-# curl from dashboard
-curl -sSL https://aily.jiun.dev/api/install.sh | bash
-
-# git clone
-git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
+# git clone (recommended)
+git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init
 ```
 
 </details>
@@ -266,7 +275,7 @@ Platforms are auto-detected from available tokens. Run `aily status` to verify.
 
 ## Multi-host Setup
 
-Add remote SSH hosts to relay notifications from agents running on other machines:
+Bridge tmux sessions on remote machines to your Discord/Slack channels:
 
 ```bash
 # Deploy aily to a remote host (copies files, config, runs init)
@@ -297,7 +306,7 @@ docker run -e BRIDGE_MODE=slack \
 docker run -e BRIDGE_MODE=dashboard -p 8080:8080 aily
 ```
 
-Bridges require Python 3.10+ when running outside Docker. For Kubernetes, deploy via ArgoCD with the included kustomize overlays. The CI pipeline (Gitea Actions) builds multi-arch images and updates the IaC repo automatically.
+Bridges require Python 3.10+ and `aiohttp` when running outside Docker.
 
 ---
 
@@ -328,7 +337,7 @@ aily 설치 — Discord/Slack용 AI 에이전트 세션 브릿지 (https://githu
 
 Discord/Slack에서 직접 세션을 관리할 수도 있습니다: `!new <name> [host]`, `!kill <name>`, `!sessions`. 스레드 안에서는 단축키로 키 시퀀스를 보낼 수 있습니다: `!c` (Ctrl+C), `!d` (Ctrl+D), `!z` (Ctrl+Z), `!q`, `!enter`, `!esc`.
 
-단방향 알림 도구와 달리, aily는 **양방향 채팅**을 제공합니다 — 폰에서 에이전트를 모니터링하고 제어할 수 있습니다.
+단방향 알림 도구와 달리, aily는 **완전한 세션 브릿지**를 제공합니다 — 출력 모니터링, 입력 전달, `aily attach`로 동일한 터미널에 바로 연결.
 
 ## 브릿지
 
