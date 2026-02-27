@@ -127,6 +127,7 @@ CHANNEL_ID: str = ""
 GUILD_ID: str = ""
 SSH_HOSTS: list[str] = []
 DEFAULT_HOST: str = ""
+DEFAULT_WORKING_DIR: str = ""
 THREAD_CLEANUP: str = "archive"
 NEW_SESSION_AGENT: str = ""
 CLAUDE_REMOTE_CONTROL: bool = False
@@ -211,12 +212,24 @@ def is_valid_session_name(name: str) -> bool:
     return bool(SESSION_NAME_RE.match(name)) and len(name) <= 64
 
 
+# Infrastructure sessions that should be hidden from session lists and not matched
+_INFRA_SESSIONS = {"aily-bridge", "slack-bridge", "aily-dashboard"}
+
+
 def find_session_host(session_name: str) -> str | None:
     """Find which SSH host has the tmux session."""
     safe_name = shlex.quote(session_name)
     for host in SSH_HOSTS:
         rc, out = run_ssh(host, f"tmux has-session -t {safe_name} 2>/dev/null && echo found")
         if rc == 0 and "found" in out:
+            # Verify it's not a prefix match against an infra session
+            _, exact = run_ssh(host, f"tmux list-sessions -F '#{{session_name}}' 2>/dev/null")
+            sessions = exact.splitlines()
+            if session_name in sessions:
+                return host
+            # Prefix matched an infra session — not a real match
+            if any(s.startswith(session_name) and s in _INFRA_SESSIONS for s in sessions):
+                continue
             return host
     return None
 
@@ -528,7 +541,7 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
 
     session_name = parts[1]
     host = parts[2] if len(parts) > 2 else DEFAULT_HOST
-    working_dir = parts[3] if len(parts) > 3 else None
+    working_dir = parts[3] if len(parts) > 3 else DEFAULT_WORKING_DIR or None
 
     if not is_valid_session_name(session_name):
         await post_message(http, token, reply_to,
@@ -667,7 +680,7 @@ async def cmd_sessions(http: aiohttp.ClientSession, token: str, reply_to: str):
         if rc == 0 and out:
             for name in out.strip().split("\n"):
                 name = name.strip()
-                if name:
+                if name and name not in _INFRA_SESSIONS:
                     if name in all_sessions:
                         all_sessions[name] += f", {host}"
                     else:
@@ -1041,7 +1054,7 @@ async def heartbeat_loop(ws, interval: float, get_sequence):
 
 
 async def main():
-    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, THREAD_CLEANUP, DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
+    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, DEFAULT_WORKING_DIR, THREAD_CLEANUP, DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
     global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL, THREAD_NAME_FORMAT
 
     _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
@@ -1070,6 +1083,9 @@ async def main():
         SSH_HOSTS = ["localhost"]
     DEFAULT_HOST = SSH_HOSTS[0] if SSH_HOSTS else ""
 
+    # Default working directory for new sessions
+    DEFAULT_WORKING_DIR = env.get("DEFAULT_WORKING_DIR", "")
+
     # Thread cleanup mode: "archive" (default) or "delete"
     THREAD_CLEANUP = env.get("THREAD_CLEANUP", "archive").lower()
     if THREAD_CLEANUP not in ("archive", "delete"):
@@ -1094,6 +1110,8 @@ async def main():
     print(f"[bridge] Channel: {CHANNEL_ID}")
     print(f"[bridge] Thread format: '{THREAD_NAME_FORMAT}'")
     print(f"[bridge] Thread cleanup: {THREAD_CLEANUP}")
+    if DEFAULT_WORKING_DIR:
+        print(f"[bridge] Default working dir: {DEFAULT_WORKING_DIR}")
     if NEW_SESSION_AGENT:
         rc_label = " + remote-control" if NEW_SESSION_AGENT == "claude" and CLAUDE_REMOTE_CONTROL else ""
         print(f"[bridge] Auto-launch agent: {NEW_SESSION_AGENT}{rc_label}")
