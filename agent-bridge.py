@@ -859,8 +859,17 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
     session_name = parse_thread_name(thread_name)
     if not session_name:
         return
-    user_message = content
     user_name = author.get("username", "unknown")
+
+    # Build message: text content + attachment URLs
+    parts_msg = []
+    if content:
+        parts_msg.append(content)
+    for att in message.get("attachments", []):
+        url = att.get("url", "")
+        if url:
+            parts_msg.append(url)
+    user_message = " ".join(parts_msg)
 
     if not user_message:
         return
