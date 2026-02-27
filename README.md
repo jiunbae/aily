@@ -12,6 +12,8 @@ Built for developers running AI coding agents in tmux sessions across SSH hosts.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/jiunbae/aily)](https://github.com/jiunbae/aily)
 
+**English** | [한국어](README.ko.md)
+
 </div>
 
 ## Quickstart for Agents
@@ -99,7 +101,13 @@ git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
 | `aily start [name]` | Create thread for tmux session |
 | `aily stop [name]` | Archive/delete thread for tmux session |
 | `aily auto [on\|off]` | Toggle auto thread sync (tmux hooks) |
+| `aily bridge start\|stop\|restart\|status\|logs` | Manage Discord/Slack bridge bot |
+| `aily dashboard start\|stop\|restart\|status\|logs` | Manage web dashboard (background process) |
+| `aily deploy <host>` | Deploy aily to a remote SSH host |
+| `aily attach <session>` | Attach to a tmux session |
+| `aily export <session> [json\|markdown]` | Export session messages |
 | `aily uninstall` | Remove hooks and configuration |
+| `aily version` | Show version |
 | `--json` | JSON output (global flag) |
 | `--verbose` | Debug output (global flag) |
 
@@ -116,11 +124,43 @@ Once installed, aily works automatically in the background:
 
 Every tmux session gets a dedicated thread. Start a session, get a thread. Close the session, the thread archives (or deletes — [configurable](.env.example)). No manual wiring.
 
-You can also manage sessions directly from Discord/Slack using bridge commands: `!new <name> [host]`, `!kill <name>`, `!sessions`.
+You can also manage sessions directly from Discord/Slack using bridge commands: `!new <name> [host]`, `!kill <name>`, `!sessions`. Inside a thread, use shortcuts to send key sequences: `!c` (Ctrl+C), `!d` (Ctrl+D), `!z` (Ctrl+Z), `!q`, `!enter`, `!esc`.
 
 Unlike one-way notification tools, aily provides **bidirectional chat** — you can monitor and control agents entirely from your phone.
 
 <!-- TODO: Add screenshot/GIF showing Discord notification + reply flow -->
+
+## Bridge
+
+The bridge bot connects to Discord/Slack and enables bidirectional communication — forwarding your messages to tmux sessions and relaying output back. `aily init` offers to start it automatically.
+
+```bash
+aily bridge start     # runs in a tmux session (aily-bridge)
+aily bridge status    # check if running
+aily bridge logs      # view recent output
+aily bridge restart   # restart after config changes
+```
+
+**Bridge commands** (from Discord/Slack):
+
+| Command | Description |
+|---------|-------------|
+| `!new <name> [host]` | Create a new tmux session + thread |
+| `!kill <name>` | Kill a tmux session and archive its thread |
+| `!sessions` | List active sessions across all hosts |
+
+**Thread shortcuts** (inside an agent thread):
+
+| Shortcut | Sends |
+|----------|-------|
+| `!c` | Ctrl+C |
+| `!d` | Ctrl+D |
+| `!z` | Ctrl+Z |
+| `!q` | `q` |
+| `!enter` | Enter |
+| `!esc` | Escape |
+
+Any other message typed in a thread is sent directly to the session via `tmux send-keys`.
 
 ## How It Works
 
@@ -145,6 +185,13 @@ For a deeper look, see [Architecture](docs/architecture.md).
 
 The web dashboard provides a real-time UI for monitoring and managing sessions across hosts. Features include live session status via WebSocket, full message history, send-input controls, login authentication, dark/light theme, and mobile-friendly layout.
 
+```bash
+aily dashboard start   # runs as a background process
+aily dashboard status  # check if running
+aily dashboard logs    # tail recent output
+aily dashboard stop    # stop the process
+```
+
 <!-- TODO: Add screenshot of dashboard sessions page -->
 
 See [API Reference](docs/api.md) for dashboard routes and REST endpoints.
@@ -153,9 +200,10 @@ See [API Reference](docs/api.md) for dashboard routes and REST endpoints.
 
 | Agent | Hook Type | Extractor |
 |-------|-----------|-----------|
-| [![Claude Code](https://img.shields.io/badge/Claude_Code-hook-blueviolet)](https://docs.anthropic.com/en/docs/claude-code) | `Notification` + `PreToolUse` | JSONL session parser |
+| [![Claude Code](https://img.shields.io/badge/Claude_Code-hook-blueviolet)](https://docs.anthropic.com/en/docs/claude-code) | `Notification` + `Stop` | JSONL session parser |
 | [![Codex CLI](https://img.shields.io/badge/Codex_CLI-hook-green)](https://github.com/openai/codex) | `notify` | stdin message |
 | [![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-hook-orange)](https://github.com/google-gemini/gemini-cli) | `AfterAgent` | stdin JSON |
+| [![OpenCode](https://img.shields.io/badge/OpenCode-plugin-teal)](https://github.com/opencode-ai/opencode) | Plugin (`aily-notify.mjs`) | Event hook |
 
 ## Configuration
 
@@ -216,6 +264,20 @@ Platforms are auto-detected from available tokens. Run `aily status` to verify.
 
 </details>
 
+## Multi-host Setup
+
+Add remote SSH hosts to relay notifications from agents running on other machines:
+
+```bash
+# Deploy aily to a remote host (copies files, config, runs init)
+aily deploy my-server
+
+# Or manually add a host
+aily config set SSH_HOSTS "localhost,my-server"
+```
+
+`aily deploy` will: test SSH connectivity → clone aily to the remote host → copy your config → run `aily init --non-interactive` → add the host to `SSH_HOSTS`. Requires key-based SSH access (no password prompts). Use `~/.ssh/config` host aliases for convenience.
+
 ## Docker / Kubernetes
 
 The Dockerfile supports three modes via `BRIDGE_MODE`:
@@ -236,6 +298,88 @@ docker run -e BRIDGE_MODE=dashboard -p 8080:8080 aily
 ```
 
 Bridges require Python 3.10+ when running outside Docker. For Kubernetes, deploy via ArgoCD with the included kustomize overlays. The CI pipeline (Gitea Actions) builds multi-arch images and updates the IaC repo automatically.
+
+---
+
+<details>
+<summary><b>한국어</b></summary>
+
+## 에이전트 빠른 시작
+
+```
+aily 설치 — Discord/Slack용 AI 에이전트 알림 릴레이 (https://github.com/jiunbae/aily).
+설치: `git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init`
+  (또는: `npm install -g aily-cli && aily init`)
+위저드가 물어봅니다: 플랫폼 (Discord/Slack/both) → 봇 토큰 → 채널 ID → 완료.
+대시보드, SSH 호스트, 에이전트 자동 실행은 선택사항입니다 ("기본값 사용?" 거부 시 표시).
+설정은 ~/.config/aily/env에 저장됩니다. `aily status`로 확인, `aily doctor`로 진단.
+```
+
+## 설정 후 동작
+
+설치 후 aily는 백그라운드에서 자동으로 동작합니다:
+
+- **에이전트가 작업을 완료하면** — tmux 세션 이름으로 된 Discord/Slack 스레드에 에이전트 응답과 함께 알림을 받습니다.
+- **에이전트가 질문하면** — 같은 스레드에 프롬프트가 표시됩니다. 폰으로 답장하면 됩니다.
+- **스레드에 답장하면** — 메시지가 SSH를 통해 에이전트의 tmux 세션으로 전달됩니다. 직접 키보드로 치는 것과 같습니다.
+- **셸 명령어 출력** — tmux 세션에서 에이전트가 아닌 일반 셸이 실행 중이면, 명령어 출력이 캡처되어 스레드로 자동 전달됩니다.
+
+모든 tmux 세션은 전용 스레드를 갖습니다. 세션을 시작하면 스레드가 생기고, 세션을 닫으면 스레드가 보관(또는 삭제)됩니다.
+
+Discord/Slack에서 직접 세션을 관리할 수도 있습니다: `!new <name> [host]`, `!kill <name>`, `!sessions`. 스레드 안에서는 단축키로 키 시퀀스를 보낼 수 있습니다: `!c` (Ctrl+C), `!d` (Ctrl+D), `!z` (Ctrl+Z), `!q`, `!enter`, `!esc`.
+
+단방향 알림 도구와 달리, aily는 **양방향 채팅**을 제공합니다 — 폰에서 에이전트를 모니터링하고 제어할 수 있습니다.
+
+## 브릿지
+
+브릿지 봇은 Discord/Slack에 연결되어 양방향 통신을 가능하게 합니다. `aily init`이 자동 시작을 제안합니다.
+
+```bash
+aily bridge start     # tmux 세션에서 실행 (aily-bridge)
+aily bridge status    # 실행 상태 확인
+aily bridge logs      # 최근 출력 보기
+aily bridge restart   # 설정 변경 후 재시작
+```
+
+| 명령어 | 설명 |
+|--------|------|
+| `!new <name> [host]` | 새 tmux 세션 + 스레드 생성 |
+| `!kill <name>` | tmux 세션 종료 및 스레드 보관 |
+| `!sessions` | 전체 호스트의 활성 세션 목록 |
+
+| 단축키 | 전송 |
+|--------|------|
+| `!c` | Ctrl+C |
+| `!d` | Ctrl+D |
+| `!z` | Ctrl+Z |
+| `!q` | `q` |
+| `!enter` | Enter |
+| `!esc` | Escape |
+
+## 대시보드
+
+```bash
+aily dashboard start   # 백그라운드 프로세스로 실행
+aily dashboard status  # 실행 상태 확인
+aily dashboard logs    # 최근 출력 보기
+aily dashboard stop    # 프로세스 중지
+```
+
+## 멀티호스트 설정
+
+```bash
+# 원격 호스트에 aily 배포 (파일 복사, 설정 복사, init 실행)
+aily deploy my-server
+
+# 또는 수동으로 호스트 추가
+aily config set SSH_HOSTS "localhost,my-server"
+```
+
+`aily deploy`는: SSH 연결 테스트 → 원격 호스트에 aily 클론 → 설정 복사 → `aily init --non-interactive` 실행 → `SSH_HOSTS`에 추가. 키 기반 SSH 접근이 필요합니다.
+
+전체 한국어 문서는 [README.ko.md](README.ko.md)를 참고하세요.
+
+</details>
 
 ## License
 

@@ -18,6 +18,8 @@ _aily() {
         'start:Create a thread for a session'
         'stop:Archive/delete a thread for a session'
         'auto:Toggle auto thread sync'
+        'bridge:Manage Discord bridge bot'
+        'dashboard:Manage web dashboard'
         'help:Show help information'
         'uninstall:Remove aily hooks'
         'version:Show version'
@@ -109,6 +111,16 @@ _aily() {
                 auto)
                     if (( arg_index == 1 )); then
                         _values 'mode' on off
+                    fi
+                    ;;
+                bridge)
+                    if (( arg_index == 1 )); then
+                        _values 'action' start stop restart status logs
+                    fi
+                    ;;
+                dashboard)
+                    if (( arg_index == 1 )); then
+                        _values 'action' start stop restart status logs
                     fi
                     ;;
             esac

@@ -63,8 +63,51 @@ fi
 ok()   { printf "  ${C_GREEN}✓${C_RESET} %s\n" "$*"; }
 warn() { printf "  ${C_YELLOW}⚠️${C_RESET}  %s\n" "$*"; }
 err()  { printf "  ${C_RED}✗${C_RESET} %s\n" "$*" >&2; }
-info() { printf "  ${C_CYAN}·${C_RESET} %s\n" "$*"; }
+info() { printf "  ${C_DIM}·${C_RESET} %s\n" "$*"; }
 hdr()  { printf "\n${C_BOLD}=== %s ===${C_RESET}\n" "$*"; }
+
+# Box-drawing helpers (rounded corners, dimmed frame)
+BOX_W=46
+
+_repeat() { local s=""; for ((i=0; i<$1; i++)); do s+="$2"; done; echo -n "$s"; }
+
+box_top() {
+  local title="$1"
+  local fill=$((BOX_W - ${#title} - 3))
+  printf "  ${C_DIM}╭─${C_RESET} ${C_BOLD}%s${C_RESET} ${C_DIM}%s╮${C_RESET}\n" "$title" "$(_repeat $fill '─')"
+}
+box_bottom() {
+  local label="${1:-}"
+  if [[ -n "$label" ]]; then
+    local fill=$((BOX_W - ${#label} - 3))
+    printf "  ${C_DIM}╰─${C_RESET} %s ${C_DIM}%s╯${C_RESET}\n" "$label" "$(_repeat $fill '─')"
+  else
+    printf "  ${C_DIM}╰%s╯${C_RESET}\n" "$(_repeat $((BOX_W)) '─')"
+  fi
+}
+box_sep() { printf "  ${C_DIM}├%s┤${C_RESET}\n" "$(_repeat $BOX_W '─')"; }
+box_line() {
+  local content="$1"
+  # Strip ANSI to measure visible width
+  local vis
+  vis=$(printf '%s' "$content" | sed $'s/\033\\[[0-9;]*m//g')
+  local vis_len=${#vis}
+  local inner=$((BOX_W - 2))
+  local pad=$((inner - vis_len))
+  [[ $pad -lt 0 ]] && pad=0
+  printf "  ${C_DIM}│${C_RESET} %s%s ${C_DIM}│${C_RESET}\n" "$content" "$(_repeat $pad ' ')"
+}
+box_empty() { printf "  ${C_DIM}│${C_RESET} %$((BOX_W - 2))s ${C_DIM}│${C_RESET}\n" ""; }
+
+_progress_bar() {
+  local count=$1 total=$2 width=${3:-16}
+  local filled=0
+  if [[ $total -gt 0 ]]; then
+    filled=$(( (count * width) / total ))
+  fi
+  local empty=$((width - filled))
+  printf '%s%s' "$(_repeat $filled '█')" "$(_repeat $empty '░')"
+}
 
 json_output() {
   # If --json flag is set, output JSON instead of formatted text.
@@ -466,10 +509,10 @@ prompt_value() {
   prompt+=": "
 
   if [[ "$secret" == "true" ]]; then
-    # Use -s for hidden input; show **** feedback so user knows paste worked
-    read -rsp "$prompt" value
+    printf '%s%s ' "$prompt" "${C_DIM}(input is hidden)${C_RESET}" >&2
+    read -rs value
     if [[ -n "$value" ]]; then
-      printf '****\n' >&2
+      printf '✓\n' >&2
     else
       echo "" >&2
     fi
@@ -516,8 +559,16 @@ cmd_init() {
   echo ""
 
   # -- 1. Platform setup (required) --
+  # Pre-load existing config so unselected platforms are preserved
   local discord_token="" discord_channel=""
   local slack_token="" slack_app_token="" slack_channel=""
+  if [[ -f "$ENV_FILE" ]]; then
+    discord_token="$(env_get DISCORD_BOT_TOKEN "")"
+    discord_channel="$(env_get DISCORD_CHANNEL_ID "")"
+    slack_token="$(env_get SLACK_BOT_TOKEN "")"
+    slack_app_token="$(env_get SLACK_APP_TOKEN "")"
+    slack_channel="$(env_get SLACK_CHANNEL_ID "")"
+  fi
 
   if [[ "$non_interactive" == "true" ]]; then
     discord_token="${DISCORD_BOT_TOKEN:-$(env_get DISCORD_BOT_TOKEN "")}"
@@ -541,6 +592,27 @@ cmd_init() {
 
     # Discord tokens
     if [[ "$platform_idx" == 0 || "$platform_idx" == 2 ]]; then
+      # Show setup guide if no existing token
+      if [[ -z "$(env_get DISCORD_BOT_TOKEN "")" ]]; then
+        if ! prompt_yn "Do you already have a Discord bot?" "n"; then
+          echo ""
+          printf "  ${C_BOLD}How to create a Discord bot:${C_RESET}\n"
+          echo ""
+          printf "  ${C_BOLD}1.${C_RESET} Go to ${C_CYAN}https://discord.com/developers/applications${C_RESET}\n"
+          printf "  ${C_BOLD}2.${C_RESET} Click ${C_BOLD}New Application${C_RESET} → name it (e.g. \"aily\") → Create\n"
+          printf "  ${C_BOLD}3.${C_RESET} Go to ${C_BOLD}Bot${C_RESET} tab:\n"
+          printf "       • Click ${C_BOLD}Reset Token${C_RESET} → copy the token\n"
+          printf "       • Enable ${C_BOLD}Message Content Intent${C_RESET} (under Privileged Intents)\n"
+          printf "  ${C_BOLD}4.${C_RESET} Go to ${C_BOLD}OAuth2 → URL Generator${C_RESET}:\n"
+          printf "       • Scopes: ${C_BOLD}bot${C_RESET}\n"
+          printf "       • Permissions: ${C_BOLD}Send Messages${C_RESET}, ${C_BOLD}Create Public Threads${C_RESET},\n"
+          printf "         ${C_BOLD}Send Messages in Threads${C_RESET}, ${C_BOLD}Manage Threads${C_RESET}, ${C_BOLD}Read Message History${C_RESET}\n"
+          printf "       • Copy the URL → open in browser → add bot to your server\n"
+          printf "  ${C_BOLD}5.${C_RESET} Get channel ID: ${C_BOLD}Settings → Advanced → Developer Mode${C_RESET} ON,\n"
+          printf "       then right-click the channel → ${C_BOLD}Copy Channel ID${C_RESET}\n"
+          echo ""
+        fi
+      fi
       discord_token=$(prompt_value "Discord bot token" "$(env_get DISCORD_BOT_TOKEN "")" true)
       discord_channel=$(prompt_value "Discord channel ID" "$(env_get DISCORD_CHANNEL_ID "")")
 
@@ -552,6 +624,8 @@ cmd_init() {
           local chan_name
           chan_name=$(echo "$discord_resp" | jq -r '.name // "unknown"')
           ok "Discord: ${chan_name}"
+          _check_discord_permissions "${discord_token}" "${discord_channel}" "      " || \
+            warn "Missing permissions — update at https://discord.com/developers/applications"
         else
           warn "Could not validate Discord credentials"
         fi
@@ -561,6 +635,27 @@ cmd_init() {
 
     # Slack tokens
     if [[ "$platform_idx" == 1 || "$platform_idx" == 2 ]]; then
+      # Show setup guide if no existing token
+      if [[ -z "$(env_get SLACK_BOT_TOKEN "")" ]]; then
+        if ! prompt_yn "Do you already have a Slack app?" "n"; then
+          echo ""
+          printf "  ${C_BOLD}How to create a Slack app:${C_RESET}\n"
+          echo ""
+          printf "  ${C_BOLD}1.${C_RESET} Go to ${C_CYAN}https://api.slack.com/apps${C_RESET} → ${C_BOLD}Create New App${C_RESET}\n"
+          printf "       • Choose ${C_BOLD}From scratch${C_RESET} → name it → select workspace\n"
+          printf "  ${C_BOLD}2.${C_RESET} Go to ${C_BOLD}Socket Mode${C_RESET} → enable it\n"
+          printf "       • Generate an app token (name: \"aily\", scope: ${C_BOLD}connections:write${C_RESET})\n"
+          printf "       • Copy the ${C_BOLD}xapp-...${C_RESET} token\n"
+          printf "  ${C_BOLD}3.${C_RESET} Go to ${C_BOLD}OAuth & Permissions${C_RESET} → add Bot Token Scopes:\n"
+          printf "       • ${C_BOLD}chat:write${C_RESET}, ${C_BOLD}channels:history${C_RESET}, ${C_BOLD}channels:read${C_RESET}, ${C_BOLD}reactions:write${C_RESET}\n"
+          printf "  ${C_BOLD}4.${C_RESET} Go to ${C_BOLD}Event Subscriptions${C_RESET} → enable → subscribe to:\n"
+          printf "       • ${C_BOLD}message.channels${C_RESET}, ${C_BOLD}message.groups${C_RESET}\n"
+          printf "  ${C_BOLD}5.${C_RESET} ${C_BOLD}Install App${C_RESET} to workspace → copy the ${C_BOLD}xoxb-...${C_RESET} Bot Token\n"
+          printf "  ${C_BOLD}6.${C_RESET} Get channel ID: right-click channel → ${C_BOLD}View channel details${C_RESET}\n"
+          printf "       → Channel ID is at the bottom\n"
+          echo ""
+        fi
+      fi
       slack_token=$(prompt_value "Slack bot token (xoxb-...)" "$(env_get SLACK_BOT_TOKEN "")" true)
       slack_app_token=$(prompt_value "Slack app token (xapp-...)" "$(env_get SLACK_APP_TOKEN "")" true)
       slack_channel=$(prompt_value "Slack channel ID" "$(env_get SLACK_CHANNEL_ID "")")
@@ -573,6 +668,8 @@ cmd_init() {
           local chan_name
           chan_name=$(echo "$slack_resp" | jq -r '.channel.name // "unknown"')
           ok "Slack: #${chan_name}"
+          _check_slack_permissions "${slack_token}" "${slack_channel}" "      " || \
+            warn "Missing scopes — update at https://api.slack.com/apps"
         else
           warn "Could not validate Slack credentials"
         fi
@@ -820,6 +917,16 @@ cmd_init() {
     _send_test_notification
   fi
 
+  # -- Start bridge bot --
+  if [[ "$non_interactive" == "false" ]]; then
+    echo ""
+    if ui_confirm "Start Discord bridge bot? (enables !new, !kill, !sessions commands)" "y"; then
+      cmd_bridge start
+    else
+      info "Skipped. Start later with: aily bridge start"
+    fi
+  fi
+
   echo ""
   hdr "Setup complete"
   echo ""
@@ -1033,7 +1140,7 @@ _send_test_notification() {
   local hostname_short
   hostname_short=$(hostname -s 2>/dev/null || hostname)
   local message
-  message=$(printf ':white_check_mark: *aily connected!*\n\n:desktop_computer: Host: `%s`\n:clock1: Time: %s\n\nAvailable commands:\n• `!new [name]` — Create a new tmux session\n• `!sessions` — List active sessions\n• `!send <session> <message>` — Send a message to a session' "$hostname_short" "$timestamp")
+  message=$(printf ':white_check_mark: *aily connected!*\n\n:desktop_computer: Host: `%s`\n:clock1: Time: %s\n\nAvailable commands:\n• `!new <name> [host] [pwd]` — Create a tmux session (optionally on a specific host and directory)\n• `!kill <name>` — Kill a tmux session and archive its thread\n• `!sessions` — List all sessions with sync status\n• `!queue` — List / add / execute deferred commands' "$hostname_short" "$timestamp")
   local any_ok=false
 
   # Post directly to platform APIs (bypasses hook symlinks)
@@ -1053,7 +1160,7 @@ _send_test_notification() {
 
   if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
     local discord_msg
-    discord_msg=$(printf '✅ **aily connected!**\n\n🖥️ Host: `%s`\n🕐 Time: %s\n\nAvailable commands:\n• `!new [name]` — Create a new tmux session\n• `!sessions` — List active sessions\n• `!send <session> <message>` — Send a message to a session' "$hostname_short" "$timestamp")
+    discord_msg=$(printf '✅ **aily connected!**\n\n🖥️ Host: `%s`\n🕐 Time: %s\n\nAvailable commands:\n• `!new <name> [host] [pwd]` — Create a tmux session (optionally on a specific host and directory)\n• `!kill <name>` — Kill a tmux session and archive its thread\n• `!sessions` — List all sessions with sync status\n• `!queue` — List / add / execute deferred commands' "$hostname_short" "$timestamp")
     local payload
     payload=$(jq -n --arg msg "$discord_msg" '{content: $msg}')
     local resp
@@ -1085,6 +1192,198 @@ _send_test_notification() {
   fi
 }
 
+# Check Discord bot permissions via guild-level permission integer.
+# Prints ✓/✗ for each required permission. Returns count of missing.
+_check_discord_permissions_box() {
+  local token="$1" channel_id="$2"
+  local missing=0
+
+  local ch_resp
+  ch_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bot ${token}" \
+    "https://discord.com/api/v10/channels/${channel_id}" 2>/dev/null || echo "")
+  local guild_id
+  guild_id=$(echo "$ch_resp" | jq -r '.guild_id // empty' 2>/dev/null)
+  if [[ -z "$guild_id" ]]; then
+    box_line "  ${C_YELLOW}⚠ Could not resolve guild${C_RESET}"
+    return 1
+  fi
+
+  local guilds_resp
+  guilds_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bot ${token}" \
+    "https://discord.com/api/v10/users/@me/guilds" 2>/dev/null || echo "")
+  local perms
+  perms=$(echo "$guilds_resp" | jq -r ".[] | select(.id == \"${guild_id}\") | .permissions // empty" 2>/dev/null)
+  if [[ -z "$perms" ]]; then
+    box_line "  ${C_YELLOW}⚠ Could not read guild permissions${C_RESET}"
+    return 1
+  fi
+
+  local -a perm_names=("Send Messages" "Read Message History" "Manage Threads" "Create Public Threads" "Send Messages in Threads")
+  local -a perm_bits=(2048 65536 17179869184 34359738368 274877906944)
+
+  for i in "${!perm_names[@]}"; do
+    local name="${perm_names[$i]}"
+    local bit="${perm_bits[$i]}"
+    if python3 -c "exit(0 if int('${perms}') & ${bit} else 1)" 2>/dev/null; then
+      box_line "  ${C_GREEN}✓${C_RESET} ${name}"
+    else
+      box_line "  ${C_RED}✗${C_RESET} ${name}"
+      missing=$((missing + 1))
+    fi
+  done
+
+  box_line "  ${C_DIM}· Message Content Intent: verify${C_RESET}"
+
+  return $missing
+}
+
+_check_discord_permissions() {
+  local token="$1" channel_id="$2" indent="${3:-    }"
+  local missing=0
+
+  # Get guild_id from channel
+  local ch_resp
+  ch_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bot ${token}" \
+    "https://discord.com/api/v10/channels/${channel_id}" 2>/dev/null || echo "")
+  local guild_id
+  guild_id=$(echo "$ch_resp" | jq -r '.guild_id // empty' 2>/dev/null)
+  if [[ -z "$guild_id" ]]; then
+    printf "${indent}${C_YELLOW}Could not resolve guild${C_RESET}\n"
+    return 1
+  fi
+
+  # Get bot permissions from guilds list
+  local guilds_resp
+  guilds_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bot ${token}" \
+    "https://discord.com/api/v10/users/@me/guilds" 2>/dev/null || echo "")
+  local perms
+  perms=$(echo "$guilds_resp" | jq -r ".[] | select(.id == \"${guild_id}\") | .permissions // empty" 2>/dev/null)
+  if [[ -z "$perms" ]]; then
+    printf "${indent}${C_YELLOW}Could not read guild permissions${C_RESET}\n"
+    return 1
+  fi
+
+  # Permission bits: name  decimal_value
+  local -a perm_names=("Send Messages" "Read Message History" "Manage Threads" "Create Public Threads" "Send Messages in Threads")
+  local -a perm_bits=(2048 65536 17179869184 34359738368 274877906944)
+
+  for i in "${!perm_names[@]}"; do
+    local name="${perm_names[$i]}"
+    local bit="${perm_bits[$i]}"
+    # Use python3 for 64-bit bitwise (bash can't handle large ints on all platforms)
+    if python3 -c "exit(0 if int('${perms}') & ${bit} else 1)" 2>/dev/null; then
+      printf "${indent}${C_GREEN}✓${C_RESET} %s\n" "$name"
+    else
+      printf "${indent}${C_RED}✗${C_RESET} %s\n" "$name"
+      missing=$((missing + 1))
+    fi
+  done
+
+  # Message Content Intent — can't be checked via API, just hint
+  printf "${indent}${C_DIM}· Message Content Intent: verify in Developer Portal${C_RESET}\n"
+
+  return $missing
+}
+
+# Check Slack bot permissions by probing API endpoints.
+# Prints ✓/✗ for each required scope. Returns count of missing.
+_check_slack_permissions() {
+  local token="$1" channel_id="$2" indent="${3:-    }"
+  local missing=0
+
+  # Helper: call Slack API and check result
+  _slack_check() {
+    local label="$1" url="$2"
+    local resp
+    resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bearer ${token}" "$url" 2>/dev/null || echo "")
+    local ok_val err_val
+    ok_val=$(echo "$resp" | jq -r '.ok // empty' 2>/dev/null)
+    err_val=$(echo "$resp" | jq -r '.error // empty' 2>/dev/null)
+    if [[ "$ok_val" == "true" ]]; then
+      printf "${indent}${C_GREEN}✓${C_RESET} %s\n" "$label"
+      return 0
+    else
+      if [[ "$err_val" == "missing_scope" ]]; then
+        local needed
+        needed=$(echo "$resp" | jq -r '.needed // empty' 2>/dev/null)
+        printf "${indent}${C_RED}✗${C_RESET} %s (need: %s)\n" "$label" "$needed"
+      elif [[ "$err_val" == "not_in_channel" || "$err_val" == "channel_not_found" ]]; then
+        printf "${indent}${C_RED}✗${C_RESET} %s (bot not in channel)\n" "$label"
+      else
+        printf "${indent}${C_RED}✗${C_RESET} %s (%s)\n" "$label" "${err_val:-unknown error}"
+      fi
+      return 1
+    fi
+  }
+
+  _slack_check "channels:read" "https://slack.com/api/conversations.info?channel=${channel_id}" || missing=$((missing + 1))
+  _slack_check "channels:history" "https://slack.com/api/conversations.history?channel=${channel_id}&limit=1" || missing=$((missing + 1))
+
+  # chat:write — check via auth.test (can't safely test without posting)
+  local auth_resp
+  auth_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bearer ${token}" \
+    "https://slack.com/api/auth.test" 2>/dev/null || echo "")
+  if echo "$auth_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
+    printf "${indent}${C_GREEN}✓${C_RESET} chat:write (token valid)\n"
+  else
+    printf "${indent}${C_RED}✗${C_RESET} chat:write (token invalid)\n"
+    missing=$((missing + 1))
+  fi
+
+  # reactions:write — can't test without side effects, just note
+  printf "${indent}${C_DIM}· reactions:write: verify in App Settings${C_RESET}\n"
+
+  unset -f _slack_check
+  return $missing
+}
+
+_check_slack_permissions_box() {
+  local token="$1" channel_id="$2"
+  local missing=0
+
+  _slack_check_box() {
+    local label="$1" url="$2"
+    local resp
+    resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bearer ${token}" "$url" 2>/dev/null || echo "")
+    local ok_val err_val
+    ok_val=$(echo "$resp" | jq -r '.ok // empty' 2>/dev/null)
+    err_val=$(echo "$resp" | jq -r '.error // empty' 2>/dev/null)
+    if [[ "$ok_val" == "true" ]]; then
+      box_line "  ${C_GREEN}✓${C_RESET} ${label}"
+      return 0
+    else
+      if [[ "$err_val" == "missing_scope" ]]; then
+        local needed
+        needed=$(echo "$resp" | jq -r '.needed // empty' 2>/dev/null)
+        box_line "  ${C_RED}✗${C_RESET} ${label} (need: ${needed})"
+      elif [[ "$err_val" == "not_in_channel" || "$err_val" == "channel_not_found" ]]; then
+        box_line "  ${C_RED}✗${C_RESET} ${label} (bot not in channel)"
+      else
+        box_line "  ${C_RED}✗${C_RESET} ${label} (${err_val:-unknown})"
+      fi
+      return 1
+    fi
+  }
+
+  _slack_check_box "channels:read" "https://slack.com/api/conversations.info?channel=${channel_id}" || missing=$((missing + 1))
+  _slack_check_box "channels:history" "https://slack.com/api/conversations.history?channel=${channel_id}&limit=1" || missing=$((missing + 1))
+
+  local auth_resp
+  auth_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bearer ${token}" \
+    "https://slack.com/api/auth.test" 2>/dev/null || echo "")
+  if echo "$auth_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
+    box_line "  ${C_GREEN}✓${C_RESET} chat:write (token valid)"
+  else
+    box_line "  ${C_RED}✗${C_RESET} chat:write (token invalid)"
+    missing=$((missing + 1))
+  fi
+
+  box_line "  ${C_DIM}· reactions:write: verify in App Settings${C_RESET}"
+
+  unset -f _slack_check_box
+  return $missing
+}
+
 # -------------------------------------------------------------------
 # aily status
 # -------------------------------------------------------------------
@@ -1092,142 +1391,138 @@ cmd_status() {
   require_deps
   load_env
 
-  hdr "aily status"
+  echo ""
+  box_top "aily status"
+  box_empty
 
-  # Dashboard
-  printf "\n  ${C_BOLD}Dashboard${C_RESET}\n"
-  local url
-  url=$(dashboard_url)
-  info "URL: ${url}"
-  printf "  Connectivity: "
-  if curl -sf --connect-timeout 3 "${url}/healthz" >/dev/null 2>&1; then
-    printf "${C_GREEN}reachable${C_RESET}\n"
-  else
-    printf "${C_RED}unreachable${C_RESET}\n"
-  fi
-
-  local token
-  token=$(dashboard_token)
-  if [[ -n "$token" ]]; then
-    printf "  Auth token: ${C_GREEN}set${C_RESET} ($(redact "$token"))\n"
-  else
-    printf "  Auth token: ${C_DIM}not set${C_RESET}\n"
-  fi
-
-  # Platforms
-  printf "\n  ${C_BOLD}Platforms${C_RESET}\n"
+  # -- Platforms --
+  box_line "${C_BOLD}Platforms${C_RESET}"
 
   # Discord
   if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
-    printf "  Discord: "
     local discord_resp
     discord_resp=$(curl -sf --connect-timeout 3 -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
       "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}" 2>/dev/null || echo "")
     if [[ -n "$discord_resp" ]] && echo "$discord_resp" | jq -e '.id' >/dev/null 2>&1; then
       local chan_name
       chan_name=$(echo "$discord_resp" | jq -r '.name // "unknown"')
-      printf "${C_GREEN}connected${C_RESET} (#%s)\n" "$chan_name"
+      box_line "${C_GREEN}●${C_RESET} Discord   ${C_GREEN}connected${C_RESET}  #${chan_name}"
     else
-      printf "${C_YELLOW}configured but unreachable${C_RESET}\n"
+      box_line "${C_YELLOW}●${C_RESET} Discord   ${C_YELLOW}unreachable${C_RESET}"
     fi
   else
-    printf "  Discord: ${C_DIM}not configured${C_RESET}\n"
+    box_line "${C_DIM}○ Discord   not configured${C_RESET}"
   fi
 
   # Slack
   if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
-    printf "  Slack: "
     local slack_resp
     slack_resp=$(curl -sf --connect-timeout 3 -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
       "https://slack.com/api/conversations.info?channel=${SLACK_CHANNEL_ID}" 2>/dev/null || echo "")
     if [[ -n "$slack_resp" ]] && echo "$slack_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
       local chan_name
       chan_name=$(echo "$slack_resp" | jq -r '.channel.name // "unknown"')
-      printf "${C_GREEN}connected${C_RESET} (#%s)\n" "$chan_name"
+      box_line "${C_GREEN}●${C_RESET} Slack     ${C_GREEN}connected${C_RESET}  #${chan_name}"
     else
-      printf "${C_YELLOW}configured but unreachable${C_RESET}\n"
+      box_line "${C_YELLOW}●${C_RESET} Slack     ${C_YELLOW}unreachable${C_RESET}"
     fi
   else
-    printf "  Slack: ${C_DIM}not configured${C_RESET}\n"
+    box_line "${C_DIM}○ Slack     not configured${C_RESET}"
   fi
 
-  # SSH hosts
-  printf "\n  ${C_BOLD}SSH hosts${C_RESET}\n"
+  box_empty
+  box_sep
+
+  # -- Hooks & Agents --
+  box_empty
+  local hook_files=(notify-claude.sh notify-gemini.sh notify-codex.py notify-opencode.mjs post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
+  local hook_count=0
+  local hook_total=${#hook_files[@]}
+  for hf in "${hook_files[@]}"; do
+    local target="${HOOKS_DIR}/${hf}"
+    if [[ -L "$target" || -f "$target" ]]; then
+      hook_count=$((hook_count + 1))
+    fi
+  done
+  local hook_bar
+  hook_bar=$(_progress_bar $hook_count $hook_total 16)
+  local hook_icon="${C_GREEN}✓${C_RESET}"
+  [[ $hook_count -lt $hook_total ]] && hook_icon="${C_YELLOW}!${C_RESET}"
+  box_line "Hooks    ${C_BOLD}${hook_count}/${hook_total}${C_RESET}  ${C_GREEN}${hook_bar}${C_RESET} ${hook_icon}"
+
+  local agent_count=0
+  local agent_total=4
+  local claude_settings="$HOME/.claude/settings.json"
+  [[ -f "$claude_settings" ]] && grep -q "notify-clawdia\|notify-claude" "$claude_settings" 2>/dev/null && agent_count=$((agent_count + 1))
+  local codex_config="$HOME/.codex/config.toml"
+  [[ -f "$codex_config" ]] && grep -q "notify-codex" "$codex_config" 2>/dev/null && agent_count=$((agent_count + 1))
+  local gemini_settings="$HOME/.gemini/settings.json"
+  [[ -f "$gemini_settings" ]] && grep -q "notify-gemini" "$gemini_settings" 2>/dev/null && agent_count=$((agent_count + 1))
+  local opencode_plugins="$HOME/.config/opencode/plugins"
+  [[ -d "$opencode_plugins" ]] && find "$opencode_plugins" -maxdepth 1 \( -name "aily*" -o -name "notify-opencode*" \) -print -quit 2>/dev/null | grep -q . && agent_count=$((agent_count + 1))
+
+  local agent_bar
+  agent_bar=$(_progress_bar $agent_count $agent_total 16)
+  local agent_icon="${C_GREEN}✓${C_RESET}"
+  [[ $agent_count -lt $agent_total ]] && agent_icon="${C_YELLOW}!${C_RESET}"
+  box_line "Agents   ${C_BOLD}${agent_count}/${agent_total}${C_RESET}  ${C_GREEN}${agent_bar}${C_RESET} ${agent_icon}"
+
+  box_empty
+  box_sep
+
+  # -- SSH & tmux --
+  box_empty
+  box_line "${C_BOLD}SSH hosts${C_RESET}"
   local hosts_str
   hosts_str=$(env_get "SSH_HOSTS" "localhost")
   IFS=',' read -ra hosts <<< "$hosts_str"
   for host in "${hosts[@]}"; do
     host=$(echo "$host" | tr -d ' ')
-    printf "  %s: " "$host"
     if [[ "$host" == "localhost" ]]; then
-      printf "${C_GREEN}local${C_RESET}\n"
+      box_line "${C_GREEN}●${C_RESET} ${host}  ${C_DIM}local${C_RESET}"
     elif ssh -o ConnectTimeout=2 -o BatchMode=yes "$host" "echo ok" >/dev/null 2>&1; then
-      printf "${C_GREEN}reachable${C_RESET}\n"
+      box_line "${C_GREEN}●${C_RESET} ${host}  ${C_GREEN}reachable${C_RESET}"
     else
-      printf "${C_RED}unreachable${C_RESET}\n"
+      box_line "${C_RED}●${C_RESET} ${host}  ${C_RED}unreachable${C_RESET}"
     fi
   done
 
-  # Hooks
-  printf "\n  ${C_BOLD}Installed hooks${C_RESET}\n"
-  local hook_files=(notify-claude.sh notify-gemini.sh notify-codex.py notify-opencode.mjs post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
-  for hf in "${hook_files[@]}"; do
-    local target="${HOOKS_DIR}/${hf}"
-    if [[ -L "$target" ]]; then
-      ok "$hf (symlink)"
-    elif [[ -f "$target" ]]; then
-      ok "$hf (file)"
-    else
-      printf "  ${C_DIM}· %s (missing)${C_RESET}\n" "$hf"
-    fi
-  done
+  box_empty
 
-  # Agent integrations
-  printf "\n  ${C_BOLD}Agent integrations${C_RESET}\n"
-  local claude_settings="$HOME/.claude/settings.json"
-  if [[ -f "$claude_settings" ]] && grep -q "notify-clawdia\|notify-claude" "$claude_settings" 2>/dev/null; then
-    ok "Claude Code (settings.json)"
-  else
-    printf "  ${C_DIM}· Claude Code (not configured)${C_RESET}\n"
+  local session_count="0"
+  if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
+    session_count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
   fi
-
-  local codex_config="$HOME/.codex/config.toml"
-  if [[ -f "$codex_config" ]] && grep -q "notify-codex" "$codex_config" 2>/dev/null; then
-    ok "Codex CLI (config.toml)"
-  else
-    printf "  ${C_DIM}· Codex CLI (not configured)${C_RESET}\n"
-  fi
-
-  local gemini_settings="$HOME/.gemini/settings.json"
-  if [[ -f "$gemini_settings" ]] && grep -q "notify-gemini" "$gemini_settings" 2>/dev/null; then
-    ok "Gemini CLI (settings.json)"
-  else
-    printf "  ${C_DIM}· Gemini CLI (not configured)${C_RESET}\n"
-  fi
-
-  local opencode_plugins="$HOME/.config/opencode/plugins"
-  if [[ -d "$opencode_plugins" ]] && find "$opencode_plugins" -maxdepth 1 \( -name "aily*" -o -name "notify-opencode*" \) -print -quit | grep -q .; then
-    ok "OpenCode (plugin)"
-  else
-    printf "  ${C_DIM}· OpenCode (not configured)${C_RESET}\n"
-  fi
-
-  # tmux
-  printf "\n  ${C_BOLD}tmux${C_RESET}\n"
   local sync_status
   sync_status=$(env_get "TMUX_THREAD_SYNC" "true")
-  info "Thread sync: ${sync_status}"
   local cleanup_status
   cleanup_status=$(env_get "THREAD_CLEANUP" "archive")
-  info "Thread cleanup: ${cleanup_status}"
-  if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
-    local session_count
-    session_count=$(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')
-    info "Active tmux sessions: ${session_count}"
+  box_line "tmux  ${C_BOLD}${session_count}${C_RESET} sessions ${C_DIM}· sync:${sync_status} · ${cleanup_status}${C_RESET}"
+
+  box_empty
+  box_sep
+
+  # -- Services --
+  box_empty
+  if tmux has-session -t "${BRIDGE_SESSION:-aily-bridge}" 2>/dev/null; then
+    box_line "${C_GREEN}●${C_RESET} Bridge      ${C_GREEN}running${C_RESET}  ${C_DIM}(tmux: aily-bridge)${C_RESET}"
   else
-    info "tmux: not running"
+    box_line "${C_DIM}○ Bridge      not running${C_RESET}"
+  fi
+  local dash_url
+  dash_url=$(env_get "AILY_DASHBOARD_URL" "")
+  if [[ -n "$dash_url" ]]; then
+    if _dashboard_is_running || curl -sf --connect-timeout 1 "${dash_url}/healthz" >/dev/null 2>&1; then
+      box_line "${C_GREEN}●${C_RESET} Dashboard   ${C_GREEN}running${C_RESET}  ${C_DIM}${dash_url}${C_RESET}"
+    else
+      box_line "${C_DIM}○ Dashboard   stopped${C_RESET}   ${C_DIM}${dash_url}${C_RESET}"
+    fi
+  else
+    box_line "${C_DIM}○ Dashboard   not configured${C_RESET}"
   fi
 
+  box_empty
+  box_bottom
   echo ""
 }
 
@@ -1663,204 +1958,189 @@ _config_set() {
 cmd_doctor() {
   require_deps
 
-  hdr "aily doctor"
   local issues=0
 
+  echo ""
+  box_top "aily doctor"
+  box_empty
+
   # Dependencies
-  printf "\n  ${C_BOLD}Dependencies${C_RESET}\n"
+  box_line "${C_BOLD}Dependencies${C_RESET}"
+  local dep_line1="" dep_line2=""
+  local dep_count=0
   for cmd in curl jq tmux ssh python3; do
+    local mark="" ver=""
     if command -v "$cmd" >/dev/null 2>&1; then
-      local ver
       case "$cmd" in
         curl)    ver=$(curl --version 2>/dev/null | head -1 | awk '{print $2}') ;;
         jq)      ver=$(jq --version 2>/dev/null | tr -d 'jq-') ;;
         tmux)    ver=$(tmux -V 2>/dev/null | awk '{print $2}') ;;
-        ssh)     ver=$(ssh -V 2>&1 | awk '{print $1}') ;;
+        ssh)     ver="" ;;
         python3) ver=$(python3 --version 2>/dev/null | awk '{print $2}') ;;
       esac
-      ok "$cmd (${ver:-installed})"
+      if [[ -n "$ver" ]]; then
+        mark="${C_GREEN}✓${C_RESET} ${cmd} ${ver}"
+      else
+        mark="${C_GREEN}✓${C_RESET} ${cmd}"
+      fi
     else
       if [[ "$cmd" == "curl" || "$cmd" == "jq" ]]; then
-        err "$cmd NOT FOUND (required)"
+        mark="${C_RED}✗${C_RESET} ${cmd}"
         issues=$((issues + 1))
       else
-        warn "$cmd not found (optional)"
+        mark="${C_DIM}· ${cmd}${C_RESET}"
       fi
     fi
+    dep_count=$((dep_count + 1))
+    if [[ $dep_count -le 3 ]]; then
+      [[ -n "$dep_line1" ]] && dep_line1+="   "
+      dep_line1+="$mark"
+    else
+      [[ -n "$dep_line2" ]] && dep_line2+="   "
+      dep_line2+="$mark"
+    fi
   done
+  box_line "$dep_line1"
+  [[ -n "$dep_line2" ]] && box_line "$dep_line2"
+
+  box_empty
+  box_sep
 
   # Config file
-  printf "\n  ${C_BOLD}Configuration${C_RESET}\n"
+  box_empty
+  box_line "${C_BOLD}Config${C_RESET}"
   if [[ -f "$ENV_FILE" ]]; then
-    ok "Config exists at ${ENV_FILE}"
     local perms
     perms=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null || echo "unknown")
     if [[ "$perms" == "600" ]]; then
-      ok "Permissions: ${perms}"
+      box_line "${C_GREEN}✓${C_RESET} ${ENV_FILE} (${perms})"
     else
-      warn "Permissions: ${perms} (expected 600)"
+      box_line "${C_YELLOW}⚠${C_RESET} ${ENV_FILE} (${perms}, expected 600)"
       issues=$((issues + 1))
     fi
   else
-    err "Config not found at ${ENV_FILE}"
-    info "Run 'aily init' to create it"
+    box_line "${C_RED}✗${C_RESET} Config not found at ${ENV_FILE}"
     issues=$((issues + 1))
   fi
 
   # Dashboard (optional)
-  printf "\n  ${C_BOLD}Dashboard${C_RESET}\n"
   local url
-  url=$(dashboard_url)
-  if [[ -z "$url" ]]; then
-    info "Not configured (optional)"
-  else
-    printf "  Checking %s... " "$url"
+  url=$(env_get "AILY_DASHBOARD_URL" "")
+  if [[ -n "$url" ]]; then
     if curl -sf --connect-timeout 5 "${url}/healthz" >/dev/null 2>&1; then
-      printf "${C_GREEN}OK${C_RESET}\n"
+      box_line "${C_GREEN}✓${C_RESET} Dashboard ${C_GREEN}reachable${C_RESET}"
     else
-      printf "${C_RED}UNREACHABLE${C_RESET}\n"
+      box_line "${C_RED}✗${C_RESET} Dashboard ${C_RED}unreachable${C_RESET}"
       issues=$((issues + 1))
     fi
-
     local token
     token=$(dashboard_token)
     if [[ -n "$token" ]]; then
-      printf "  Checking auth... "
       if curl -sf --connect-timeout 5 -H "Authorization: Bearer ${token}" "${url}/api/stats" >/dev/null 2>&1; then
-        printf "${C_GREEN}OK${C_RESET}\n"
+        box_line "  ${C_GREEN}✓${C_RESET} Auth token valid"
       else
-        printf "${C_YELLOW}FAILED${C_RESET} (token may be invalid or dashboard unavailable)\n"
+        box_line "  ${C_YELLOW}⚠${C_RESET} Auth token invalid"
         issues=$((issues + 1))
       fi
-    else
-      info "No auth token configured"
     fi
+  else
+    box_line "${C_DIM}○ Dashboard  not configured (optional)${C_RESET}"
   fi
 
+  box_empty
+  box_sep
+
   # Platform APIs
-  printf "\n  ${C_BOLD}Platform APIs${C_RESET}\n"
+  box_empty
   load_env
 
   if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_CHANNEL_ID:-}" ]]; then
-    printf "  Discord API... "
     local discord_resp
     discord_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
       "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}" 2>/dev/null || echo "")
     if [[ -n "$discord_resp" ]] && echo "$discord_resp" | jq -e '.id' >/dev/null 2>&1; then
-      printf "${C_GREEN}OK${C_RESET}\n"
+      box_line "${C_BOLD}Discord API${C_RESET}  ${C_GREEN}● OK${C_RESET}"
+      _check_discord_permissions_box "${DISCORD_BOT_TOKEN}" "${DISCORD_CHANNEL_ID}" || issues=$((issues + $?))
     else
-      printf "${C_RED}FAILED${C_RESET}\n"
+      box_line "${C_BOLD}Discord API${C_RESET}  ${C_RED}● FAILED${C_RESET}"
       issues=$((issues + 1))
     fi
   else
-    info "Discord: not configured"
+    box_line "${C_DIM}○ Discord   not configured${C_RESET}"
   fi
 
   if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL_ID:-}" ]]; then
-    printf "  Slack API... "
     local slack_resp
     slack_resp=$(curl -sf --connect-timeout 5 -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
       "https://slack.com/api/auth.test" 2>/dev/null || echo "")
     if [[ -n "$slack_resp" ]] && echo "$slack_resp" | jq -e '.ok == true' >/dev/null 2>&1; then
-      printf "${C_GREEN}OK${C_RESET}\n"
+      box_line "${C_BOLD}Slack API${C_RESET}    ${C_GREEN}● OK${C_RESET}"
+      _check_slack_permissions_box "${SLACK_BOT_TOKEN}" "${SLACK_CHANNEL_ID}" || issues=$((issues + $?))
     else
-      printf "${C_RED}FAILED${C_RESET}\n"
+      box_line "${C_BOLD}Slack API${C_RESET}    ${C_RED}● FAILED${C_RESET}"
       issues=$((issues + 1))
     fi
   else
-    info "Slack: not configured"
+    box_line "${C_DIM}○ Slack     not configured${C_RESET}"
   fi
 
-  # Hook symlinks
-  printf "\n  ${C_BOLD}Hook symlinks${C_RESET}\n"
+  box_empty
+  box_sep
+
+  # Hooks & Agents progress
+  box_empty
   local expected_hooks=(notify-claude.sh notify-gemini.sh notify-codex.py notify-opencode.mjs post.sh thread-sync.sh discord-lib.sh slack-lib.sh)
-  local missing_hooks=0
+  local hook_count=0
+  local hook_total=${#expected_hooks[@]}
+  local broken_hooks=()
+  local missing_hooks=()
   for hf in "${expected_hooks[@]}"; do
     local target="${HOOKS_DIR}/${hf}"
     if [[ -L "$target" ]]; then
-      # -f follows symlinks: checks both symlink existence and target validity
       if [[ -f "$target" ]]; then
-        local link_target
-        link_target=$(readlink "$target" 2>/dev/null || echo "unknown")
-        ok "$hf -> $link_target"
+        hook_count=$((hook_count + 1))
       else
-        local link_target
-        link_target=$(readlink "$target" 2>/dev/null || echo "unknown")
-        err "$hf -> $link_target (BROKEN symlink)"
+        broken_hooks+=("$hf")
         issues=$((issues + 1))
       fi
     elif [[ -f "$target" ]]; then
-      ok "$hf (regular file)"
+      hook_count=$((hook_count + 1))
     else
-      warn "$hf (missing)"
-      missing_hooks=$((missing_hooks + 1))
+      missing_hooks+=("$hf")
     fi
   done
-  if [[ $missing_hooks -gt 0 ]]; then
-    issues=$((issues + missing_hooks))
-    info "Run 'install.sh' or 'aily init' to install missing hooks"
-  fi
+  issues=$((issues + ${#missing_hooks[@]}))
 
-  # Agent configurations
-  printf "\n  ${C_BOLD}Agent configurations${C_RESET}\n"
+  local hook_bar
+  hook_bar=$(_progress_bar $hook_count $hook_total 16)
+  local hook_icon="${C_GREEN}✓${C_RESET}"
+  [[ $hook_count -lt $hook_total ]] && hook_icon="${C_YELLOW}!${C_RESET}"
+  box_line "Hooks    ${C_BOLD}${hook_count}/${hook_total}${C_RESET}  ${C_GREEN}${hook_bar}${C_RESET} ${hook_icon}"
 
-  # Claude Code
+  local agent_count=0
+  local agent_total=4
   local claude_settings="$HOME/.claude/settings.json"
-  if [[ -f "$claude_settings" ]]; then
-    if grep -q "notify-clawdia\|notify-claude" "$claude_settings" 2>/dev/null; then
-      ok "Claude Code: hook configured in settings.json"
-    else
-      warn "Claude Code: settings.json exists but no aily hook found"
-      issues=$((issues + 1))
-    fi
-  else
-    info "Claude Code: settings.json not found"
-  fi
-
-  # Codex CLI
+  [[ -f "$claude_settings" ]] && grep -q "notify-clawdia\|notify-claude" "$claude_settings" 2>/dev/null && agent_count=$((agent_count + 1))
   local codex_config="$HOME/.codex/config.toml"
-  if [[ -f "$codex_config" ]]; then
-    if grep -q "notify-codex" "$codex_config" 2>/dev/null; then
-      ok "Codex CLI: hook configured in config.toml"
-    else
-      warn "Codex CLI: config.toml exists but no aily hook found"
-      issues=$((issues + 1))
-    fi
-  else
-    info "Codex CLI: config.toml not found"
-  fi
-
-  # Gemini CLI
+  [[ -f "$codex_config" ]] && grep -q "notify-codex" "$codex_config" 2>/dev/null && agent_count=$((agent_count + 1))
   local gemini_settings="$HOME/.gemini/settings.json"
-  if [[ -f "$gemini_settings" ]]; then
-    if grep -q "notify-gemini" "$gemini_settings" 2>/dev/null; then
-      ok "Gemini CLI: hook configured in settings.json"
-    else
-      warn "Gemini CLI: settings.json exists but no aily hook found"
-      issues=$((issues + 1))
-    fi
-  else
-    info "Gemini CLI: settings.json not found"
-  fi
-
-  # OpenCode
+  [[ -f "$gemini_settings" ]] && grep -q "notify-gemini" "$gemini_settings" 2>/dev/null && agent_count=$((agent_count + 1))
   local opencode_plugins="$HOME/.config/opencode/plugins"
-  if [[ -d "$opencode_plugins" ]]; then
-    if find "$opencode_plugins" -maxdepth 1 \( -name "aily*" -o -name "notify-opencode*" \) -print -quit | grep -q .; then
-      ok "OpenCode: plugin installed"
-    else
-      warn "OpenCode: plugins dir exists but no aily plugin found"
-    fi
-  else
-    info "OpenCode: plugins dir not found"
-  fi
+  [[ -d "$opencode_plugins" ]] && find "$opencode_plugins" -maxdepth 1 \( -name "aily*" -o -name "notify-opencode*" \) -print -quit 2>/dev/null | grep -q . && agent_count=$((agent_count + 1))
 
-  # Summary
-  echo ""
+  local agent_bar
+  agent_bar=$(_progress_bar $agent_count $agent_total 16)
+  local agent_icon="${C_GREEN}✓${C_RESET}"
+  [[ $agent_count -lt $agent_total ]] && agent_icon="${C_YELLOW}!${C_RESET}"
+  box_line "Agents   ${C_BOLD}${agent_count}/${agent_total}${C_RESET}  ${C_GREEN}${agent_bar}${C_RESET} ${agent_icon}"
+
+  box_empty
+
+  # Bottom with issue count
   if [[ $issues -eq 0 ]]; then
-    printf "  ${C_GREEN}${C_BOLD}No issues found.${C_RESET}\n"
+    box_bottom "${C_GREEN}0 issues${C_RESET}"
   else
-    printf "  ${C_YELLOW}${C_BOLD}Found %d issue(s).${C_RESET}\n" "$issues"
+    box_bottom "${C_YELLOW}${issues} issue(s)${C_RESET}"
   fi
   echo ""
 }
@@ -2236,6 +2516,208 @@ cmd_deploy() {
 }
 
 # -------------------------------------------------------------------
+# aily bridge [start|stop|status|logs]
+# -------------------------------------------------------------------
+BRIDGE_SESSION="aily-bridge"
+
+cmd_bridge() {
+  local action="${1:-status}"
+
+  case "$action" in
+    start)
+      if tmux has-session -t "$BRIDGE_SESSION" 2>/dev/null; then
+        warn "Bridge already running (tmux session: ${BRIDGE_SESSION})"
+        info "Use 'aily bridge logs' to view output"
+        return 0
+      fi
+      require_deps
+      load_env
+      if [[ ! -f "$ENV_FILE" ]]; then
+        err "Config not found. Run 'aily init' first."
+        return 1
+      fi
+      local bridge_script="${SCRIPT_DIR}/agent-bridge.py"
+      if [[ ! -f "$bridge_script" ]]; then
+        err "agent-bridge.py not found at ${bridge_script}"
+        return 1
+      fi
+      # Check aiohttp dependency
+      if ! python3 -c "import aiohttp" 2>/dev/null; then
+        err "Python package 'aiohttp' not installed"
+        info "Install with: pip3 install aiohttp"
+        return 1
+      fi
+      tmux new-session -d -s "$BRIDGE_SESSION" "python3 '${bridge_script}'" 2>/dev/null
+      if tmux has-session -t "$BRIDGE_SESSION" 2>/dev/null; then
+        ok "Bridge started (tmux session: ${BRIDGE_SESSION})"
+        info "Discord commands (!new, !kill, !sessions) are now active"
+        info "Use 'aily bridge logs' to view output"
+      else
+        err "Failed to start bridge"
+        return 1
+      fi
+      ;;
+    stop)
+      if tmux has-session -t "$BRIDGE_SESSION" 2>/dev/null; then
+        tmux kill-session -t "$BRIDGE_SESSION" 2>/dev/null
+        ok "Bridge stopped"
+      else
+        info "Bridge is not running"
+      fi
+      ;;
+    restart)
+      cmd_bridge stop
+      sleep 1
+      cmd_bridge start
+      ;;
+    logs|log)
+      if tmux has-session -t "$BRIDGE_SESSION" 2>/dev/null; then
+        tmux capture-pane -t "$BRIDGE_SESSION" -p -S -30
+      else
+        info "Bridge is not running"
+      fi
+      ;;
+    status|"")
+      if tmux has-session -t "$BRIDGE_SESSION" 2>/dev/null; then
+        ok "Bridge is running (tmux session: ${BRIDGE_SESSION})"
+      else
+        info "Bridge is not running"
+        info "Start with: aily bridge start"
+      fi
+      ;;
+    *)
+      echo "Usage: aily bridge [start|stop|restart|status|logs]" >&2
+      return 1
+      ;;
+  esac
+}
+
+# -------------------------------------------------------------------
+# aily dashboard [start|stop|status|logs]
+# -------------------------------------------------------------------
+DASHBOARD_PID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/aily/dashboard.pid"
+DASHBOARD_LOG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/aily/dashboard.log"
+
+_dashboard_is_running() {
+  # Check PID file first
+  if [[ -f "$DASHBOARD_PID_FILE" ]]; then
+    local pid
+    pid=$(<"$DASHBOARD_PID_FILE")
+    if kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    rm -f "$DASHBOARD_PID_FILE"
+  fi
+  return 1
+}
+
+cmd_dashboard() {
+  local action="${1:-status}"
+
+  case "$action" in
+    start)
+      if _dashboard_is_running; then
+        local pid=$(<"$DASHBOARD_PID_FILE")
+        warn "Dashboard already running (pid: ${pid})"
+        info "Logs: $DASHBOARD_LOG_FILE"
+        return 0
+      fi
+      load_env
+      local dash_url
+      dash_url=$(env_get "AILY_DASHBOARD_URL" "")
+      if [[ -z "$dash_url" ]]; then
+        dash_url="http://localhost:8080"
+        env_set "AILY_DASHBOARD_URL" "$dash_url"
+        ok "Set AILY_DASHBOARD_URL=$dash_url"
+      fi
+      local port=8080
+      if [[ "$dash_url" =~ :([0-9]+) ]]; then
+        port="${BASH_REMATCH[1]}"
+      fi
+      local dash_dir="${SCRIPT_DIR}"
+      if [[ ! -f "${dash_dir}/dashboard/__main__.py" ]]; then
+        err "dashboard module not found at ${dash_dir}/dashboard/"
+        return 1
+      fi
+      if ! python3 -c "import aiohttp" 2>/dev/null; then
+        err "Python package 'aiohttp' not installed"
+        info "Install with: pip3 install aiohttp"
+        return 1
+      fi
+      cd "$dash_dir"
+      DASHBOARD_PORT="$port" nohup python3 -m dashboard \
+        >>"$DASHBOARD_LOG_FILE" 2>&1 &
+      local pid=$!
+      echo "$pid" > "$DASHBOARD_PID_FILE"
+      disown "$pid"
+      # Wait briefly for health check
+      local i
+      for i in 1 2 3 4 5; do
+        if curl -sf --connect-timeout 1 "http://localhost:${port}/healthz" >/dev/null 2>&1; then
+          ok "Dashboard started on port ${port} (pid: ${pid})"
+          info "URL: http://localhost:${port}"
+          info "Logs: $DASHBOARD_LOG_FILE"
+          return 0
+        fi
+        sleep 1
+      done
+      # Process may still be starting
+      if kill -0 "$pid" 2>/dev/null; then
+        ok "Dashboard started on port ${port} (pid: ${pid})"
+        info "Health check pending — check logs: $DASHBOARD_LOG_FILE"
+      else
+        rm -f "$DASHBOARD_PID_FILE"
+        err "Dashboard failed to start"
+        info "Check logs: $DASHBOARD_LOG_FILE"
+        return 1
+      fi
+      ;;
+    stop)
+      if _dashboard_is_running; then
+        local pid=$(<"$DASHBOARD_PID_FILE")
+        kill "$pid" 2>/dev/null
+        rm -f "$DASHBOARD_PID_FILE"
+        ok "Dashboard stopped (pid: ${pid})"
+      else
+        info "Dashboard is not running"
+      fi
+      ;;
+    restart)
+      cmd_dashboard stop
+      sleep 1
+      cmd_dashboard start
+      ;;
+    logs|log)
+      if [[ -f "$DASHBOARD_LOG_FILE" ]]; then
+        tail -30 "$DASHBOARD_LOG_FILE"
+      else
+        info "No log file found"
+      fi
+      ;;
+    status|"")
+      load_env
+      local dash_url
+      dash_url=$(env_get "AILY_DASHBOARD_URL" "")
+      if _dashboard_is_running; then
+        local pid=$(<"$DASHBOARD_PID_FILE")
+        ok "Dashboard is running (pid: ${pid})"
+        info "URL: ${dash_url:-http://localhost:8080}"
+      elif [[ -n "$dash_url" ]] && curl -sf --connect-timeout 2 "${dash_url}/healthz" >/dev/null 2>&1; then
+        ok "Dashboard is reachable"
+        info "URL: ${dash_url}"
+      else
+        info "Dashboard is not running"
+        info "Start with: aily dashboard start"
+      fi
+      ;;
+    *)
+      echo "Usage: aily dashboard [start|stop|restart|status|logs]" >&2
+      return 1
+      ;;
+  esac
+}
+
+# -------------------------------------------------------------------
 # aily uninstall
 # -------------------------------------------------------------------
 cmd_uninstall() {
@@ -2353,7 +2835,24 @@ with open(path, 'w') as f:
     info "OpenCode: plugins dir not found"
   fi
 
-  # 3. Remove tmux hooks
+  # 3. Stop bridge bot
+  printf "\n  ${C_BOLD}Stopping services${C_RESET}\n"
+  if tmux has-session -t "$BRIDGE_SESSION" 2>/dev/null; then
+    tmux kill-session -t "$BRIDGE_SESSION" 2>/dev/null
+    ok "Stopped bridge (tmux: ${BRIDGE_SESSION})"
+  else
+    info "Bridge not running"
+  fi
+  if _dashboard_is_running; then
+    local pid=$(<"$DASHBOARD_PID_FILE")
+    kill "$pid" 2>/dev/null
+    rm -f "$DASHBOARD_PID_FILE"
+    ok "Stopped dashboard (pid: ${pid})"
+  else
+    info "Dashboard not running"
+  fi
+
+  # 4. Remove tmux hooks
   printf "\n  ${C_BOLD}Removing tmux hooks${C_RESET}\n"
   if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
     tmux set-hook -gu session-created 2>/dev/null && ok "Removed session-created hook" || info "No session-created hook"
@@ -2395,7 +2894,10 @@ with open(path, 'w') as f:
 # aily help / version
 # -------------------------------------------------------------------
 cmd_help() {
-  printf "${C_BOLD}aily${C_RESET} %s -- AI agent notification relay\n" "${AILY_VERSION:-dev}"
+  echo ""
+  box_top "aily"
+  box_line "AI agent notification relay  ${C_DIM}v${AILY_VERSION:-dev}${C_RESET}"
+  box_bottom
   echo ""
   printf "${C_BOLD}Usage:${C_RESET}\n"
   echo "  aily [--json] [--verbose] <command> [options]"
@@ -2436,6 +2938,12 @@ cmd_help() {
   echo "  start [name]              Create thread (default: current tmux session)"
   echo "  stop [name]               Archive thread (default: current tmux session)"
   echo "  auto [on|off]             Toggle auto thread sync (or show status)"
+  echo ""
+  printf "${C_BOLD}Services:${C_RESET}\n"
+  echo "  bridge start|stop|restart Start/stop the Discord command bridge"
+  echo "  bridge status|logs        Show bridge status or output"
+  echo "  dashboard start|stop      Start/stop the web dashboard"
+  echo "  dashboard status|logs     Show dashboard status or output"
   echo ""
   printf "${C_BOLD}General:${C_RESET}\n"
   echo "  help, -h, --help          Show this help"
@@ -2482,6 +2990,8 @@ case "$CMD" in
   stop)       cmd_stop "$@" ;;
   auto)       cmd_auto "$@" ;;
   usage)      cmd_usage "$@" ;;
+  bridge)     cmd_bridge "$@" ;;
+  dashboard)  cmd_dashboard "$@" ;;
   deploy)     cmd_deploy "$@" ;;
   uninstall)  cmd_uninstall "$@" ;;
   help|-h|--help) cmd_help ;;
