@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Extract the last meaningful assistant text message from Claude Code session JSONL."""
-import hashlib, json, os, sys, glob, re
+import fcntl, hashlib, json, os, sys, glob, re
 
 _xdg_data = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
 STATE_DIR = os.path.join(_xdg_data, "aily", "dedup")
@@ -121,6 +121,7 @@ def mark_as_sent(jsonl_path, text):
     msg_hash = hashlib.md5(text.encode()).hexdigest()
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(_state_file_for(jsonl_path), "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
         f.write(msg_hash)
 
 def main():

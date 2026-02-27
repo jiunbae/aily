@@ -11,6 +11,7 @@
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HOOK_DIR/log.sh"
 ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
@@ -46,7 +47,7 @@ _post_with_retry() {
   local delay=1
 
   while (( attempt <= MAX_RETRIES )); do
-    if bash "${HOOK_DIR}/${platform}-post.sh" "$@" 2>/dev/null; then
+    if bash "${HOOK_DIR}/${platform}-post.sh" "$@" 2>&1; then
       return 0
     fi
     attempt=$((attempt + 1))
@@ -55,23 +56,25 @@ _post_with_retry() {
       delay=$((delay * 2))
     fi
   done
-  # Log failure (stderr only, non-blocking)
-  echo "[aily] Failed to post to ${platform} after $((MAX_RETRIES + 1)) attempts" >&2
+  _aily_log "ERR" "post: failed to post to ${platform} after $((MAX_RETRIES + 1)) attempts"
   return 1
 }
 
 # Dispatch to each enabled platform (in parallel, with retry)
 IFS=',' read -ra PLATFORM_LIST <<< "$PLATFORMS"
+pids=()
 for platform in "${PLATFORM_LIST[@]}"; do
   platform=$(echo "$platform" | tr -d ' ')
   case "$platform" in
     discord)
-      _post_with_retry discord "$@" &
+      _post_with_retry discord "$@" & pids+=($!)
       ;;
     slack)
-      _post_with_retry slack "$@" &
+      _post_with_retry slack "$@" & pids+=($!)
       ;;
   esac
 done
 
-wait
+for pid in "${pids[@]}"; do
+  wait "$pid" || _aily_log "ERR" "post: platform job $pid failed"
+done

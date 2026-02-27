@@ -10,6 +10,9 @@
 
 set -euo pipefail
 
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HOOK_DIR/log.sh"
+
 RAW_MODE=false
 if [[ "${1:-}" == "--raw" ]]; then
   RAW_MODE=true
@@ -21,7 +24,6 @@ else
   MESSAGE_TEXT="${2:-}"
 fi
 
-HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
@@ -30,18 +32,8 @@ fi
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 
-# Detect tmux session
-TMUX_BIN="/opt/homebrew/bin/tmux"
-if [[ ! -x "$TMUX_BIN" ]]; then
-  TMUX_BIN="tmux"
-fi
-
-TMUX_SESSION=""
-if [[ -n "${TMUX_PANE:-}" ]]; then
-  TMUX_SESSION=$("$TMUX_BIN" display-message -t "${TMUX_PANE}" -p '#{session_name}' 2>/dev/null || true)
-elif [[ -n "${TMUX:-}" ]]; then
-  TMUX_SESSION=$("$TMUX_BIN" display-message -p '#S' 2>/dev/null || true)
-fi
+# Detect tmux session via direct query (works even when env vars are missing)
+TMUX_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
 
 if [[ -z "${SLACK_BOT_TOKEN:-}" || -z "${SLACK_CHANNEL_ID:-}" || -z "${TMUX_SESSION}" ]]; then
   exit 0
