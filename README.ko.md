@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="docs/banner.svg" alt="aily — AI 에이전트 알림 릴레이" width="700"/>
+<img src="docs/banner.svg" alt="aily — AI 에이전트 세션 브릿지" width="700"/>
 
 <br/>
 
-**에이전트 작업이 끝나면 알려줍니다. 폰으로 답장하세요.**
+**tmux 세션을 Discord & Slack에 동기화. 출력 확인, 입력 전달, CLI 전환까지.**
 
-tmux 세션에서 AI 코딩 에이전트를 돌리는 개발자를 위해 만들었습니다.
+AI 코딩 에이전트의 tmux 세션과 채팅 플랫폼 간 완전한 I/O 브릿지 — 모니터링, 제어, 터미널 연결을 하나로.
 
 [![npm](https://img.shields.io/npm/v/aily-cli)](https://www.npmjs.com/package/aily-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -21,7 +21,7 @@ tmux 세션에서 AI 코딩 에이전트를 돌리는 개발자를 위해 만들
 <div><img src="https://quickstart-for-agents.vercel.app/api/header.svg?theme=claude-code&mascot=wave&title=Install+aily&lang=Agents" width="100%" /></div>
 
 ```
-aily 설치 — Discord/Slack용 AI 에이전트 알림 릴레이 (https://github.com/jiunbae/aily).
+aily 설치 — Discord/Slack용 AI 에이전트 세션 브릿지 (https://github.com/jiunbae/aily).
 설치: `git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init`
   (또는: `npm install -g aily-cli && aily init`)
 위저드가 물어봅니다: 플랫폼 (Discord/Slack/both) → 봇 토큰 → 채널 ID → 완료.
@@ -126,7 +126,7 @@ git clone https://github.com/jiunbae/aily.git && cd aily && ./install.sh
 
 Discord/Slack에서 직접 세션을 관리할 수도 있습니다: `!new <name> [host]`, `!kill <name>`, `!sessions`. 스레드 안에서는 단축키로 키 시퀀스를 보낼 수 있습니다: `!c` (Ctrl+C), `!d` (Ctrl+D), `!z` (Ctrl+Z), `!q`, `!enter`, `!esc`.
 
-단방향 알림 도구와 달리, aily는 **양방향 채팅**을 제공합니다 — 폰에서 에이전트를 모니터링하고 제어할 수 있습니다.
+단방향 알림 도구와 달리, aily는 **완전한 세션 브릿지**를 제공합니다 — 출력 모니터링, 입력 전달, 그리고 `aily attach`로 동일한 터미널 화면에 바로 연결할 수 있습니다.
 
 ## 브릿지
 
@@ -303,7 +303,7 @@ Docker 외부에서 브릿지를 실행하려면 Python 3.10+이 필요합니다
 ## Quickstart for Agents
 
 ```
-Install aily — AI agent notification relay for Discord/Slack (https://github.com/jiunbae/aily).
+Install aily — AI agent session bridge for Discord/Slack (https://github.com/jiunbae/aily).
 Install: `git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init`
   (or: `npm install -g aily-cli && aily init`)
 The wizard asks: platform (Discord/Slack/both) → bot token → channel ID → done.
@@ -324,7 +324,7 @@ Every tmux session gets a dedicated thread. Start a session, get a thread. Close
 
 You can also manage sessions directly from Discord/Slack using bridge commands: `!new <name> [host]`, `!kill <name>`, `!sessions`. Inside a thread, use shortcuts to send key sequences: `!c` (Ctrl+C), `!d` (Ctrl+D), `!z` (Ctrl+Z), `!q`, `!enter`, `!esc`.
 
-Unlike one-way notification tools, aily provides **bidirectional chat** — you can monitor and control agents entirely from your phone.
+Unlike one-way notification tools, aily provides a **full session bridge** — monitor output, send input, and `aily attach` to jump into the same terminal view from CLI.
 
 ## Bridge
 

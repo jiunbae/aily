@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="docs/banner.svg" alt="aily — AI agent notification relay" width="700"/>
+<img src="docs/banner.svg" alt="aily — AI agent session bridge" width="700"/>
 
 <br/>
 
-**Know when your agent finishes. Reply from your phone.**
+**Sync your tmux sessions to Discord & Slack. See everything, reply from anywhere.**
 
-Built for developers running AI coding agents in tmux sessions across SSH hosts.
+Full I/O bridge between AI coding agents in tmux and your chat platform — monitor output, send input, switch to CLI. All in sync.
 
 [![npm](https://img.shields.io/npm/v/aily-cli)](https://www.npmjs.com/package/aily-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -21,7 +21,7 @@ Built for developers running AI coding agents in tmux sessions across SSH hosts.
 <div><img src="https://quickstart-for-agents.vercel.app/api/header.svg?theme=claude-code&mascot=wave&title=Install+aily&lang=Agents" width="100%" /></div>
 
 ```
-Install aily — AI agent notification relay for Discord/Slack (https://github.com/jiunbae/aily).
+Install aily — AI agent session bridge for Discord/Slack (https://github.com/jiunbae/aily).
 Install: `git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init`
   (or: `npm install -g aily-cli && aily init`)
 The wizard asks: platform (Discord/Slack/both) → bot token → channel ID → done.
@@ -126,7 +126,7 @@ Every tmux session gets a dedicated thread. Start a session, get a thread. Close
 
 You can also manage sessions directly from Discord/Slack using bridge commands: `!new <name> [host]`, `!kill <name>`, `!sessions`. Inside a thread, use shortcuts to send key sequences: `!c` (Ctrl+C), `!d` (Ctrl+D), `!z` (Ctrl+Z), `!q`, `!enter`, `!esc`.
 
-Unlike one-way notification tools, aily provides **bidirectional chat** — you can monitor and control agents entirely from your phone.
+Unlike one-way notification tools, aily provides a **full session bridge** — monitor output, send input, and `aily attach` to jump into the same terminal view from CLI.
 
 <!-- TODO: Add screenshot/GIF showing Discord notification + reply flow -->
 
@@ -307,7 +307,7 @@ Bridges require Python 3.10+ when running outside Docker. For Kubernetes, deploy
 ## 에이전트 빠른 시작
 
 ```
-aily 설치 — Discord/Slack용 AI 에이전트 알림 릴레이 (https://github.com/jiunbae/aily).
+aily 설치 — Discord/Slack용 AI 에이전트 세션 브릿지 (https://github.com/jiunbae/aily).
 설치: `git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init`
   (또는: `npm install -g aily-cli && aily init`)
 위저드가 물어봅니다: 플랫폼 (Discord/Slack/both) → 봇 토큰 → 채널 ID → 완료.
