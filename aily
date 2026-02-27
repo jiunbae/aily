@@ -2135,6 +2135,28 @@ cmd_doctor() {
   box_line "Agents   ${C_BOLD}${agent_count}/${agent_total}${C_RESET}  ${C_GREEN}${agent_bar}${C_RESET} ${agent_icon}"
 
   box_empty
+  box_sep
+
+  # Hook logs
+  box_empty
+  local log_file="${XDG_DATA_HOME:-$HOME/.local/share}/aily/logs/hooks.log"
+  if [[ -f "$log_file" ]]; then
+    local err_count
+    err_count=$(grep -c '\[ERR\]' "$log_file" 2>/dev/null || echo 0)
+    if [[ "$err_count" -gt 0 ]]; then
+      box_line "${C_BOLD}Hook logs${C_RESET}  ${C_YELLOW}${err_count} error(s)${C_RESET}"
+      while IFS= read -r errline; do
+        box_line "  ${C_DIM}${errline}${C_RESET}"
+      done < <(grep '\[ERR\]' "$log_file" | tail -3)
+      issues=$((issues + 1))
+    else
+      box_line "${C_BOLD}Hook logs${C_RESET}  ${C_GREEN}no errors${C_RESET}"
+    fi
+  else
+    box_line "${C_DIM}○ Hook logs  no log file yet${C_RESET}"
+  fi
+
+  box_empty
 
   # Bottom with issue count
   if [[ $issues -eq 0 ]]; then

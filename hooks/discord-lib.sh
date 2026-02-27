@@ -2,6 +2,8 @@
 # Shared Discord API functions for all hooks.
 # Source this file after setting DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID.
 
+# Expects log.sh to be sourced by the caller (discord-post.sh)
+
 _DISCORD_API="https://discord.com/api/v10"
 _DISCORD_AUTH="Authorization: Bot ${DISCORD_BOT_TOKEN}"
 _DISCORD_GUILD_ID=""
@@ -11,9 +13,12 @@ discord_get_guild_id() {
     echo "$_DISCORD_GUILD_ID"
     return
   fi
-  _DISCORD_GUILD_ID=$(curl -sf -H "$_DISCORD_AUTH" \
-    "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}" 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('guild_id',''))" 2>/dev/null || echo "")
+  local resp
+  resp=$(curl -sf -H "$_DISCORD_AUTH" \
+    "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}" 2>&1) || {
+    _aily_log "ERR" "discord: get guild_id failed: $resp"; resp=""
+  }
+  _DISCORD_GUILD_ID=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('guild_id',''))" 2>/dev/null || echo "")
   echo "$_DISCORD_GUILD_ID"
 }
 
@@ -80,18 +85,24 @@ discord_create_thread() {
   local payload msg_id thread_id
   payload=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$starter_content")
 
-  msg_id=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
+  local msg_resp
+  msg_resp=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
     -d "$payload" \
-    "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages" 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+    "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages" 2>&1) || {
+    _aily_log "ERR" "discord: create starter message failed: $msg_resp"; msg_resp=""
+  }
+  msg_id=$(echo "$msg_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
 
   if [[ -n "$msg_id" ]]; then
     local name_payload
     name_payload=$(python3 -c "import json,sys; print(json.dumps({'name': sys.stdin.read().strip()}))" <<< "$thread_name")
-    thread_id=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
+    local thread_resp
+    thread_resp=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
       -d "$name_payload" \
-      "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages/${msg_id}/threads" 2>/dev/null \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+      "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages/${msg_id}/threads" 2>&1) || {
+      _aily_log "ERR" "discord: create thread failed: $thread_resp"; thread_resp=""
+    }
+    thread_id=$(echo "$thread_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
 
     # Post welcome message with usage guide
     if [[ -n "$thread_id" ]]; then
@@ -112,9 +123,10 @@ discord_ensure_thread() {
 
   if [[ -n "$thread_id" ]]; then
     # Unarchive if needed
-    curl -sf -X PATCH -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
+    local unarch_resp
+    unarch_resp=$(curl -sf -X PATCH -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
       -d '{"archived": false}' \
-      "${_DISCORD_API}/channels/${thread_id}" > /dev/null 2>&1 || true
+      "${_DISCORD_API}/channels/${thread_id}" 2>&1) || _aily_log "ERR" "discord: unarchive thread failed: $unarch_resp"
     echo "$thread_id"
   else
     if [[ -n "$starter_content" ]]; then
@@ -147,7 +159,8 @@ discord_post_to_thread() {
     local short="${content:0:1800}..."
     payload=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$short")
   fi
-  curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
+  local post_resp
+  post_resp=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
     -d "$payload" \
-    "${_DISCORD_API}/channels/${thread_id}/messages" > /dev/null 2>&1 || true
+    "${_DISCORD_API}/channels/${thread_id}/messages" 2>&1) || _aily_log "ERR" "discord: post to thread failed: $post_resp"
 }

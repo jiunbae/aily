@@ -8,12 +8,17 @@ set -euo pipefail
 # Read stdin BEFORE forking (not available in background)
 TOOL_INPUT=$(cat)
 
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi
 
-HOOK_DIR="$(dirname "$0")"
+# Require tmux: check env first, fall back to tmux query
+if [[ -z "${TMUX:-}" ]] && ! tmux display-message -p '' >/dev/null 2>&1; then
+  exit 0
+fi
 
 # Fork to background so hook returns immediately
 (

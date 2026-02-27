@@ -2,6 +2,8 @@
 # Shared Slack API functions for all hooks.
 # Source this file after setting SLACK_BOT_TOKEN and SLACK_CHANNEL_ID.
 
+# Expects log.sh to be sourced by the caller (slack-post.sh)
+
 _SLACK_API="https://slack.com/api"
 _SLACK_AUTH="Authorization: Bearer ${SLACK_BOT_TOKEN}"
 
@@ -35,10 +37,13 @@ slack_create_thread() {
   local payload parent_ts
   payload=$(python3 -c "import json,sys; print(json.dumps({'channel': sys.argv[1], 'text': sys.stdin.read().strip()}))" "$SLACK_CHANNEL_ID" <<< "$starter_content")
 
-  parent_ts=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
+  local create_resp
+  create_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
     -d "$payload" \
-    "${_SLACK_API}/chat.postMessage" 2>/dev/null \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message',{}).get('ts','') if d.get('ok') else '')" 2>/dev/null || echo "")
+    "${_SLACK_API}/chat.postMessage" 2>&1) || {
+    _aily_log "ERR" "slack: create thread failed: $create_resp"; create_resp=""
+  }
+  parent_ts=$(echo "$create_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message',{}).get('ts','') if d.get('ok') else '')" 2>/dev/null || echo "")
 
   if [[ -n "$parent_ts" ]]; then
     # Post welcome message as thread reply
@@ -74,9 +79,10 @@ slack_archive_thread() {
   # Slack has no thread archive concept. Post a closing message and add :lock: reaction.
   slack_post_to_thread "$thread_ts" ":lock: Thread archived. Session closed."
   # Add :lock: reaction to parent message
-  curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
+  local react_resp
+  react_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
     -d "{\"channel\":\"${SLACK_CHANNEL_ID}\",\"timestamp\":\"${thread_ts}\",\"name\":\"lock\"}" \
-    "${_SLACK_API}/reactions.add" > /dev/null 2>&1 || true
+    "${_SLACK_API}/reactions.add" 2>&1) || _aily_log "ERR" "slack: add reaction failed: $react_resp"
 }
 
 slack_delete_thread() {
@@ -101,7 +107,8 @@ print(json.dumps({
     'text': sys.stdin.read().strip()
 }))
 " "$SLACK_CHANNEL_ID" "$thread_ts" <<< "$content")
-  curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
+  local post_resp
+  post_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
     -d "$payload" \
-    "${_SLACK_API}/chat.postMessage" > /dev/null 2>&1 || true
+    "${_SLACK_API}/chat.postMessage" 2>&1) || _aily_log "ERR" "slack: post to thread failed: $post_resp"
 }
