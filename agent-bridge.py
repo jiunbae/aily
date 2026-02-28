@@ -894,6 +894,9 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
             await post_message(http, token, channel_id, f"Failed to send `{shortcut_key}` to `{session_name}`")
         return
 
+    # Show typing indicator for faster perceived response
+    await discord_request(http, token, "POST", f"/channels/{channel_id}/typing")
+
     await post_message(http, token, channel_id,
         f"Forwarding to `{session_name}` on `{host}`...")
 
