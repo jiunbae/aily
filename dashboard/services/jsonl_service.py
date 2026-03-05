@@ -76,12 +76,11 @@ class JSONLService:
             )
             return None
 
-        project_dir = f"~/.claude/projects/{sanitized_cwd}"
-        safe_dir = shlex.quote(project_dir)
+        project_dir = f"$HOME/.claude/projects/{shlex.quote(sanitized_cwd)}"
 
         rc, out = await ssh.run_ssh(
             host,
-            f"find {safe_dir} -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-",
+            f"find {project_dir} -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-",
             timeout=10,
         )
         if rc != 0 or not out.strip():

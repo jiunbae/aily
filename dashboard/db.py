@@ -7,6 +7,7 @@ All queries use parameterized ? placeholders — no string interpolation.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -20,8 +21,8 @@ logger = logging.getLogger(__name__)
 # Module-level connection — initialized once at startup
 _db: aiosqlite.Connection | None = None
 
-# Batch commit state — when True, execute/insert_or_ignore skip per-call commits
-_in_batch: bool = False
+# Batch commit depth — per-coroutine via ContextVar for concurrency safety
+_batch_depth: contextvars.ContextVar[int] = contextvars.ContextVar("_batch_depth", default=0)
 
 # Allowed table names for insert_or_ignore (prevents SQL injection via table name)
 _VALID_TABLES = {"sessions", "messages", "events", "kv", "usage_snapshots", "command_queue"}
@@ -207,26 +208,35 @@ def get_db() -> aiosqlite.Connection:
 async def batch() -> AsyncIterator[None]:
     """Context manager for batching multiple writes into a single commit.
 
+    Uses ContextVar for concurrency safety — each coroutine tracks its own
+    batch depth independently. Supports reentrant (nested) usage.
+
     Usage:
         async with db.batch():
             await db.execute(...)
             await db.insert_or_ignore(...)
         # commit happens here automatically
     """
-    global _in_batch
-    _in_batch = True
+    depth = _batch_depth.get()
+    _batch_depth.set(depth + 1)
     try:
         yield
-    finally:
-        _in_batch = False
-        await get_db().commit()
+    except BaseException:
+        _batch_depth.set(depth)
+        if depth == 0:
+            await get_db().rollback()
+        raise
+    else:
+        _batch_depth.set(depth)
+        if depth == 0:
+            await get_db().commit()
 
 
 async def execute(sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Cursor:
     """Execute a SQL statement with parameters."""
     db = get_db()
     cursor = await db.execute(sql, params)
-    if not _in_batch:
+    if _batch_depth.get() == 0:
         await db.commit()
     return cursor
 
@@ -275,7 +285,7 @@ async def insert_or_ignore(
         f"INSERT OR IGNORE INTO {table} ({columns}) VALUES ({placeholders})",
         values,
     )
-    if not _in_batch:
+    if _batch_depth.get() == 0:
         await db.commit()
     return cursor
 
