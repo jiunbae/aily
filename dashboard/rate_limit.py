@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import defaultdict
-
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
@@ -42,7 +40,7 @@ class _RateBucket:
 
 
 # Per-IP buckets keyed by (ip, path_prefix)
-_buckets: dict[tuple[str, str], _RateBucket] = defaultdict()
+_buckets: dict[tuple[str, str], _RateBucket] = {}
 
 _MAX_BUCKETS = 10_000
 _BUCKET_TTL = 600  # 10 minutes

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -276,6 +277,10 @@ async def insert_or_ignore(
             f"Invalid table name {table!r}. Must be one of: {sorted(_VALID_TABLES)}"
         )
 
+    for col in data.keys():
+        if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", col):
+            raise ValueError(f"Invalid column name: {col!r}")
+
     columns = ", ".join(data.keys())
     placeholders = ", ".join("?" for _ in data)
     values = tuple(data.values())
@@ -292,6 +297,7 @@ async def insert_or_ignore(
 
 async def cleanup_old_events(days: int = 30) -> int:
     """Delete events older than the given number of days. Returns deleted count."""
+    days = max(1, days)
     cursor = await execute(
         "DELETE FROM events WHERE created_at < datetime('now', ?)",
         (f"-{days} days",),
