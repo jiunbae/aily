@@ -99,7 +99,7 @@ def extract_last_assistant_text(jsonl_path, max_chars=1000):
             if len(full_text) > max_chars:
                 full_text = full_text[:max_chars] + "..."
             return full_text
-        except:
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue
     return None
 
@@ -112,7 +112,7 @@ def _state_file_for(jsonl_path):
 
 def was_already_sent(jsonl_path, text):
     """Check if this exact message was already sent for this session."""
-    msg_hash = hashlib.md5(text.encode()).hexdigest()
+    msg_hash = hashlib.sha256(text.encode()).hexdigest()[:32]
     try:
         with open(_state_file_for(jsonl_path)) as f:
             return f.read().strip() == msg_hash
@@ -122,7 +122,7 @@ def was_already_sent(jsonl_path, text):
 
 def mark_as_sent(jsonl_path, text):
     """Record this message hash to prevent re-sends for this session."""
-    msg_hash = hashlib.md5(text.encode()).hexdigest()
+    msg_hash = hashlib.sha256(text.encode()).hexdigest()[:32]
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(_state_file_for(jsonl_path), "w") as f:
         fcntl.flock(f, fcntl.LOCK_EX)

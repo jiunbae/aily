@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from aiohttp import web
 
@@ -180,7 +181,7 @@ async def export_session(request: web.Request) -> web.Response:
         return web.Response(
             text="\n".join(lines),
             content_type="text/markdown",
-            headers={"Content-Disposition": f'attachment; filename="{name}.md"'},
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.md"},
         )
 
     return web.json_response(
@@ -188,7 +189,7 @@ async def export_session(request: web.Request) -> web.Response:
             "session": dict(session),
             "messages": messages,
         },
-        headers={"Content-Disposition": f'attachment; filename="{name}.json"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.json"},
     )
 
 
