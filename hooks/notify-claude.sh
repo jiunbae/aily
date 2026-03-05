@@ -1,5 +1,11 @@
 #!/bin/bash
-# Claude Code Notification hook entry point.
+# DEPRECATED: Use HTTP hooks instead (see .claude/settings.json).
+# HTTP hooks POST events directly to the dashboard, eliminating the
+# JSONL polling, background fork, and dedup state files.
+#
+# Install HTTP hooks: ./hooks/install-http-hooks.sh
+#
+# Legacy: Claude Code Notification hook entry point.
 # Extracts last response from Claude Code JSONL, then posts to enabled platforms.
 # Registered in ~/.claude/settings.json -> hooks.Notification
 

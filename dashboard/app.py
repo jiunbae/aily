@@ -19,6 +19,7 @@ import os
 from aiohttp import web
 
 from dashboard import db
+from dashboard.api import hooks as hooks_api
 from dashboard.api import preferences as prefs_api
 from dashboard.api import search as search_api
 from dashboard.api import sessions as sessions_api
@@ -201,6 +202,14 @@ def _setup_routes(app: web.Application) -> None:
     # Bridge webhook (internal, no auth)
     app.router.add_post(
         "/api/hooks/event", sessions_api.receive_bridge_event
+    )
+
+
+    # Claude Code HTTP hooks (internal, no auth)
+    app.router.add_post("/api/hooks/stop", hooks_api.handle_stop)
+    app.router.add_post("/api/hooks/session", hooks_api.handle_session)
+    app.router.add_post(
+        "/api/hooks/tool-activity", hooks_api.handle_tool_activity
     )
 
     # Usage monitoring
