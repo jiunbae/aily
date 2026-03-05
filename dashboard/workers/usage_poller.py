@@ -33,11 +33,14 @@ async def usage_poller(
         "Usage poller started (interval=%ds, providers=%s)", interval, providers
     )
     poll_count = 0
+    consecutive_errors = 0
+    MAX_BACKOFF = 300  # cap at 5 minutes
 
     while True:
         try:
             await _poll_once(usage_svc, providers)
             poll_count += 1
+            consecutive_errors = 0
 
             if poll_count % CLEANUP_EVERY_N_POLLS == 0:
                 deleted = await usage_svc.cleanup_old_snapshots()
@@ -47,7 +50,14 @@ async def usage_poller(
             logger.info("Usage poller stopped")
             return
         except Exception:
-            logger.exception("Usage poller error")
+            consecutive_errors += 1
+            backoff = min(interval * (2 ** consecutive_errors), MAX_BACKOFF)
+            logger.exception(
+                "Usage poller error (attempt %d, next retry in %ds)",
+                consecutive_errors, backoff,
+            )
+            await asyncio.sleep(backoff)
+            continue
 
         await asyncio.sleep(interval)
 

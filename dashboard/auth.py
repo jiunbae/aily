@@ -23,15 +23,30 @@ logger = logging.getLogger(__name__)
 COOKIE_NAME = "aily_session"
 COOKIE_MAX_AGE = 86400  # 24 hours
 
-# Paths that skip authentication
+# Paths that skip dashboard authentication entirely
 _NO_AUTH_PREFIXES = (
     "/healthz",
-    "/api/hooks/",
     "/api/install.sh",
     "/static/",
     "/login",
     "/logout",
 )
+
+# Track whether the missing-hook-secret warning has been emitted
+_hook_secret_warned = False
+
+
+def verify_hook_secret(request: web.Request, secret: str) -> bool:
+    """Verify shared secret from a hook request.
+
+    Claude Code HTTP hooks send headers as static values (no HMAC computation),
+    so we use a simple shared secret comparison via ``X-Hook-Secret`` header.
+    Uses timing-safe comparison to prevent timing attacks.
+    """
+    provided = request.headers.get("X-Hook-Secret", "")
+    if not provided:
+        return False
+    return hmac.compare_digest(provided, secret)
 
 
 def create_session_cookie(token: str) -> str:
@@ -96,13 +111,38 @@ async def auth_middleware(
         return await handler(request)
 
     path = request.path
+    dashboard_token = config.dashboard_token
 
     # Skip auth for exempted paths
     for prefix in _NO_AUTH_PREFIXES:
         if path.startswith(prefix):
             return await handler(request)
 
-    dashboard_token = config.dashboard_token
+    # Hook endpoints: use shared secret verification instead of token auth
+    if path.startswith("/api/hooks/"):
+        global _hook_secret_warned  # noqa: PLW0603
+        if config.hook_secret:
+            # Accept either shared secret or Bearer token (for bridge compat)
+            if verify_hook_secret(request, config.hook_secret):
+                return await handler(request)
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer ") and hmac.compare_digest(
+                auth_header[7:], dashboard_token
+            ):
+                return await handler(request)
+            logger.warning("Invalid hook secret: %s %s", request.method, path)
+            return web.json_response(
+                {"error": {"code": "UNAUTHORIZED", "message": "Invalid hook secret"}},
+                status=401,
+            )
+        # No secret configured — allow through but warn once
+        if not _hook_secret_warned:
+            logger.warning(
+                "HOOK_SECRET is not set; hook endpoints are unauthenticated. "
+                "Set HOOK_SECRET to enable HMAC verification."
+            )
+            _hook_secret_warned = True
+        return await handler(request)
 
     # WebSocket: check ?token= query param or cookie
     if path == "/ws":

@@ -19,6 +19,7 @@ import os
 from aiohttp import web
 
 from dashboard import db
+from dashboard.api import hooks as hooks_api
 from dashboard.api import preferences as prefs_api
 from dashboard.api import search as search_api
 from dashboard.api import sessions as sessions_api
@@ -203,6 +204,14 @@ def _setup_routes(app: web.Application) -> None:
         "/api/hooks/event", sessions_api.receive_bridge_event
     )
 
+
+    # Claude Code HTTP hooks (internal, no auth)
+    app.router.add_post("/api/hooks/stop", hooks_api.handle_stop)
+    app.router.add_post("/api/hooks/session", hooks_api.handle_session)
+    app.router.add_post(
+        "/api/hooks/tool-activity", hooks_api.handle_tool_activity
+    )
+
     # Usage monitoring
     app.router.add_get("/api/usage", usage_api.get_current_usage)
     app.router.add_get("/api/usage/history", usage_api.get_usage_history)
@@ -322,6 +331,13 @@ async def _login_submit(request: web.Request) -> web.Response:
         # Set session cookie and redirect
         cookie_value = create_session_cookie(config.dashboard_token)
         response = web.HTTPFound(next_url)
+
+        # Determine if we should set Secure flag
+        is_https = (
+            request.headers.get("X-Forwarded-Proto") == "https"
+            or config.dashboard_url.startswith("https://")
+        )
+
         response.set_cookie(
             COOKIE_NAME,
             cookie_value,
@@ -329,6 +345,7 @@ async def _login_submit(request: web.Request) -> web.Response:
             httponly=True,
             samesite="Lax",
             path="/",
+            secure=is_https,
         )
         raise response
 

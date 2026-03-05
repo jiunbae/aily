@@ -16,6 +16,7 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from dashboard.app import _setup_routes
 from dashboard.auth import auth_middleware
 from dashboard.config import Config
 from dashboard.db import init_db, close_db, SCHEMA_SQL
@@ -25,12 +26,6 @@ from dashboard.services.message_service import MessageService
 from dashboard.services.platform_service import PlatformService
 from dashboard.services.session_service import SessionService
 from dashboard.services.jsonl_service import JSONLService
-
-from dashboard.api import sessions as sessions_api
-from dashboard.api import settings as settings_api
-from dashboard.api import preferences as prefs_api
-from dashboard.api import stats as stats_api
-from dashboard.api import ws as ws_api
 
 
 def _make_config(**overrides) -> Config:
@@ -97,63 +92,8 @@ async def _build_app(config: Config | None = None) -> web.Application:
     app["jsonl_service"] = jsonl_svc
     app["ws_clients"] = set()
 
-    # -- routes (same as app._setup_routes) --
-    app.router.add_get("/api/sessions", sessions_api.list_sessions)
-    app.router.add_get("/api/sessions/{name}", sessions_api.get_session)
-    app.router.add_post("/api/sessions", sessions_api.create_session)
-    app.router.add_delete("/api/sessions/{name}", sessions_api.delete_session)
-    app.router.add_post(
-        "/api/sessions/{name}/send", sessions_api.send_message
-    )
-    app.router.add_get(
-        "/api/sessions/{name}/messages", sessions_api.get_session_messages
-    )
-    app.router.add_post(
-        "/api/sessions/{name}/sync", sessions_api.sync_session_messages
-    )
-    app.router.add_patch(
-        "/api/sessions/{name}", sessions_api.update_session
-    )
-    app.router.add_post(
-        "/api/sessions/bulk-delete", sessions_api.bulk_delete_sessions
-    )
-    app.router.add_post(
-        "/api/sessions/{name}/ingest-jsonl", sessions_api.ingest_jsonl
-    )
-
-    # Preferences
-    app.router.add_get("/api/preferences", prefs_api.get_preferences)
-    app.router.add_put("/api/preferences", prefs_api.set_preferences)
-    app.router.add_get("/api/preferences/{key}", prefs_api.get_preference)
-    app.router.add_put("/api/preferences/{key}", prefs_api.set_preference)
-
-    # Stats
-    app.router.add_get("/api/stats", stats_api.get_stats)
-
-    # WebSocket
-    app.router.add_get("/ws", ws_api.websocket_handler)
-
-    # Bridge webhook
-    app.router.add_post("/api/hooks/event", sessions_api.receive_bridge_event)
-
-    # Settings
-    settings_api.setup_routes(app)
-
-    # Health check
-    async def _healthz(request: web.Request) -> web.Response:
-        from dashboard.db import get_db
-        checks: dict[str, str] = {"status": "ok"}
-        try:
-            db_conn = get_db()
-            await db_conn.execute("SELECT 1")
-            checks["database"] = "ok"
-        except Exception as e:
-            checks["database"] = f"error: {e}"
-            checks["status"] = "degraded"
-        status_code = 200 if checks["status"] == "ok" else 503
-        return web.json_response(checks, status=status_code)
-
-    app.router.add_get("/healthz", _healthz)
+    # Register all API routes (reuse the real setup from app.py)
+    _setup_routes(app)
 
     return app
 

@@ -24,6 +24,7 @@ from dashboard.services.session_service import SessionService
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 30
+_cleanup_counter = 0
 
 
 async def session_poller(
@@ -41,11 +42,21 @@ async def session_poller(
         interval: Seconds between poll cycles.
     """
     logger.info("Session poller started (interval=%ds)", interval)
+    consecutive_errors = 0
+    MAX_BACKOFF = 300  # cap at 5 minutes
     while True:
         try:
             await _poll_once(session_svc, platform_svc, event_bus)
+            consecutive_errors = 0
         except Exception:
-            logger.exception("Session poller error")
+            consecutive_errors += 1
+            backoff = min(interval * (2 ** consecutive_errors), MAX_BACKOFF)
+            logger.exception(
+                "Session poller error (attempt %d, next retry in %ds)",
+                consecutive_errors, backoff,
+            )
+            await asyncio.sleep(backoff)
+            continue
         await asyncio.sleep(interval)
 
 
@@ -203,3 +214,15 @@ async def _poll_once(
                             now,
                         ),
                     )
+
+    # Periodic cleanup of old events
+    global _cleanup_counter
+    _cleanup_counter += 1
+    if _cleanup_counter >= 100:
+        _cleanup_counter = 0
+        try:
+            deleted = await db.cleanup_old_events(30)
+            if deleted:
+                logger.info("Cleaned up %d old events", deleted)
+        except Exception:
+            logger.exception("Failed to clean up old events")

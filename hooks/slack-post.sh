@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared Slack posting logic for all agent hooks.
+# Slack posting hook.
 # Usage: slack-post.sh <agent_name> <message_text>
 #    OR: slack-post.sh --raw <pre_formatted_message>
 #
@@ -13,43 +13,12 @@ set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HOOK_DIR/log.sh"
 
-RAW_MODE=false
-if [[ "${1:-}" == "--raw" ]]; then
-  RAW_MODE=true
-  RAW_MESSAGE="${2:-}"
-  AGENT_NAME="raw"
-  MESSAGE_TEXT=""
-else
-  AGENT_NAME="${1:-unknown}"
-  MESSAGE_TEXT="${2:-}"
-fi
+# shellcheck source=_post-common.sh
+source "$HOOK_DIR/_post-common.sh" "$@"
 
-ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
-if [[ ! -f "$ENV_FILE" ]]; then
-  exit 0
-fi
+[[ -z "${SLACK_BOT_TOKEN:-}" || -z "${SLACK_CHANNEL_ID:-}" ]] && exit 0
 
-# shellcheck source=/dev/null
-source "$ENV_FILE"
-
-# Detect tmux session via direct query (works even when env vars are missing)
-TMUX_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
-
-if [[ -z "${SLACK_BOT_TOKEN:-}" || -z "${SLACK_CHANNEL_ID:-}" || -z "${TMUX_SESSION}" ]]; then
-  exit 0
-fi
-
-HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
-PROJECT=$(basename "${PWD:-unknown}")
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-
-_DEFAULT_FMT='[agent] {session} - {host}'
-THREAD_NAME="${THREAD_NAME_FORMAT:-$_DEFAULT_FMT}"
-THREAD_NAME="${THREAD_NAME//\{session\}/$TMUX_SESSION}"
-THREAD_NAME="${THREAD_NAME//\{host\}/$HOSTNAME_SHORT}"
-
-# Source shared Slack API functions
-# shellcheck source=/dev/null
+# shellcheck source=slack-lib.sh
 source "${HOOK_DIR}/slack-lib.sh"
 
 # Find or create thread
