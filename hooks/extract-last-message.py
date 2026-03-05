@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Extract the last meaningful assistant text message from Claude Code session JSONL."""
+"""Extract the last meaningful assistant text message from Claude Code session JSONL.
+
+DEPRECATED: This logic has been ported to dashboard/api/hooks.py for use with
+HTTP hooks. This file is kept for backward compatibility with shell-based hooks.
+"""
 import fcntl, hashlib, json, os, sys, glob, re
 
 _xdg_data = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
