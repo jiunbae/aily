@@ -12,15 +12,18 @@ set -euo pipefail
 
 BASE_URL="http://localhost:8080"
 TOKEN_VAR=""
+HOOK_SECRET_VAR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --url)  BASE_URL="${2%/}"; shift 2 ;;
     --token) TOKEN_VAR="$2"; shift 2 ;;
+    --hook-secret) HOOK_SECRET_VAR="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: $0 [--url BASE_URL] [--token ENV_VAR_NAME]"
-      echo "  --url    Dashboard URL (default: http://localhost:8080)"
-      echo "  --token  Env var name for auth token (e.g. AILY_TOKEN)"
+      echo "Usage: $0 [--url BASE_URL] [--token ENV_VAR_NAME] [--hook-secret ENV_VAR_NAME]"
+      echo "  --url          Dashboard URL (default: http://localhost:8080)"
+      echo "  --token        Env var name for auth token (e.g. AILY_TOKEN)"
+      echo "  --hook-secret  Env var name for HMAC hook secret (e.g. HOOK_SECRET)"
       exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
@@ -37,9 +40,29 @@ mkdir -p "$(dirname "$SETTINGS")"
 # Build hook object
 _hook_obj() {
   local url="$1" timeout="$2"
+  local env_vars=()
+  local headers='{}'
+
   if [[ -n "$TOKEN_VAR" ]]; then
-    jq -n --arg url "$url" --argjson timeout "$timeout" --arg token "\$$TOKEN_VAR" --arg var "$TOKEN_VAR" \
-      '{type:"http", url:$url, timeout:$timeout, headers:{"Authorization":("Bearer "+$token)}, allowedEnvVars:[$var]}'
+    headers=$(jq -n --arg token "\$$TOKEN_VAR" '{"Authorization":("Bearer "+$token)}')
+    env_vars+=("$TOKEN_VAR")
+  fi
+  if [[ -n "$HOOK_SECRET_VAR" ]]; then
+    env_vars+=("$HOOK_SECRET_VAR")
+  fi
+
+  local env_arr
+  env_arr=$(printf '%s\n' "${env_vars[@]}" | jq -R . | jq -s .)
+
+  if [[ -n "$HOOK_SECRET_VAR" ]]; then
+    jq -n --arg url "$url" --argjson timeout "$timeout" \
+      --argjson headers "$headers" --argjson envVars "$env_arr" \
+      --arg secret "\$$HOOK_SECRET_VAR" \
+      '{type:"http", url:$url, timeout:$timeout, headers:($headers + {"X-Hook-Secret":$secret}), allowedEnvVars:$envVars}'
+  elif [[ ${#env_vars[@]} -gt 0 ]]; then
+    jq -n --arg url "$url" --argjson timeout "$timeout" \
+      --argjson headers "$headers" --argjson envVars "$env_arr" \
+      '{type:"http", url:$url, timeout:$timeout, headers:$headers, allowedEnvVars:$envVars}'
   else
     jq -n --arg url "$url" --argjson timeout "$timeout" \
       '{type:"http", url:$url, timeout:$timeout}'

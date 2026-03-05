@@ -562,22 +562,7 @@ async def sync_session_messages(request: web.Request) -> web.Response:
                 discord_thread_id, after=after
             )
             if messages:
-                # Get bot user ID for role detection
-                import aiohttp as _aiohttp
-
-                bot_id = ""
-                try:
-                    headers = {"Authorization": f"Bot {platform_svc.discord_token}"}
-                    async with _aiohttp.ClientSession() as http:
-                        async with http.get(
-                            "https://discord.com/api/v10/users/@me",
-                            headers=headers,
-                        ) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                bot_id = data.get("id", "")
-                except Exception:
-                    pass
+                bot_id = await platform_svc.get_discord_bot_user_id()
 
                 total += await message_svc.ingest_discord_messages(
                     name, messages, bot_user_id=bot_id

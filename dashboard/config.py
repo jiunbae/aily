@@ -39,6 +39,7 @@ class Config:
 
     # Auth
     dashboard_token: str = ""
+    hook_secret: str = ""
 
     # Public URLs (used in templates and install scripts)
     dashboard_url: str = ""
@@ -83,7 +84,10 @@ class Config:
 
         # Server settings
         config.host = os.environ.get("DASHBOARD_HOST", config.host)
-        config.port = int(os.environ.get("DASHBOARD_PORT", str(config.port)))
+        try:
+            config.port = int(os.environ.get("DASHBOARD_PORT", str(config.port)))
+        except ValueError:
+            logger.warning("Invalid DASHBOARD_PORT, using default: %d", config.port)
 
         # Database
         config.db_path = os.environ.get("DASHBOARD_DB_PATH", config.db_path)
@@ -102,18 +106,29 @@ class Config:
 
         # Auth
         config.dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
+        config.hook_secret = os.environ.get("HOOK_SECRET", "")
 
         # Public URLs
         config.dashboard_url = os.environ.get("DASHBOARD_URL", "")
         config.github_repo = os.environ.get("GITHUB_REPO", config.github_repo)
 
         # Worker intervals
-        config.poll_interval = int(
-            os.environ.get("POLL_INTERVAL", str(config.poll_interval))
-        )
-        config.ingest_interval = int(
-            os.environ.get("INGEST_INTERVAL", str(config.ingest_interval))
-        )
+        try:
+            config.poll_interval = int(
+                os.environ.get("POLL_INTERVAL", str(config.poll_interval))
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid POLL_INTERVAL, using default: %d", config.poll_interval
+            )
+        try:
+            config.ingest_interval = int(
+                os.environ.get("INGEST_INTERVAL", str(config.ingest_interval))
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid INGEST_INTERVAL, using default: %d", config.ingest_interval
+            )
 
         # Feature flags
         config.enable_session_poller = (
@@ -130,12 +145,23 @@ class Config:
         config.enable_jsonl_ingester = (
             os.environ.get("ENABLE_JSONL_INGESTER", "false").lower() == "true"
         )
-        config.jsonl_scan_interval = int(
-            os.environ.get("JSONL_SCAN_INTERVAL", str(config.jsonl_scan_interval))
-        )
-        config.jsonl_max_lines = int(
-            os.environ.get("JSONL_MAX_LINES", str(config.jsonl_max_lines))
-        )
+        try:
+            config.jsonl_scan_interval = int(
+                os.environ.get("JSONL_SCAN_INTERVAL", str(config.jsonl_scan_interval))
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid JSONL_SCAN_INTERVAL, using default: %d",
+                config.jsonl_scan_interval,
+            )
+        try:
+            config.jsonl_max_lines = int(
+                os.environ.get("JSONL_MAX_LINES", str(config.jsonl_max_lines))
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid JSONL_MAX_LINES, using default: %d", config.jsonl_max_lines
+            )
 
         # Usage monitoring
         config.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -221,6 +247,10 @@ def _load_notify_env(config: Config, path: str) -> None:
     # Dashboard auth token (CLI stores as AILY_AUTH_TOKEN)
     if not config.dashboard_token:
         config.dashboard_token = env.get("AILY_AUTH_TOKEN", "")
+
+    # Hook HMAC secret
+    if not config.hook_secret:
+        config.hook_secret = env.get("HOOK_SECRET", "")
 
     # SSH hosts from config file if not already set from env var
     if config.ssh_hosts == ["localhost"]:

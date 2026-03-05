@@ -40,11 +40,21 @@ async def message_sync_worker(
     # Initial sync: wait a bit for session poller to populate sessions first
     await asyncio.sleep(15)
 
+    consecutive_errors = 0
+    MAX_BACKOFF = 300  # cap at 5 minutes
     while True:
         try:
             await _sync_once(platform_svc, message_svc, event_bus)
+            consecutive_errors = 0
         except Exception:
-            logger.exception("Message sync error")
+            consecutive_errors += 1
+            backoff = min(interval * (2 ** consecutive_errors), MAX_BACKOFF)
+            logger.exception(
+                "Message sync error (attempt %d, next retry in %ds)",
+                consecutive_errors, backoff,
+            )
+            await asyncio.sleep(backoff)
+            continue
         await asyncio.sleep(interval)
 
 
@@ -59,7 +69,7 @@ async def _sync_once(
     # --- Discord sync ---
     if platform_svc.has_discord:
         # Get bot user ID for role detection
-        bot_user_id = await _get_discord_bot_user_id(platform_svc)
+        bot_user_id = await platform_svc.get_discord_bot_user_id()
 
         # Find all active sessions with discord threads
         sessions = await db.fetchall(
@@ -146,26 +156,3 @@ async def _sync_once(
 
     if total_ingested > 0:
         logger.info("Message sync complete: %d new messages", total_ingested)
-
-
-async def _get_discord_bot_user_id(platform_svc: PlatformService) -> str:
-    """Get the bot's own user ID from Discord API."""
-    import aiohttp
-
-    if not platform_svc.has_discord:
-        return ""
-
-    try:
-        headers = {"Authorization": f"Bot {platform_svc.discord_token}"}
-        async with aiohttp.ClientSession() as http:
-            async with http.get(
-                "https://discord.com/api/v10/users/@me",
-                headers=headers,
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("id", "")
-    except Exception:
-        logger.exception("Failed to get Discord bot user ID")
-
-    return ""
