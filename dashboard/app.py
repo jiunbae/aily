@@ -331,6 +331,13 @@ async def _login_submit(request: web.Request) -> web.Response:
         # Set session cookie and redirect
         cookie_value = create_session_cookie(config.dashboard_token)
         response = web.HTTPFound(next_url)
+
+        # Determine if we should set Secure flag
+        is_https = (
+            request.headers.get("X-Forwarded-Proto") == "https"
+            or config.dashboard_url.startswith("https://")
+        )
+
         response.set_cookie(
             COOKIE_NAME,
             cookie_value,
@@ -338,6 +345,7 @@ async def _login_submit(request: web.Request) -> web.Response:
             httponly=True,
             samesite="Lax",
             path="/",
+            secure=is_https,
         )
         raise response
 

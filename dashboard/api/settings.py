@@ -114,12 +114,14 @@ async def get_settings(request: web.Request) -> web.Response:
     )
 
     settings = dict(DEFAULTS)
+    stored_keys: set[str] = set()
     for row in rows:
         key = row["key"].removeprefix(SETTING_PREFIX)
         if key in DEFAULTS:
             settings[key] = row["value"]
+            stored_keys.add(key)
 
-    # Override with runtime-derived values
+    # Override with runtime-derived values (read-only keys always from runtime)
     settings.update(_get_runtime_settings(request))
 
     # Also populate ssh_hosts from config if not explicitly set
@@ -127,17 +129,19 @@ async def get_settings(request: web.Request) -> web.Response:
     if config and not settings["ssh_hosts"]:
         settings["ssh_hosts"] = ",".join(config.ssh_hosts)
 
-    # Include config-derived values for the frontend
-    settings["enable_session_poller"] = (
-        str(config.enable_session_poller).lower() if config else "true"
-    )
-    settings["poll_interval"] = str(config.poll_interval) if config else "30"
-    settings["enable_jsonl_ingester"] = (
-        str(config.enable_jsonl_ingester).lower() if config else "false"
-    )
-    settings["jsonl_scan_interval"] = (
-        str(config.jsonl_scan_interval) if config else "60"
-    )
+    # Use runtime config values as fallbacks (stored values take precedence)
+    if config:
+        runtime_defaults = {
+            "enable_session_poller": str(config.enable_session_poller).lower(),
+            "poll_interval": str(config.poll_interval),
+            "enable_jsonl_ingester": str(config.enable_jsonl_ingester).lower(),
+            "jsonl_scan_interval": str(config.jsonl_scan_interval),
+        }
+        for key, runtime_val in runtime_defaults.items():
+            # Only use runtime value if no stored value exists
+            if key not in stored_keys:
+                settings[key] = runtime_val
+
     settings["github_repo"] = _get_github_repo(request)
 
     return json_ok({"settings": settings})

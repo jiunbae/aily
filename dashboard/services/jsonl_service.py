@@ -16,6 +16,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+import shlex
 from datetime import datetime, timezone
 from typing import Any
 
@@ -66,11 +68,20 @@ class JSONLService:
         if sanitized_cwd.startswith("-"):
             sanitized_cwd = sanitized_cwd[1:]
 
+        # Reject unsafe characters to prevent shell injection
+        if not re.fullmatch(r"[a-zA-Z0-9._-]+", sanitized_cwd):
+            logger.warning(
+                "Rejecting unsafe sanitized_cwd %r for session %s",
+                sanitized_cwd, session_name,
+            )
+            return None
+
         project_dir = f"~/.claude/projects/{sanitized_cwd}"
+        safe_dir = shlex.quote(project_dir)
 
         rc, out = await ssh.run_ssh(
             host,
-            f"ls -t {project_dir}/*.jsonl 2>/dev/null | head -1",
+            f"find {safe_dir} -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-",
             timeout=10,
         )
         if rc != 0 or not out.strip():
@@ -92,7 +103,7 @@ class JSONLService:
         """
         rc, out = await ssh.run_ssh(
             host,
-            f"tail -{self.max_lines} {jsonl_path}",
+            f"tail -{self.max_lines} {shlex.quote(jsonl_path)}",
             timeout=30,
         )
         if rc != 0 or not out:
@@ -293,16 +304,17 @@ class JSONLService:
         if not new_lines:
             return 0
 
-        # Step 4: Parse and insert
+        # Step 4: Parse and insert (batched — single commit for all writes)
         messages = self.parse_jsonl_lines(new_lines, session_name)
         ingested = 0
-        for msg_data in messages:
-            cursor = await db.insert_or_ignore("messages", msg_data)
-            if cursor.rowcount and cursor.rowcount > 0:
-                ingested += 1
-                # Publish event for WebSocket
-                await self.event_bus.publish(
-                    Event.message_new(
+        new_events: list[dict[str, Any]] = []
+
+        async with db.batch():
+            for msg_data in messages:
+                cursor = await db.insert_or_ignore("messages", msg_data)
+                if cursor.rowcount and cursor.rowcount > 0:
+                    ingested += 1
+                    new_events.append(
                         {
                             "session_name": session_name,
                             "role": msg_data["role"],
@@ -311,17 +323,22 @@ class JSONLService:
                             "timestamp": msg_data["timestamp"],
                         }
                     )
+
+            # Step 5: Update offset tracker (inside the same batch)
+            if lines:
+                latest_hash = hashlib.sha256(
+                    lines[-1].encode()
+                ).hexdigest()[:32]
+                await db.execute(
+                    """INSERT INTO kv (key, value, updated)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(key) DO UPDATE SET value = ?, updated = ?""",
+                    (kv_key, latest_hash, db.now_iso(), latest_hash, db.now_iso()),
                 )
 
-        # Step 5: Update offset tracker
-        if lines:
-            latest_hash = hashlib.sha256(lines[-1].encode()).hexdigest()[:32]
-            await db.execute(
-                """INSERT INTO kv (key, value, updated)
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(key) DO UPDATE SET value = ?, updated = ?""",
-                (kv_key, latest_hash, db.now_iso(), latest_hash, db.now_iso()),
-            )
+        # Publish events after commit so subscribers see committed data
+        for event_data in new_events:
+            await self.event_bus.publish(Event.message_new(event_data))
 
         if ingested > 0:
             logger.info(

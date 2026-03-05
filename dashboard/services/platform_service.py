@@ -399,6 +399,67 @@ class PlatformService:
             logger.exception("Failed to get Slack bot user ID")
         return ""
 
+    async def get_discord_bot_user_id(self) -> str:
+        """Get the Discord bot's own user ID via /users/@me."""
+        if not self.has_discord:
+            return ""
+        headers = {"Authorization": f"Bot {self.discord_token}"}
+        try:
+            http = await self._get_http()
+            async with http.get(
+                "https://discord.com/api/v10/users/@me",
+                headers=headers,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("id", "")
+        except Exception:
+            logger.exception("Failed to get Discord bot user ID")
+        return ""
+
+    async def post_discord_message(self, thread_id: str, content: str) -> bool:
+        """Post a message to a Discord thread. Returns True on success."""
+        if not self.has_discord or not thread_id:
+            return False
+        try:
+            http = await self._get_http()
+            async with http.post(
+                f"https://discord.com/api/v10/channels/{thread_id}/messages",
+                headers={"Authorization": f"Bot {self.discord_token}"},
+                json={"content": content[:2000]},
+            ) as resp:
+                if resp.status < 400:
+                    logger.info("Posted to Discord thread %s", thread_id)
+                    return True
+                logger.warning("Discord post failed: %d", resp.status)
+        except Exception:
+            logger.exception("Error posting to Discord thread %s", thread_id)
+        return False
+
+    async def post_slack_message(self, channel_id: str, thread_ts: str, text: str) -> bool:
+        """Post a message to a Slack thread. Returns True on success."""
+        if not self.has_slack or not thread_ts:
+            return False
+        try:
+            http = await self._get_http()
+            async with http.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={
+                    "Authorization": f"Bearer {self.slack_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"channel": channel_id, "thread_ts": thread_ts, "text": text},
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        logger.info("Posted to Slack thread %s", thread_ts)
+                        return True
+                    logger.warning("Slack post error: %s", data.get("error"))
+        except Exception:
+            logger.exception("Error posting to Slack thread %s", thread_ts)
+        return False
+
     async def fetch_discord_thread_messages(
         self, thread_id: str, limit: int = 100, after: str | None = None
     ) -> list[dict[str, Any]]:

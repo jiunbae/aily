@@ -27,6 +27,28 @@ from dashboard.services.platform_service import PlatformService
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_TRANSCRIPT_DIRS = (
+    Path("~/.claude").expanduser().resolve(),
+    Path("/tmp").resolve(),
+)
+
+
+def _validate_transcript_path(path: str) -> bool:
+    """Validate that a transcript path is safe to read.
+
+    Only allows .jsonl files under known Claude Code directories.
+    Uses Path.resolve() to prevent directory traversal attacks.
+    """
+    try:
+        resolved = Path(path).resolve()
+    except (ValueError, OSError):
+        return False
+    if resolved.suffix != ".jsonl":
+        return False
+    return any(
+        resolved.is_relative_to(allowed) for allowed in _ALLOWED_TRANSCRIPT_DIRS
+    )
+
 
 # ---------------------------------------------------------------------------
 # JSONL extraction helpers (ported from hooks/extract-last-message.py)
@@ -92,6 +114,10 @@ def extract_last_assistant_text(
     Returns:
         Extracted and formatted text, or None if nothing suitable found.
     """
+    if not jsonl_path.endswith(".jsonl"):
+        logger.warning("Refusing to read non-JSONL file: %s", jsonl_path)
+        return None
+
     try:
         with open(jsonl_path) as f:
             lines = f.readlines()
@@ -172,6 +198,11 @@ async def handle_stop(request: web.Request) -> web.Response:
             400, "MISSING_TRANSCRIPT", "transcript_path is required"
         )
 
+    if not _validate_transcript_path(transcript_path):
+        return error_response(
+            400, "INVALID_PATH", "Invalid transcript path"
+        )
+
     # Extract last assistant message from the JSONL transcript
     text = extract_last_assistant_text(transcript_path)
     if not text:
@@ -204,28 +235,8 @@ async def handle_stop(request: web.Request) -> web.Response:
         thread_id = (
             session.get("discord_thread_id") if session else None
         ) or await platform_svc.find_discord_thread(session_name)
-        if thread_id:
-            try:
-                http = await platform_svc._get_http()
-                # Discord message limit is 2000 chars
-                msg_text = text[:2000]
-                async with http.post(
-                    f"https://discord.com/api/v10/channels/{thread_id}/messages",
-                    headers={"Authorization": f"Bot {platform_svc.discord_token}"},
-                    json={"content": msg_text},
-                ) as resp:
-                    if resp.status < 400:
-                        relayed_to.append("discord")
-                        logger.info(
-                            "Relayed stop message to Discord thread %s",
-                            thread_id,
-                        )
-                    else:
-                        logger.warning(
-                            "Discord relay failed: %d", resp.status
-                        )
-            except Exception:
-                logger.exception("Error relaying to Discord")
+        if thread_id and await platform_svc.post_discord_message(thread_id, text):
+            relayed_to.append("discord")
 
     # Relay to Slack
     if platform_svc.has_slack:
@@ -236,35 +247,8 @@ async def handle_stop(request: web.Request) -> web.Response:
             (session.get("slack_channel_id") if session else None)
             or platform_svc.slack_channel_id
         )
-        if thread_ts:
-            try:
-                http = await platform_svc._get_http()
-                async with http.post(
-                    "https://slack.com/api/chat.postMessage",
-                    headers={
-                        "Authorization": f"Bearer {platform_svc.slack_token}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "channel": slack_channel,
-                        "thread_ts": thread_ts,
-                        "text": text,
-                    },
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("ok"):
-                            relayed_to.append("slack")
-                            logger.info(
-                                "Relayed stop message to Slack thread %s",
-                                thread_ts,
-                            )
-                        else:
-                            logger.warning(
-                                "Slack relay error: %s", data.get("error")
-                            )
-            except Exception:
-                logger.exception("Error relaying to Slack")
+        if thread_ts and await platform_svc.post_slack_message(slack_channel, thread_ts, text):
+            relayed_to.append("slack")
 
     # Publish event for WebSocket clients
     await event_bus.publish(Event.hook_stop({
