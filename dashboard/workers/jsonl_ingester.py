@@ -36,11 +36,21 @@ async def jsonl_ingester(
     # Wait for session poller to populate data
     await asyncio.sleep(30)
 
+    consecutive_errors = 0
+    MAX_BACKOFF = 300  # cap at 5 minutes
     while True:
         try:
             await _scan_once(jsonl_svc)
+            consecutive_errors = 0
         except Exception:
-            logger.exception("JSONL ingester error")
+            consecutive_errors += 1
+            backoff = min(interval * (2 ** consecutive_errors), MAX_BACKOFF)
+            logger.exception(
+                "JSONL ingester error (attempt %d, next retry in %ds)",
+                consecutive_errors, backoff,
+            )
+            await asyncio.sleep(backoff)
+            continue
         await asyncio.sleep(interval)
 
 

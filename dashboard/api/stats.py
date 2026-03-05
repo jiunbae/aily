@@ -26,14 +26,14 @@ async def get_stats(request: web.Request) -> web.Response:
         "platforms": {"discord": true, "slack": false}
     }
     """
-    # Session counts by status
-    status_counts: dict[str, int] = {}
-    for status in SESSION_STATUSES:
-        row = await db.fetchone(
-            "SELECT COUNT(*) as cnt FROM sessions WHERE status = ?",
-            (status,),
-        )
-        status_counts[status] = row["cnt"] if row else 0
+    # Session counts by status — single query
+    status_rows = await db.fetchall(
+        "SELECT status, COUNT(*) as cnt FROM sessions GROUP BY status"
+    )
+    status_counts = {status: 0 for status in SESSION_STATUSES}
+    for row in status_rows:
+        if row["status"] in status_counts:
+            status_counts[row["status"]] = row["cnt"]
 
     total_sessions = sum(status_counts.values())
 

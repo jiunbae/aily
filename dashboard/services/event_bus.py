@@ -134,6 +134,26 @@ class Event:
     def command_failed(cls, command_data: dict[str, Any]) -> Event:
         return cls(type="command.failed", payload=command_data)
 
+    @classmethod
+    def hook_stop(cls, data: dict[str, Any]) -> Event:
+        """Claude Code Stop hook fired — agent finished responding."""
+        return cls(type="hook.stop", payload=data)
+
+    @classmethod
+    def hook_session_start(cls, session_data: dict[str, Any]) -> Event:
+        """Claude Code SessionStart hook fired."""
+        return cls(type="hook.session_start", payload=session_data)
+
+    @classmethod
+    def hook_session_end(cls, session_data: dict[str, Any]) -> Event:
+        """Claude Code SessionEnd hook fired."""
+        return cls(type="hook.session_end", payload=session_data)
+
+    @classmethod
+    def hook_tool_use(cls, data: dict[str, Any]) -> Event:
+        """Claude Code PostToolUse hook fired."""
+        return cls(type="hook.tool_use", payload=data)
+
 
 class EventBus:
     """asyncio.Queue-based subscriber management.
