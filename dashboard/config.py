@@ -19,7 +19,7 @@ class Config:
     """Dashboard configuration."""
 
     # Server
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8080
 
     # Database
@@ -212,6 +212,19 @@ class Config:
         if env_file and Path(env_file).exists():
             config.env_file = env_file
             _load_notify_env(config, env_file)
+
+        # Auto-generate dashboard token if not set (security default)
+        if not config.dashboard_token:
+            import secrets
+
+            config.dashboard_token = secrets.token_urlsafe(32)
+            config._token_auto_generated = True
+            logger.warning(
+                "DASHBOARD_TOKEN not set — auto-generated a random token. "
+                "Set DASHBOARD_TOKEN env var or in config file for persistent auth."
+            )
+        else:
+            config._token_auto_generated = False
 
         return config
 
