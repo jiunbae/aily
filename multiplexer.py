@@ -212,13 +212,17 @@ class ZellijBackend(Multiplexer):
         return f"zellij -s {session} action write {byte_val}"
 
     def capture_pane_cmd(self, session: str) -> str:
-        # Zellij dumps to file, so we dump then cat then cleanup
-        tmp = f"/tmp/zellij-capture-{session}"
-        return f"zellij -s {session} action dump-screen {tmp} && cat {tmp} && rm -f {tmp}"
+        # Use mktemp to avoid predictable tmp paths (security: symlink attacks)
+        return (
+            f'tmp=$(mktemp /tmp/zellij-capture-XXXXXX) && '
+            f'zellij -s {session} action dump-screen "$tmp" && '
+            f'cat "$tmp" && rm -f "$tmp"'
+        )
 
     def has_session_cmd(self, session: str) -> str:
-        # No direct equivalent; check if session name appears in list
-        return f"zellij list-sessions 2>/dev/null | grep -q '^{session}'"
+        # Assign pre-quoted session name to shell var for safe grep usage.
+        # Use exact match (name followed by space or EOL) to avoid prefix collisions.
+        return f'name={session}; zellij list-sessions 2>/dev/null | grep -qE "^$name($| )"'
 
     def list_sessions_cmd(self) -> str:
         # zellij list-sessions outputs session names with extra info; extract names
