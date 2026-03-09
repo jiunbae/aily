@@ -302,6 +302,9 @@ def get_pane_command(host: str, session: str) -> str:
 def capture_pane_content(host: str, session: str) -> str:
     """Capture visible pane content from a multiplexer session."""
     mux = _mux
+    if not mux.supports_detached_capture:
+        logging.debug("Skipping pane capture: %s doesn't support detached capture", mux.name)
+        return ""
     safe_session = shlex.quote(session)
     rc, out = run_ssh(host, mux.capture_pane_cmd(safe_session), timeout=10)
     return out if rc == 0 else ""

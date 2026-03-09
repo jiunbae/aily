@@ -114,6 +114,11 @@ class Multiplexer(ABC):
         """Whether this multiplexer supports session lifecycle hooks."""
         return True
 
+    @property
+    def supports_detached_capture(self) -> bool:
+        """Whether this multiplexer supports capturing pane content from detached sessions."""
+        return True
+
 
 class TmuxBackend(Multiplexer):
     """tmux terminal multiplexer backend (full support)."""
@@ -194,6 +199,10 @@ class ZellijBackend(Multiplexer):
     def supports_session_hooks(self) -> bool:
         return False
 
+    @property
+    def supports_detached_capture(self) -> bool:
+        return False
+
     def send_keys_cmd(self, session: str, text: str) -> str:
         # session and text should be pre-quoted by the caller (shlex.quote)
         return f"zellij -s {session} action write-chars {text}"
@@ -222,9 +231,14 @@ class ZellijBackend(Multiplexer):
         )
 
     def has_session_cmd(self, session: str) -> str:
-        # Assign pre-quoted session name to shell var for safe grep usage.
-        # Use exact match (name followed by space or EOL) to avoid prefix collisions.
-        return f'name={session}; zellij list-sessions 2>/dev/null | grep -qE "^$name($| )"'
+        # Assign pre-quoted session to a shell var, then use grep -Fx for
+        # exact fixed-string line match. Avoids regex injection and prefix collisions.
+        # zellij list-sessions may append metadata after session name, so we
+        # first extract only the name column before matching.
+        return (
+            f'name={session}; '
+            f'zellij list-sessions 2>/dev/null | sed "s/ .*//" | grep -qFx -- "$name"'
+        )
 
     def list_sessions_cmd(self) -> str:
         # zellij list-sessions outputs session names with extra info; extract names
