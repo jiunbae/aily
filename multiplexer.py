@@ -209,6 +209,8 @@ class ZellijBackend(Multiplexer):
             'q': '113',
         }
         byte_val = key_map.get(key, key)
+        if not byte_val.isdigit():
+            raise ValueError(f"Unsupported key for zellij: {key}")
         return f"zellij -s {session} action write {byte_val}"
 
     def capture_pane_cmd(self, session: str) -> str:
@@ -216,7 +218,7 @@ class ZellijBackend(Multiplexer):
         return (
             f'tmp=$(mktemp /tmp/zellij-capture-XXXXXX) && '
             f'zellij -s {session} action dump-screen "$tmp" && '
-            f'cat "$tmp" && rm -f "$tmp"'
+            f'cat "$tmp"; rm -f "$tmp"'
         )
 
     def has_session_cmd(self, session: str) -> str:
@@ -230,11 +232,15 @@ class ZellijBackend(Multiplexer):
 
     def new_session_cmd(self, name: str, working_dir: Optional[str] = None) -> str:
         # Zellij doesn't have a clean detached session creation like tmux.
-        # We use a background process approach.
+        # Background the process, then verify it started.
         # name and working_dir should be pre-quoted by the caller
         if working_dir:
-            return f"cd {working_dir} && zellij -s {name} &>/dev/null &"
-        return f"zellij -s {name} &>/dev/null &"
+            launch = f"cd {working_dir} && zellij -s {name} &>/dev/null &"
+        else:
+            launch = f"zellij -s {name} &>/dev/null &"
+        # Verify session actually started (background launch always exits 0)
+        verify = f'sleep 1 && _n={name} && zellij list-sessions 2>/dev/null | grep -qE "^$_n($| )"'
+        return f"{launch} {verify}"
 
     def kill_session_cmd(self, name: str) -> str:
         return f"zellij delete-session {name} --force"
