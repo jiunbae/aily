@@ -253,6 +253,13 @@ async def test_connection(request: web.Request) -> web.Response:
                 return error_response(
                     400, "MISSING_HOST", "SSH test requires a host parameter"
                 )
+            config = request.app.get("config")
+            allowed_hosts = config.ssh_hosts if config else ["localhost"]
+            if host not in allowed_hosts:
+                return error_response(
+                    403, "HOST_NOT_ALLOWED",
+                    f"Host not in configured SSH_HOSTS: {', '.join(allowed_hosts)}"
+                )
             result = await _test_ssh(host)
     except Exception as exc:
         result["status"] = "error"

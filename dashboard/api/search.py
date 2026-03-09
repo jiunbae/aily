@@ -38,8 +38,9 @@ async def search_messages(request: web.Request) -> web.Response:
     except ValueError:
         offset = 0
 
-    # Escape quotes for FTS5 query string.
+    # Escape quotes and strip FTS5 special characters for safe query string.
     safe_q = q.replace('"', '""')
+    safe_q = safe_q.replace("*", "").replace("^", "")
 
     conditions = ["messages_fts MATCH ?"]
     params: list[Any] = [f'"{safe_q}"']

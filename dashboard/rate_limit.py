@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
+
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
@@ -73,17 +75,15 @@ def _get_limit(path: str) -> tuple[str, int, int]:
 
 
 def _client_ip(request: web.Request) -> str:
-    """Extract client IP, respecting X-Forwarded-For.
+    """Extract client IP, respecting X-Forwarded-For only when TRUST_PROXY is set.
 
-    NOTE: X-Forwarded-For is trusted unconditionally. When not behind a
-    trusted reverse proxy, clients can spoof this header to bypass per-IP
-    rate limits.  The bucket cleanup (_cleanup_stale_buckets) mitigates
-    memory exhaustion from spoofed entries.  For proper XFF handling,
-    configure your reverse proxy to strip/overwrite the header.
+    When TRUST_PROXY is not set (default), only ``request.remote`` is used,
+    preventing clients from spoofing their IP via the X-Forwarded-For header.
     """
-    xff = request.headers.get("X-Forwarded-For", "")
-    if xff:
-        return xff.split(",")[0].strip()
+    if os.environ.get("TRUST_PROXY", "").lower() in ("1", "true", "yes"):
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            return xff.split(",")[0].strip()
     peer = request.remote
     return peer or "unknown"
 

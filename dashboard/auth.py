@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import logging
 import time
+from urllib.parse import quote
 
 from aiohttp import web
 
@@ -175,7 +176,7 @@ async def auth_middleware(
     logger.warning("Unauthorized request: %s %s", request.method, path)
 
     if _is_browser_request(request):
-        raise web.HTTPFound(f"/login?next={path}")
+        raise web.HTTPFound(f"/login?next={quote(path)}")
 
     return web.json_response(
         {

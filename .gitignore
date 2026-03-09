@@ -2,6 +2,7 @@
 .notify-env
 .env
 .env.*
+!.env.example
 *.local
 
 # Keys and certificates
@@ -15,6 +16,17 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Node
+node_modules/
+
+# Database
+*.db
+*.sqlite3
+
+# IDE / Editor
+.claude/
 
 # macOS
 .DS_Store
