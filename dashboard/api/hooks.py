@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_TRANSCRIPT_DIRS = (
     Path("~/.claude").expanduser().resolve(),
-    Path("/tmp").resolve(),
 )
 
 
@@ -120,12 +120,12 @@ def extract_last_assistant_text(
 
     try:
         with open(jsonl_path) as f:
-            lines = f.readlines()
+            lines = list(deque(f, maxlen=200))
     except (OSError, IOError) as exc:
         logger.warning("Cannot read transcript %s: %s", jsonl_path, exc)
         return None
 
-    for line in reversed(lines[-200:]):
+    for line in reversed(lines):
         try:
             obj = json.loads(line.strip())
             if obj.get("type") != "assistant":
