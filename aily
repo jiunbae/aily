@@ -2667,7 +2667,21 @@ cmd_dashboard() {
         return 1
       fi
       cd "$dash_dir"
-      DASHBOARD_PORT="$port" nohup python3 -m dashboard \
+      # Load config for dashboard
+      local db_dir="${HOME}/.local/share/aily"
+      mkdir -p "$db_dir" 2>/dev/null || {
+        db_dir="/tmp/aily-data"
+        mkdir -p "$db_dir"
+      }
+      local auth_token
+      auth_token=$(env_get "AILY_AUTH_TOKEN" "")
+
+      PYTHONPATH="${SCRIPT_DIR}" \
+        DASHBOARD_HOST="127.0.0.1" DASHBOARD_PORT="$port" \
+        DASHBOARD_DB_PATH="${db_dir}/aily.db" \
+        AGENT_BRIDGE_ENV="$ENV_FILE" \
+        ${auth_token:+DASHBOARD_TOKEN="$auth_token"} \
+        nohup python3 -m dashboard \
         >>"$DASHBOARD_LOG_FILE" 2>&1 &
       local pid=$!
       echo "$pid" > "$DASHBOARD_PID_FILE"

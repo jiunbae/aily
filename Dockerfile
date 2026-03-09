@@ -22,6 +22,8 @@ COPY --from=builder /install /usr/local
 # Copy application code
 COPY agent-bridge.py slack-bridge.py ./
 COPY dashboard/ ./dashboard/
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 
 RUN mkdir -p /app/data && chown app:app /app/data
 
@@ -33,5 +35,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 EXPOSE 8080
 
 ENV PYTHONUNBUFFERED=1
+ENV BRIDGE_MODE=dashboard
 
-CMD ["python3", "-m", "dashboard"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

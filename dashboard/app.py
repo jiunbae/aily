@@ -57,6 +57,13 @@ async def create_app() -> web.Application:
     logger.info("  Discord configured: %s", bool(config.discord_bot_token))
     logger.info("  Slack configured: %s", bool(config.slack_bot_token))
     logger.info("  Auth token set: %s", bool(config.dashboard_token))
+    if getattr(config, '_token_auto_generated', False):
+        logger.warning(
+            "  Auto-generated token: %s", config.dashboard_token
+        )
+        logger.warning(
+            "  Set DASHBOARD_TOKEN to use a persistent token"
+        )
     logger.info("  Session poller: %s", config.enable_session_poller)
 
     # Initialize database
