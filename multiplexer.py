@@ -123,8 +123,8 @@ class TmuxBackend(Multiplexer):
         return "tmux"
 
     def send_keys_cmd(self, session: str, text: str) -> str:
-        escaped = text.replace("'", "'\\''")
-        return f"tmux send-keys -t {session} '{escaped}'"
+        # session and text should be pre-quoted by the caller (shlex.quote)
+        return f"tmux send-keys -t {session} {text}"
 
     def send_enter_cmd(self, session: str) -> str:
         return f"tmux send-keys -t {session} Enter"
@@ -142,9 +142,10 @@ class TmuxBackend(Multiplexer):
         return "tmux list-sessions -F '#{session_name}'"
 
     def new_session_cmd(self, name: str, working_dir: Optional[str] = None) -> str:
+        # name and working_dir should be pre-quoted by the caller
         cmd = f"tmux new-session -d -s {name}"
         if working_dir:
-            cmd += f" -c '{working_dir}'"
+            cmd += f" -c {working_dir}"
         return cmd
 
     def kill_session_cmd(self, name: str) -> str:
@@ -157,7 +158,8 @@ class TmuxBackend(Multiplexer):
         return f"tmux display-message -t {session} -p '#{{pane_current_path}}'"
 
     def set_environment_cmd(self, session: str, var: str, value: str) -> str:
-        return f"tmux set-environment -t {session} {var} '{value}'"
+        # var is not quoted (env var names are safe), value should be pre-quoted
+        return f"tmux set-environment -t {session} {var} {value}"
 
 
 class ZellijBackend(Multiplexer):
@@ -193,8 +195,8 @@ class ZellijBackend(Multiplexer):
         return False
 
     def send_keys_cmd(self, session: str, text: str) -> str:
-        escaped = text.replace("'", "'\\''")
-        return f"zellij -s {session} action write-chars '{escaped}'"
+        # session and text should be pre-quoted by the caller (shlex.quote)
+        return f"zellij -s {session} action write-chars {text}"
 
     def send_enter_cmd(self, session: str) -> str:
         return f"zellij -s {session} action write 13"
@@ -225,8 +227,9 @@ class ZellijBackend(Multiplexer):
     def new_session_cmd(self, name: str, working_dir: Optional[str] = None) -> str:
         # Zellij doesn't have a clean detached session creation like tmux.
         # We use a background process approach.
+        # name and working_dir should be pre-quoted by the caller
         if working_dir:
-            return f"cd '{working_dir}' && zellij -s {name} &>/dev/null &"
+            return f"cd {working_dir} && zellij -s {name} &>/dev/null &"
         return f"zellij -s {name} &>/dev/null &"
 
     def kill_session_cmd(self, name: str) -> str:
