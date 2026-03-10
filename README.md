@@ -4,9 +4,9 @@
 
 <br/>
 
-**Sync your tmux sessions to Discord & Slack. See everything, reply from anywhere.**
+**Your agents work in tmux. You work in Discord.**
 
-Full I/O bridge between AI coding agents in tmux and your chat platform — monitor output, send input, switch to CLI. All in sync.
+Don't watch the terminal — let the terminal come to you. Full I/O bridge between AI coding agents and your chat platform.
 
 [![npm](https://img.shields.io/npm/v/aily-cli)](https://www.npmjs.com/package/aily-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -137,7 +137,31 @@ You can also manage sessions directly from Discord/Slack using bridge commands: 
 
 Unlike one-way notification tools, aily provides a **full session bridge** — monitor output, send input, and `aily attach` to jump into the same terminal view from CLI.
 
-<!-- TODO: Add screenshot/GIF showing Discord notification + reply flow -->
+## Demo
+
+<div align="center">
+
+<img src="docs/demo.svg" alt="aily demo — tmux ↔ Discord bridge" width="800"/>
+
+*Create a session from Discord → Agent runs in tmux → Results flow back → Reply from anywhere*
+
+</div>
+
+<details>
+<summary><b>Record your own demo</b></summary>
+
+```bash
+# Watch the automated scenario
+./demo/scenario.sh
+
+# Record with asciinema (brew install asciinema)
+./demo/record.sh
+
+# Convert to GIF (pip install asciinema-agg)
+./demo/record.sh --render
+```
+
+</details>
 
 ## Bridge
 
