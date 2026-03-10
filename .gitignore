@@ -31,5 +31,8 @@ node_modules/
 # macOS
 .DS_Store
 
+# Demo recordings
+*.cast
+
 # Project
 .context/

@@ -4,9 +4,9 @@
 
 <br/>
 
-**tmux 세션을 Discord & Slack에 동기화. 출력 확인, 입력 전달, CLI 전환까지.**
+**에이전트는 tmux에서 일하고, 당신은 Discord에서 일합니다.**
 
-AI 코딩 에이전트의 tmux 세션과 채팅 플랫폼 간 완전한 I/O 브릿지 — 모니터링, 제어, 터미널 연결을 하나로.
+터미널을 지켜볼 필요 없습니다 — 터미널이 당신에게 찾아옵니다. AI 코딩 에이전트와 채팅 플랫폼 간 완전한 I/O 브릿지.
 
 [![npm](https://img.shields.io/npm/v/aily-cli)](https://www.npmjs.com/package/aily-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -136,6 +136,32 @@ git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init
 Discord/Slack에서 직접 세션을 관리할 수도 있습니다: `!new <name> [host]`, `!kill <name>`, `!sessions`. 스레드 안에서는 단축키로 키 시퀀스를 보낼 수 있습니다: `!c` (Ctrl+C), `!d` (Ctrl+D), `!z` (Ctrl+Z), `!q`, `!enter`, `!esc`.
 
 단방향 알림 도구와 달리, aily는 **완전한 세션 브릿지**를 제공합니다 — 출력 모니터링, 입력 전달, `aily attach`로 동일한 터미널 화면에 바로 연결할 수 있습니다.
+
+## Demo
+
+<div align="center">
+
+<img src="docs/demo.svg" alt="aily 데모 — tmux ↔ Discord 브릿지" width="800"/>
+
+*Discord에서 세션 생성 → tmux에서 에이전트 실행 → 결과가 스레드로 → 어디서든 답장*
+
+</div>
+
+<details>
+<summary><b>직접 데모 녹화하기</b></summary>
+
+```bash
+# 자동 시나리오 실행
+./demo/scenario.sh
+
+# asciinema로 녹화 (brew install asciinema)
+./demo/record.sh
+
+# GIF로 변환 (pip install asciinema-agg)
+./demo/record.sh --render
+```
+
+</details>
 
 ## Bridge
 
