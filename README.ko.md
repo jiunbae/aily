@@ -147,6 +147,33 @@ Discord/Slack에서 직접 세션을 관리할 수도 있습니다: `!new <name>
 
 </div>
 
+### 대시보드
+
+<p align="center">
+  <img src="docs/screenshot-sessions.png" alt="대시보드 — 활성 세션" width="720"/>
+</p>
+
+> WebSocket 실시간 업데이트로 세션 모니터링. 모든 호스트의 에이전트를 한눈에 확인.
+
+<p align="center">
+  <img src="docs/screenshot-messages.png" alt="대시보드 — 세션 메시지" width="720"/>
+</p>
+
+> 세션별 전체 메시지 기록. 브라우저에서 직접 명령 전송 — tmux에서 타이핑하는 것과 동일.
+
+<details>
+<summary><b>모바일 뷰</b></summary>
+
+<p align="center">
+  <img src="docs/screenshot-mobile.png" alt="대시보드 — 모바일 세션" width="300"/>
+  &nbsp;&nbsp;
+  <img src="docs/screenshot-mobile-messages.png" alt="대시보드 — 모바일 메시지" width="300"/>
+</p>
+
+> 반응형 디자인 — 폰으로 에이전트 상태를 확인하세요.
+
+</details>
+
 <details>
 <summary><b>직접 데모 녹화하기</b></summary>
 

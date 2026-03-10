@@ -147,6 +147,33 @@ Unlike one-way notification tools, aily provides a **full session bridge** — m
 
 </div>
 
+### Dashboard
+
+<p align="center">
+  <img src="docs/screenshot-sessions.png" alt="Dashboard — active sessions" width="720"/>
+</p>
+
+> Real-time session monitoring with WebSocket updates. See all your agents across hosts at a glance.
+
+<p align="center">
+  <img src="docs/screenshot-messages.png" alt="Dashboard — session messages" width="720"/>
+</p>
+
+> Full message history per session. Send commands directly from the browser — same as typing in tmux.
+
+<details>
+<summary><b>Mobile view</b></summary>
+
+<p align="center">
+  <img src="docs/screenshot-mobile.png" alt="Dashboard — mobile sessions" width="300"/>
+  &nbsp;&nbsp;
+  <img src="docs/screenshot-mobile-messages.png" alt="Dashboard — mobile messages" width="300"/>
+</p>
+
+> Responsive design — check on your agents from your phone.
+
+</details>
+
 <details>
 <summary><b>Record your own demo</b></summary>
 
