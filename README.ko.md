@@ -141,9 +141,9 @@ Discord/Slack에서 직접 세션을 관리할 수도 있습니다: `!new <name>
 
 <div align="center">
 
-<img src="docs/demo.svg" alt="aily 데모 — tmux ↔ Discord 브릿지" width="800"/>
+<img src="docs/demo.gif" alt="aily 대시보드 데모" width="800"/>
 
-*Discord에서 세션 생성 → tmux에서 에이전트 실행 → 결과가 스레드로 → 어디서든 답장*
+*로그인 → 세션 목록 → 세션 상세 → 메시지 전송 — 모두 브라우저에서*
 
 </div>
 

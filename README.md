@@ -141,9 +141,9 @@ Unlike one-way notification tools, aily provides a **full session bridge** — m
 
 <div align="center">
 
-<img src="docs/demo.svg" alt="aily demo — tmux ↔ Discord bridge" width="800"/>
+<img src="docs/demo.gif" alt="aily dashboard demo" width="800"/>
 
-*Create a session from Discord → Agent runs in tmux → Results flow back → Reply from anywhere*
+*Login → View sessions → Open session detail → Send a message — all from the browser*
 
 </div>
 
