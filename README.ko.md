@@ -143,7 +143,7 @@ Discord/Slack에서 직접 세션을 관리할 수도 있습니다: `!new <name>
 
 <img src="docs/demo.gif" alt="aily 대시보드 데모" width="800"/>
 
-*로그인 → 세션 목록 → 세션 상세 → 메시지 전송 — 모두 브라우저에서*
+*대시보드에서 메시지 전송 → tmux에 즉시 도착하는 것을 확인*
 
 </div>
 

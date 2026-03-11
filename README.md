@@ -143,7 +143,7 @@ Unlike one-way notification tools, aily provides a **full session bridge** — m
 
 <img src="docs/demo.gif" alt="aily dashboard demo" width="800"/>
 
-*Login → View sessions → Open session detail → Send a message — all from the browser*
+*Send a message from the dashboard → watch it arrive in tmux, instantly*
 
 </div>
 
