@@ -28,8 +28,14 @@ from dashboard.services.session_service import SessionService
 from dashboard.services.jsonl_service import JSONLService
 
 
+TEST_TOKEN = "test-secret-token"
+
+
 def _make_config(**overrides) -> Config:
-    """Create a test Config with safe defaults (no real credentials)."""
+    """Create a test Config with safe defaults (no real credentials).
+
+    Auth is always enabled (dashboard_token set) to match production behavior.
+    """
     defaults = dict(
         host="127.0.0.1",
         port=0,
@@ -40,7 +46,7 @@ def _make_config(**overrides) -> Config:
         slack_bot_token="",
         slack_app_token="",
         slack_channel_id="",
-        dashboard_token="",
+        dashboard_token=TEST_TOKEN,
         dashboard_url="http://localhost:0",
         github_repo="jiunbae/aily",
         poll_interval=30,
@@ -100,7 +106,7 @@ async def _build_app(config: Config | None = None) -> web.Application:
 
 @pytest.fixture
 def config():
-    """Default test config (no auth, no platforms)."""
+    """Default test config (auth enabled, no platforms)."""
     return _make_config()
 
 
@@ -116,23 +122,73 @@ def _reset_rate_limit_state():
 
 @pytest.fixture
 def auth_config():
-    """Config with dashboard_token set for auth tests."""
-    return _make_config(dashboard_token="test-secret-token")
+    """Config with dashboard_token set for auth tests (same as default)."""
+    return _make_config(dashboard_token=TEST_TOKEN)
+
+
+@pytest.fixture
+def noauth_config():
+    """Config with empty dashboard_token for testing auth enforcement."""
+    return _make_config(dashboard_token="")
+
+
+class AuthenticatedClient:
+    """Wraps aiohttp TestClient to auto-inject Bearer token on every request."""
+
+    def __init__(self, raw_client: TestClient, token: str):
+        self._client = raw_client
+        self._token = token
+        self._auth_headers = {"Authorization": f"Bearer {token}"}
+
+    def _merge_headers(self, kwargs):
+        headers = dict(self._auth_headers)
+        if "headers" in kwargs:
+            headers.update(kwargs["headers"])
+        kwargs["headers"] = headers
+        return kwargs
+
+    async def get(self, path, **kwargs):
+        return await self._client.get(path, **self._merge_headers(kwargs))
+
+    async def post(self, path, **kwargs):
+        return await self._client.post(path, **self._merge_headers(kwargs))
+
+    async def put(self, path, **kwargs):
+        return await self._client.put(path, **self._merge_headers(kwargs))
+
+    async def patch(self, path, **kwargs):
+        return await self._client.patch(path, **self._merge_headers(kwargs))
+
+    async def delete(self, path, **kwargs):
+        return await self._client.delete(path, **self._merge_headers(kwargs))
+
+    @property
+    def session(self):
+        return self._client.session
 
 
 @pytest_asyncio.fixture
 async def client(aiohttp_client, config):
-    """aiohttp test client backed by in-memory SQLite. No auth."""
+    """Authenticated test client — auto-injects Bearer token on every request."""
     app = await _build_app(config)
+    raw = await aiohttp_client(app)
+    yield AuthenticatedClient(raw, TEST_TOKEN)
+    await close_db()
+
+
+@pytest_asyncio.fixture
+async def auth_client(aiohttp_client, auth_config):
+    """Raw test client with auth enabled (no auto-inject, for auth-specific tests)."""
+    app = await _build_app(auth_config)
     c = await aiohttp_client(app)
     yield c
     await close_db()
 
 
 @pytest_asyncio.fixture
-async def auth_client(aiohttp_client, auth_config):
-    """aiohttp test client with auth enabled."""
-    app = await _build_app(auth_config)
+async def noauth_client(aiohttp_client, noauth_config):
+    """Test client with empty token — for testing auth enforcement."""
+    app = await _build_app(noauth_config)
     c = await aiohttp_client(app)
     yield c
     await close_db()

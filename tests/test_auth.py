@@ -5,20 +5,22 @@ from __future__ import annotations
 import pytest
 
 
-# ---- No auth configured (dev mode) ----
+# ---- Auth enforcement (no token configured → block) ----
 
 @pytest.mark.asyncio
-async def test_no_auth_allows_all_requests(client):
-    """When DASHBOARD_TOKEN is not set, all requests should pass."""
-    resp = await client.get("/api/sessions")
-    assert resp.status == 200
+async def test_no_token_blocks_requests(noauth_client):
+    """When DASHBOARD_TOKEN is empty, all requests should be blocked with 503."""
+    resp = await noauth_client.get("/api/sessions")
+    assert resp.status == 503
+    data = await resp.json()
+    assert data["error"]["code"] == "SERVER_ERROR"
 
 
 @pytest.mark.asyncio
-async def test_no_auth_allows_settings(client):
-    """Settings endpoint accessible without auth when no token configured."""
-    resp = await client.get("/api/settings")
-    assert resp.status == 200
+async def test_no_token_blocks_settings(noauth_client):
+    """Settings endpoint blocked when no token configured."""
+    resp = await noauth_client.get("/api/settings")
+    assert resp.status == 503
 
 
 # ---- Auth configured ----
@@ -60,11 +62,22 @@ async def test_healthz_bypasses_auth(auth_client):
 
 
 @pytest.mark.asyncio
-async def test_hooks_event_bypasses_auth(auth_client):
-    """/api/hooks/event should bypass auth (internal bridge endpoint)."""
+async def test_hooks_event_requires_auth(auth_client):
+    """/api/hooks/event should require Bearer token when no HOOK_SECRET set."""
     resp = await auth_client.post(
         "/api/hooks/event",
         json={"type": "ping"},
+    )
+    assert resp.status == 401
+
+
+@pytest.mark.asyncio
+async def test_hooks_event_with_bearer(auth_client):
+    """/api/hooks/event should accept Bearer token."""
+    resp = await auth_client.post(
+        "/api/hooks/event",
+        json={"type": "ping"},
+        headers={"Authorization": "Bearer test-secret-token"},
     )
     # Should not be 401 -- the handler may return 202
     assert resp.status != 401
@@ -79,22 +92,13 @@ async def test_install_sh_bypasses_auth(auth_client):
 
 @pytest.mark.asyncio
 async def test_ws_requires_token_query_param(auth_client):
-    """WebSocket endpoint should require ?token= when auth is configured.
-
-    Without the token, it should return 401 (not a WebSocket upgrade).
-    """
+    """WebSocket endpoint should require ?token= when auth is configured."""
     resp = await auth_client.get("/ws")
     assert resp.status == 401
 
 
 @pytest.mark.asyncio
 async def test_ws_accepts_correct_token_param(auth_client):
-    """WebSocket endpoint with correct ?token= should not return 401.
-
-    Note: we cannot fully test WebSocket upgrade with a regular GET,
-    but we verify auth does not reject the request.
-    """
+    """WebSocket endpoint with correct ?token= should not return 401."""
     resp = await auth_client.get("/ws?token=test-secret-token")
-    # Should not be 401. The actual WS handler may fail since
-    # this is not a real WebSocket upgrade, but auth should pass.
     assert resp.status != 401
