@@ -6,7 +6,7 @@ Supports two auth methods:
 
 Unauthenticated browser requests redirect to /login.
 Unauthenticated API requests return 401 JSON.
-If DASHBOARD_TOKEN is not set, all requests are allowed (dev mode).
+Authentication is ALWAYS enforced — config.py auto-generates a token if not set.
 """
 
 from __future__ import annotations
@@ -107,9 +107,25 @@ async def auth_middleware(
     to /login on failure; returns 401 JSON for API requests.
     """
     config = request.app.get("config")
-    if not config or not config.dashboard_token:
-        # No token configured — allow all requests (dev mode)
-        return await handler(request)
+    if not config:
+        # App misconfigured — deny by default
+        logger.error("No config found on app — denying request")
+        return web.json_response(
+            {"error": {"code": "SERVER_ERROR", "message": "Server misconfigured"}},
+            status=500,
+        )
+
+    if not config.dashboard_token:
+        # Token must always be set (config.py auto-generates if missing).
+        # If we somehow get here, block everything and log loudly.
+        logger.critical(
+            "DASHBOARD_TOKEN is empty — all requests blocked. "
+            "This should never happen; check config loading."
+        )
+        return web.json_response(
+            {"error": {"code": "SERVER_ERROR", "message": "Auth not configured"}},
+            status=503,
+        )
 
     path = request.path
     dashboard_token = config.dashboard_token
@@ -136,14 +152,23 @@ async def auth_middleware(
                 {"error": {"code": "UNAUTHORIZED", "message": "Invalid hook secret"}},
                 status=401,
             )
-        # No secret configured — allow through but warn once
+        # No secret configured — require Bearer token as fallback
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer ") and hmac.compare_digest(
+            auth_header[7:], dashboard_token
+        ):
+            return await handler(request)
         if not _hook_secret_warned:
             logger.warning(
-                "HOOK_SECRET is not set; hook endpoints are unauthenticated. "
+                "HOOK_SECRET is not set; hook endpoints require Bearer token. "
                 "Set HOOK_SECRET to enable HMAC verification."
             )
             _hook_secret_warned = True
-        return await handler(request)
+        logger.warning("Unauthorized hook request (no HOOK_SECRET configured): %s %s", request.method, path)
+        return web.json_response(
+            {"error": {"code": "UNAUTHORIZED", "message": "Hook secret or Bearer token required"}},
+            status=401,
+        )
 
     # WebSocket: check ?token= query param or cookie
     if path == "/ws":
