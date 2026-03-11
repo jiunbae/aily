@@ -23,7 +23,7 @@ SEND_KEYS_DELAY = 0.3
 
 # SSH ControlMaster: reuse connections to the same host.
 # Socket path uses %r@%h:%p to uniquely identify each host connection.
-_CONTROL_DIR = os.path.expanduser("~/.ssh/aily-ctl")
+_CONTROL_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "aily-ssh-ctl")
 _SSH_CONTROL_OPTS = [
     "-o", "ControlMaster=auto",
     "-o", f"ControlPath={_CONTROL_DIR}/%r@%h:%p",
