@@ -257,9 +257,9 @@ def _load_notify_env(config: Config, path: str) -> None:
     if not config.slack_channel_id:
         config.slack_channel_id = env.get("SLACK_CHANNEL_ID", "")
 
-    # Dashboard auth token (CLI stores as AILY_AUTH_TOKEN)
+    # Dashboard auth token (env var: DASHBOARD_TOKEN, config file: DASHBOARD_TOKEN or AILY_AUTH_TOKEN)
     if not config.dashboard_token:
-        config.dashboard_token = env.get("AILY_AUTH_TOKEN", "")
+        config.dashboard_token = env.get("DASHBOARD_TOKEN", "") or env.get("AILY_AUTH_TOKEN", "")
 
     # Hook HMAC secret
     if not config.hook_secret:
