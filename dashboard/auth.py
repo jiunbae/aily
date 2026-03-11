@@ -152,14 +152,23 @@ async def auth_middleware(
                 {"error": {"code": "UNAUTHORIZED", "message": "Invalid hook secret"}},
                 status=401,
             )
-        # No secret configured — allow through but warn once
+        # No secret configured — require Bearer token as fallback
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer ") and hmac.compare_digest(
+            auth_header[7:], dashboard_token
+        ):
+            return await handler(request)
         if not _hook_secret_warned:
             logger.warning(
-                "HOOK_SECRET is not set; hook endpoints are unauthenticated. "
+                "HOOK_SECRET is not set; hook endpoints require Bearer token. "
                 "Set HOOK_SECRET to enable HMAC verification."
             )
             _hook_secret_warned = True
-        return await handler(request)
+        logger.warning("Unauthorized hook request (no HOOK_SECRET configured): %s %s", request.method, path)
+        return web.json_response(
+            {"error": {"code": "UNAUTHORIZED", "message": "Hook secret or Bearer token required"}},
+            status=401,
+        )
 
     # WebSocket: check ?token= query param or cookie
     if path == "/ws":

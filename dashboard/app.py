@@ -321,9 +321,15 @@ async def _login_submit(request: web.Request) -> web.Response:
     import hmac as _hmac
 
     config = request.app.get("config")
-    if not config or not config.dashboard_token:
+    if not config:
         return web.json_response(
-            {"error": "Auth not configured"}, status=503
+            {"error": {"code": "SERVER_ERROR", "message": "Server misconfigured"}},
+            status=500,
+        )
+    if not config.dashboard_token:
+        return web.json_response(
+            {"error": {"code": "SERVER_ERROR", "message": "Auth not configured"}},
+            status=503,
         )
 
     data = await request.post()
