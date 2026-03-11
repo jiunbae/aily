@@ -8,7 +8,9 @@ on:
       - 'agent-bridge.py'
       - 'slack-bridge.py'
       - 'dashboard/**'
+      - 'tests/**'
       - 'requirements.txt'
+      - 'requirements-dev.txt'
       - 'Dockerfile'
       - '.gitea/workflows/deploy.yml'
 
