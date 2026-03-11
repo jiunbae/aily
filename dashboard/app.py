@@ -298,9 +298,7 @@ async def _page_context(request: web.Request, **extra: str) -> dict:
 async def _login_page(request: web.Request) -> web.Response:
     """GET /login - Login page."""
     config = request.app.get("config")
-    # If no auth configured, redirect to home
-    if not config or not config.dashboard_token:
-        raise web.HTTPFound("/")
+    # Auth is always configured (config.py auto-generates token if missing)
     # If already authenticated via cookie, redirect to home
     cookie_value = request.cookies.get(COOKIE_NAME, "")
     if validate_session_cookie(cookie_value, config.dashboard_token):
@@ -323,8 +321,16 @@ async def _login_submit(request: web.Request) -> web.Response:
     import hmac as _hmac
 
     config = request.app.get("config")
-    if not config or not config.dashboard_token:
-        raise web.HTTPFound("/")
+    if not config:
+        return web.json_response(
+            {"error": {"code": "SERVER_ERROR", "message": "Server misconfigured"}},
+            status=500,
+        )
+    if not config.dashboard_token:
+        return web.json_response(
+            {"error": {"code": "SERVER_ERROR", "message": "Auth not configured"}},
+            status=503,
+        )
 
     data = await request.post()
     token = data.get("token", "")
