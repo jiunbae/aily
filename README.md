@@ -4,9 +4,9 @@
 
 <br/>
 
-**Your agents work in tmux. You work in Discord.**
+**Start in the terminal. Continue from anywhere.**
 
-Don't watch the terminal — let the terminal come to you. Full I/O bridge between AI coding agents and your chat platform.
+Your AI agents run in tmux — aily bridges them to Discord and Slack so you can pick up right where you left off, without switching back to the terminal.
 
 [![npm](https://img.shields.io/npm/v/aily-cli)](https://www.npmjs.com/package/aily-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -127,7 +127,7 @@ git clone https://github.com/jiunbae/aily.git && cd aily && ./aily init
 Once installed, aily works automatically in the background:
 
 - **Agent finishes a task** — You get a Discord/Slack notification in a thread named after your tmux session, with the agent's response.
-- **Agent asks a question** — The prompt appears in the same thread. Reply from your phone to answer it.
+- **Agent asks a question** — The prompt appears in the same thread. Reply from Discord/Slack to answer it — no need to switch back to the terminal.
 - **You reply in the thread** — Your message is forwarded to the agent's tmux session via SSH, as if you typed it at the keyboard.
 - **Shell command output** — When the tmux session is running a plain shell (not an agent), command output is captured and relayed back to the thread automatically.
 
@@ -170,7 +170,7 @@ Unlike one-way notification tools, aily provides a **full session bridge** — m
   <img src="docs/screenshot-mobile-messages.png" alt="Dashboard — mobile messages" width="300"/>
 </p>
 
-> Responsive design — check on your agents from your phone.
+> Responsive design — check on your agents from any device.
 
 </details>
 
@@ -380,7 +380,7 @@ aily 설치 — Discord/Slack용 AI 에이전트 세션 브릿지 (https://githu
 설치 후 aily는 백그라운드에서 자동으로 동작합니다:
 
 - **에이전트가 작업을 완료하면** — tmux 세션 이름으로 된 Discord/Slack 스레드에 에이전트 응답과 함께 알림을 받습니다.
-- **에이전트가 질문하면** — 같은 스레드에 프롬프트가 표시됩니다. 폰으로 답장하면 됩니다.
+- **에이전트가 질문하면** — 같은 스레드에 프롬프트가 표시됩니다. Discord/Slack에서 답장하면 터미널로 돌아갈 필요 없이 바로 전달됩니다.
 - **스레드에 답장하면** — 메시지가 SSH를 통해 에이전트의 tmux 세션으로 전달됩니다. 직접 키보드로 치는 것과 같습니다.
 - **셸 명령어 출력** — tmux 세션에서 에이전트가 아닌 일반 셸이 실행 중이면, 명령어 출력이 캡처되어 스레드로 자동 전달됩니다.
 
