@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="{{ theme or 'dark' }}">
-  {% if ws_token %}<meta name="ws-token" content="{{ ws_token }}">{% endif %}
+  {% if ws_nonce %}<meta name="ws-nonce" content="{{ ws_nonce }}">{% endif %}
   <title>{% block title %}aily Dashboard{% endblock %}</title>
 
   <!-- FOUC prevention: apply theme class before any paint -->
@@ -26,7 +26,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
   <!-- Tailwind CSS CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.tailwindcss.com" crossorigin="anonymous"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -48,10 +48,13 @@
   </script>
 
   <!-- highlight.js for code blocks (theme managed dynamically by JS) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" crossorigin="anonymous"></script>
 
   <!-- Markdown rendering -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" crossorigin="anonymous"></script>
+
+  <!-- DOMPurify for XSS protection -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js" integrity="sha384-sClBXGjaEFl0HEjMPGFJKEsSGGbDGDaUKMODcSL31GIXjFLOZRRxEp4M+3MBfEo" crossorigin="anonymous"></script>
 
   <!-- Custom CSS -->
   <link rel="stylesheet" href="/static/css/app.css">

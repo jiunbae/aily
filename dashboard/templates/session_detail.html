@@ -182,7 +182,7 @@
                             AI
                           </div>
                           <div class="msg msg-ai min-w-0">
-                            <div class="md" x-html="renderMarkdown(item.msg.content)"></div>
+                            <div class="md" x-html="DOMPurify.sanitize(renderMarkdown(item.msg.content))"></div>
                             <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
                               <span x-text="timeAgo(item.msg.timestamp)" :title="formatTime(item.msg.timestamp)"></span>
                               <template x-if="messageSourceLabel(item.msg)">
@@ -199,7 +199,7 @@
                           <div class="max-w-[70%]">
                             <div class="text-[11px] font-medium text-[var(--text-muted)] text-right mb-1">You</div>
                             <div class="msg msg-user">
-                              <div class="md" x-html="renderMarkdown(item.msg.content)"></div>
+                              <div class="md" x-html="DOMPurify.sanitize(renderMarkdown(item.msg.content))"></div>
                               <div class="mt-2 text-[11px] text-[#6E8099]" x-text="timeAgo(item.msg.timestamp)" :title="formatTime(item.msg.timestamp)"></div>
                             </div>
                           </div>

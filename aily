@@ -226,7 +226,7 @@ ui_select() {
     local _choice
     read -rp "  Choice [1]: " _choice 2>&1
     _choice="${_choice:-1}"
-    eval "$_var=$(( _choice - 1 ))"
+    printf -v "$_var" '%s' "$(( _choice - 1 ))"
     return
   fi
 
@@ -280,7 +280,7 @@ ui_select() {
   printf '\033[?25h' >&2
   _UI_CURSOR_HIDDEN=false
 
-  eval "$_var=$_sel"
+  printf -v "$_var" '%s' "$_sel"
 }
 
 ui_confirm() {
@@ -361,7 +361,7 @@ path = sys.argv[1]
 key, val = sys.argv[2], sys.argv[3]
 with open(path) as f:
     text = f.read()
-text = re.sub(rf'^{key}=.*$', f'{key}=\"{val}\"', text, flags=re.MULTILINE)
+text = re.sub(rf'^' + re.escape(key) + r'=.*$', f'{key}=\"{val}\"', text, flags=re.MULTILINE)
 with open(path, 'w') as f:
     f.write(text)
 " "$ENV_FILE" "$key" "$value"
@@ -375,10 +375,15 @@ with open(path, 'w') as f:
 }
 
 load_env() {
-  if [[ -f "$ENV_FILE" ]]; then
-    # shellcheck source=/dev/null
-    source "$ENV_FILE"
-  fi
+  [[ -f "$ENV_FILE" ]] || return 0
+  while IFS='=' read -r key value; do
+    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$key" ]] && continue
+    key="${key// /}"
+    value="${value#\"}" ; value="${value%\"}"
+    value="${value#\'}" ; value="${value%\'}"
+    export "$key=$value"
+  done < "$ENV_FILE"
 }
 
 redact() {

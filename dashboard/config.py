@@ -19,7 +19,7 @@ class Config:
     """Dashboard configuration."""
 
     # Server
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8080
 
     # Database
@@ -73,6 +73,9 @@ class Config:
     # Agent auto-launch on !new
     new_session_agent: str = ""       # "claude", "codex", "gemini", "opencode", or ""
     claude_remote_control: bool = False
+
+    # Reverse proxy
+    trust_proxy: bool = False
 
     # Config file path
     env_file: str = ""
@@ -198,6 +201,11 @@ class Config:
                 "Invalid USAGE_RETENTION_HOURS, using default: %d",
                 config.usage_retention_hours,
             )
+
+        # Reverse proxy trust
+        config.trust_proxy = (
+            os.environ.get("TRUST_PROXY", "false").lower() == "true"
+        )
 
         # Agent auto-launch
         config.new_session_agent = (

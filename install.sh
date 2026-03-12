@@ -31,11 +31,25 @@ done
 AILY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/aily"
 AILY_ENV_FILE="${AILY_CONFIG_DIR}/env"
 
+# Safe config loader - parse key=value without executing
+load_config() {
+    local config_file="$1"
+    [[ -f "$config_file" ]] || return 0
+    while IFS='=' read -r key value; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+        # Remove surrounding quotes from value
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+        export "$key=$value"
+    done < "$config_file"
+}
+
 if [[ -f "$AILY_ENV_FILE" ]]; then
   chmod 600 "$AILY_ENV_FILE" 2>/dev/null || true
   echo "  ✓ Config: $AILY_ENV_FILE (chmod 600)"
-  # shellcheck source=/dev/null
-  source "$AILY_ENV_FILE" 2>/dev/null || true
+  load_config "$AILY_ENV_FILE"
 else
   echo ""
   echo "  ⚠️  No config found. Run 'aily init' to set up."

@@ -29,7 +29,8 @@ _SSH_CONTROL_OPTS = [
     "-o", f"ControlPath={_CONTROL_DIR}/%r@%h:%p",
     "-o", "ControlPersist=300",
     "-o", "ConnectTimeout=5",
-    "-o", "StrictHostKeyChecking=accept-new",
+    # known_hosts must be pre-populated; reject unknown hosts
+    "-o", "StrictHostKeyChecking=yes",
     "-o", "BatchMode=yes",
 ]
 

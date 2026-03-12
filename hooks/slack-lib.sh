@@ -80,15 +80,19 @@ slack_archive_thread() {
   slack_post_to_thread "$thread_ts" ":lock: Thread archived. Session closed."
   # Add :lock: reaction to parent message
   local react_resp
+  local react_payload
+  react_payload=$(python3 -c "import json,sys; print(json.dumps({'channel': sys.argv[1], 'timestamp': sys.argv[2], 'name': 'lock'}))" "$SLACK_CHANNEL_ID" "$thread_ts")
   react_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
-    -d "{\"channel\":\"${SLACK_CHANNEL_ID}\",\"timestamp\":\"${thread_ts}\",\"name\":\"lock\"}" \
+    -d "$react_payload" \
     "${_SLACK_API}/reactions.add" 2>&1) || _aily_log "ERR" "slack: add reaction failed: $react_resp"
 }
 
 slack_delete_thread() {
   local thread_ts="$1"
+  local delete_payload
+  delete_payload=$(python3 -c "import json,sys; print(json.dumps({'channel': sys.argv[1], 'ts': sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$thread_ts")
   curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
-    -d "{\"channel\":\"${SLACK_CHANNEL_ID}\",\"ts\":\"${thread_ts}\"}" \
+    -d "$delete_payload" \
     "${_SLACK_API}/chat.delete" > /dev/null 2>&1 || true
 }
 

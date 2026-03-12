@@ -227,6 +227,15 @@ async def enqueue_command(request: web.Request) -> web.Response:
     if not command:
         return error_response(400, "MISSING_COMMAND", "command is required")
 
+    # Whitelist: only allow tmux commands
+    _ALLOWED_CMD_PREFIXES = ("tmux ", "tmux\t")
+    cmd_stripped = command.strip()
+    if not any(cmd_stripped.startswith(p) for p in _ALLOWED_CMD_PREFIXES):
+        return error_response(
+            403, "FORBIDDEN_COMMAND",
+            "Only tmux commands are allowed",
+        )
+
     # Resolve host if not provided
     host = body.get("host", "").strip()
     if not host:

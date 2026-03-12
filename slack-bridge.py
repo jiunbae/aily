@@ -945,7 +945,7 @@ async def handle_socket_event(
         return
 
     user_id = event.get("user", "unknown")
-    print(f"[slack-bridge] {user_id} -> [{session_name}]: {text[:80]}")
+    print(f"[slack-bridge] {user_id} -> [{session_name}]: ({len(text)} chars)")
 
     host = await asyncio.to_thread(find_session_host, session_name)
     if not host:
