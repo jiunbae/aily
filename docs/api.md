@@ -2,7 +2,14 @@
 
 ## Authentication
 
-All endpoints except `/healthz` and `/api/hooks/event` require a `Bearer` token in the `Authorization` header when `DASHBOARD_TOKEN` is set.
+All endpoints except `/healthz` and `/api/install.sh` require authentication when `DASHBOARD_TOKEN` is set.
+
+- **API endpoints:** `Authorization: Bearer <token>` header
+- **WebSocket:** `?token=<token>` query parameter
+- **Browser:** Session cookie (set after login at `/login`)
+- **Hook endpoint** (`/api/hooks/event`): Accepts either `X-Hook-Signature` HMAC (when `HOOK_SECRET` is set) or `Bearer` token
+
+If `DASHBOARD_TOKEN` is not configured, the server returns `503 Service Unavailable` — all requests are blocked until a token is set.
 
 ## Endpoints
 

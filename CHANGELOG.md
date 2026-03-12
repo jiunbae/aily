@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026.3.12 - 2026-03-12
+
+### Security
+- **Mandatory authentication** — Dashboard now blocks all requests (503) when `DASHBOARD_TOKEN` is not set, eliminating the dev mode bypass that allowed unauthenticated access
+- Hook endpoints require Bearer token when `HOOK_SECRET` is not configured
+- Auto-generated random token on startup when no token is configured (with console warning)
+- Config file now reads `DASHBOARD_TOKEN` in addition to `AILY_AUTH_TOKEN`
+
+### Infrastructure
+- Server binds to `0.0.0.0` by default (was `127.0.0.1`) — fixes K8s liveness probe failures
+- SSH control socket directory moved to `/tmp/aily-ssh-ctl` — fixes PermissionError with read-only `~/.ssh` in containers
+- Added `tests/**` and `requirements-dev.txt` to CI trigger paths
+- Restored Gitea Actions deploy workflow
+- Added GitHub webhook for immediate Gitea mirror sync
+
+### Tests
+- Test suite updated for mandatory auth model
+- `AuthenticatedClient` wrapper auto-injects Bearer token in test fixtures
+- Separate `noauth_client` and `auth_client` fixtures for auth-specific tests
+
 ## 2026.2.18 - 2026-02-18
 
 ### Features
