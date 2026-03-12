@@ -71,8 +71,8 @@ clear
 printf '\n'
 printf '\033[1;34m   ╔══════════════════════════════════════════════════╗\033[0m\n'
 printf '\033[1;34m   ║\033[0m  \033[1maily\033[0m — AI agent session bridge               \033[1;34m║\033[0m\n'
-printf '\033[1;34m   ║\033[0m  Your agents work in tmux.                      \033[1;34m║\033[0m\n'
-printf '\033[1;34m   ║\033[0m  You work in Discord.                           \033[1;34m║\033[0m\n'
+printf '\033[1;34m   ║\033[0m  Start in the terminal.                         \033[1;34m║\033[0m\n'
+printf '\033[1;34m   ║\033[0m  Continue from anywhere.                        \033[1;34m║\033[0m\n'
 printf '\033[1;34m   ╚══════════════════════════════════════════════════╝\033[0m\n'
 _pause 2
 
@@ -117,7 +117,7 @@ _pause 1.5
 
 # ─── Scene 3: Agent asks a question → Reply from Discord ───
 
-_header "Scene 3: Agent asks → Reply from your phone"
+_header "Scene 3: Agent asks → Reply from Discord/Slack"
 
 _tmux_pane "my-agent" \
   "Claude: Should I also add rate limiting" \
@@ -134,7 +134,7 @@ _discord \
 
 _pause 1
 
-printf '\033[0;33m  📱 You reply from your phone:\033[0m\n'
+printf '\033[0;33m  💬 You reply from Discord/Slack:\033[0m\n'
 _pause 0.5
 
 _discord \

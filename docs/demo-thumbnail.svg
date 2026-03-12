@@ -124,7 +124,7 @@
 
   <!-- Bottom: tagline + install -->
   <g transform="translate(400, 360)">
-    <text y="0" font-family="'Inter', 'SF Pro Display', sans-serif" font-size="22" fill="#F1F5F9" font-weight="700" text-anchor="middle" letter-spacing="-0.5">Your agents work in tmux. You work in Discord.</text>
+    <text y="0" font-family="'Inter', 'SF Pro Display', sans-serif" font-size="22" fill="#F1F5F9" font-weight="700" text-anchor="middle" letter-spacing="-0.5">Start in the terminal. Continue from anywhere.</text>
     <text y="30" font-family="'SF Mono', 'Fira Code', monospace" font-size="13" fill="#A78BFA" text-anchor="middle">git clone https://github.com/jiunbae/aily &amp;&amp; cd aily &amp;&amp; ./aily init</text>
   </g>
 
