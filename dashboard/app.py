@@ -33,6 +33,7 @@ from dashboard.auth import (
     COOKIE_NAME,
     auth_middleware,
     create_session_cookie,
+    create_ws_nonce,
     validate_session_cookie,
 )
 from dashboard.config import Config
@@ -47,6 +48,26 @@ from dashboard.workers.session_poller import session_poller
 
 logger = logging.getLogger(__name__)
 
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' cdnjs.cloudflare.com cdn.tailwindcss.com 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline' cdn.tailwindcss.com fonts.googleapis.com; "
+    "connect-src 'self' wss: ws:; "
+    "img-src 'self' data:; "
+    "font-src 'self' fonts.gstatic.com"
+)
+
+
+@web.middleware
+async def csp_middleware(
+    request: web.Request,
+    handler: web.RequestHandler,
+) -> web.StreamResponse:
+    """Add Content-Security-Policy header to all responses."""
+    response = await handler(request)
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    return response
+
 
 async def create_app() -> web.Application:
     """Create and configure the aiohttp application."""
@@ -59,7 +80,7 @@ async def create_app() -> web.Application:
     logger.info("  Auth token set: %s", bool(config.dashboard_token))
     if getattr(config, '_token_auto_generated', False):
         logger.warning(
-            "  Auto-generated token: %s", config.dashboard_token
+            "  Auto-generated token: %s...", config.dashboard_token[:8]
         )
         logger.warning(
             "  Set DASHBOARD_TOKEN to use a persistent token"
@@ -114,6 +135,7 @@ async def create_app() -> web.Application:
     # Create app with middleware
     app = web.Application(
         middlewares=[
+            csp_middleware,
             access_log_middleware,
             rate_limit_middleware,
             auth_middleware,
@@ -287,11 +309,11 @@ async def _page_context(request: web.Request, **extra: str) -> dict:
     """Build common template context for page handlers."""
     ctx: dict = {"theme": await _get_theme(), **extra}
     config = request.app.get("config")
-    # Only pass ws_token if authenticated via cookie (token already known to server)
+    # Issue a short-lived, single-use WebSocket nonce instead of the real token
     if config and config.dashboard_token:
         cookie_value = request.cookies.get(COOKIE_NAME, "")
         if validate_session_cookie(cookie_value, config.dashboard_token):
-            ctx["ws_token"] = config.dashboard_token
+            ctx["ws_nonce"] = create_ws_nonce()
     return ctx
 
 
@@ -316,6 +338,11 @@ async def _login_page(request: web.Request) -> web.Response:
         )
 
 
+_login_attempts: dict[str, list[float]] = {}
+_LOGIN_LIMIT = 5  # max attempts
+_LOGIN_WINDOW = 60  # per 60 seconds
+
+
 async def _login_submit(request: web.Request) -> web.Response:
     """POST /login - Validate token and set session cookie."""
     import hmac as _hmac
@@ -332,12 +359,30 @@ async def _login_submit(request: web.Request) -> web.Response:
             status=503,
         )
 
+    # Rate-limit login attempts by client IP
+    import time as _time
+
+    client_ip = request.remote or "unknown"
+    now = _time.monotonic()
+    attempts = _login_attempts.setdefault(client_ip, [])
+    # Prune attempts outside the window
+    _login_attempts[client_ip] = [t for t in attempts if now - t < _LOGIN_WINDOW]
+    if len(_login_attempts[client_ip]) >= _LOGIN_LIMIT:
+        logger.warning("Login rate limit exceeded for %s", client_ip)
+        return web.json_response(
+            {"error": {"code": "RATE_LIMITED", "message": "Too many login attempts, try again later"}},
+            status=429,
+        )
+    _login_attempts[client_ip].append(now)
+
     data = await request.post()
     token = data.get("token", "")
     next_url = data.get("next", "/")
 
     # Validate next URL (prevent open redirect)
-    if not next_url.startswith("/") or next_url.startswith("//"):
+    from urllib.parse import urlparse
+    parsed = urlparse(next_url)
+    if parsed.scheme or parsed.netloc or not next_url.startswith("/"):
         next_url = "/"
 
     if token and _hmac.compare_digest(token, config.dashboard_token):
@@ -346,10 +391,9 @@ async def _login_submit(request: web.Request) -> web.Response:
         response = web.HTTPFound(next_url)
 
         # Determine if we should set Secure flag
-        is_https = (
-            request.headers.get("X-Forwarded-Proto") == "https"
-            or config.dashboard_url.startswith("https://")
-        )
+        is_https = config.dashboard_url.startswith("https://")
+        if not is_https and config.trust_proxy:
+            is_https = request.headers.get("X-Forwarded-Proto") == "https"
 
         response.set_cookie(
             COOKIE_NAME,

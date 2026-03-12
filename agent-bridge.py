@@ -187,6 +187,14 @@ def load_env(env_path: str) -> dict:
     return env
 
 
+_SAFE_PATH_RE = re.compile(r'^[a-zA-Z0-9_./@:~-]+$')
+
+
+def _validate_path(path: str) -> bool:
+    """Reject paths with shell metacharacters or directory traversal."""
+    return bool(_SAFE_PATH_RE.match(path)) and '..' not in path
+
+
 def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
     """Run a command over SSH (or locally for localhost). Returns (returncode, stdout)."""
     try:
@@ -575,6 +583,11 @@ async def cmd_new(http: aiohttp.ClientSession, token: str,
             "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).")
         return
 
+    if working_dir and not _validate_path(working_dir):
+        await post_message(http, token, reply_to,
+            "Invalid working directory. Path contains disallowed characters.")
+        return
+
     if host not in SSH_HOSTS:
         await post_message(http, token, reply_to,
             f"Unknown host `{host}`. Available: `{'`, `'.join(SSH_HOSTS)}`")
@@ -910,7 +923,7 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
     if not user_message:
         return
 
-    print(f"[bridge] {user_name} -> [{session_name}]: {user_message[:80]}")
+    print(f"[bridge] {user_name} -> [{session_name}]: ({len(user_message)} chars)")
 
     host = await asyncio.to_thread(find_session_host, session_name)
     if not host:

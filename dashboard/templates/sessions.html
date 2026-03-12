@@ -52,7 +52,7 @@
               <span class="text-xs text-[var(--text-muted)]" x-text="r.role"></span>
               <span class="text-xs text-[var(--text-muted)]" x-text="r.timestamp?.slice(0,16)"></span>
             </div>
-            <div class="text-sm text-[var(--text-secondary)] line-clamp-2" x-html="r.snippet || r.content?.slice(0, 200)"></div>
+            <div class="text-sm text-[var(--text-secondary)] line-clamp-2" x-html="DOMPurify.sanitize(r.snippet || r.content?.slice(0, 200))"></div>
           </a>
         </template>
       </div>

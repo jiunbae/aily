@@ -4,6 +4,9 @@ Supports two auth methods:
 1. Bearer token via Authorization header (for API clients, CLI, bridges)
 2. Session cookie (for browser-based dashboard access)
 
+WebSocket connections also accept short-lived nonces (tickets) that are
+generated per page load and expire after 60 seconds / single use.
+
 Unauthenticated browser requests redirect to /login.
 Unauthenticated API requests return 401 JSON.
 Authentication is ALWAYS enforced — config.py auto-generates a token if not set.
@@ -14,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import secrets
 import time
 from urllib.parse import quote
 
@@ -23,6 +27,35 @@ logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "aily_session"
 COOKIE_MAX_AGE = 86400  # 24 hours
+
+# ── WebSocket nonces (short-lived, single-use) ──────────────────────
+_WS_NONCE_TTL = 60  # seconds
+_ws_nonces: dict[str, float] = {}  # nonce -> expiry timestamp
+
+
+def create_ws_nonce() -> str:
+    """Create a single-use WebSocket nonce valid for _WS_NONCE_TTL seconds."""
+    _purge_expired_nonces()
+    nonce = secrets.token_urlsafe(32)
+    _ws_nonces[nonce] = time.time() + _WS_NONCE_TTL
+    return nonce
+
+
+def validate_ws_nonce(nonce: str) -> bool:
+    """Validate and consume a WebSocket nonce (single-use)."""
+    _purge_expired_nonces()
+    expiry = _ws_nonces.pop(nonce, None)
+    if expiry is None:
+        return False
+    return time.time() < expiry
+
+
+def _purge_expired_nonces() -> None:
+    """Remove expired nonces to prevent unbounded growth."""
+    now = time.time()
+    expired = [k for k, v in _ws_nonces.items() if v <= now]
+    for k in expired:
+        del _ws_nonces[k]
 
 # Paths that skip dashboard authentication entirely
 _NO_AUTH_PREFIXES = (
@@ -170,11 +203,16 @@ async def auth_middleware(
             status=401,
         )
 
-    # WebSocket: check ?token= query param or cookie
+    # WebSocket: check ?token= query param (nonce or real token) or cookie
     if path == "/ws":
         token = request.query.get("token", "")
-        if token and hmac.compare_digest(token, dashboard_token):
-            return await handler(request)
+        if token:
+            # Try short-lived nonce first (single-use, consumed on success)
+            if validate_ws_nonce(token):
+                return await handler(request)
+            # Fall back to real token comparison (for API clients)
+            if hmac.compare_digest(token, dashboard_token):
+                return await handler(request)
         # Also accept session cookie for WebSocket
         cookie_value = request.cookies.get(COOKIE_NAME, "")
         if validate_session_cookie(cookie_value, dashboard_token):

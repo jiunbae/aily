@@ -32,9 +32,9 @@
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
       let url = `${proto}://${window.location.host}/ws`;
       // Cookie-based auth is sent automatically on WS upgrade.
-      // Fallback: pass token via query param if meta tag is present.
-      const token = document.querySelector('meta[name="ws-token"]')?.content;
-      if (token) url += `?token=${encodeURIComponent(token)}`;
+      // Fallback: pass short-lived nonce via query param if meta tag is present.
+      const nonce = document.querySelector('meta[name="ws-nonce"]')?.content;
+      if (nonce) url += `?token=${encodeURIComponent(nonce)}`;
       return url;
     }
 

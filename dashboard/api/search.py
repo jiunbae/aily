@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from aiohttp import web
@@ -10,6 +11,20 @@ from aiohttp import web
 from dashboard import db
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_fts_query(q: str) -> str:
+    """Sanitize user input for FTS5 phrase search."""
+    # Remove FTS5 special characters and operators
+    q = re.sub(r'["\*\^\(\)\{\}:]', '', q)
+    # Remove FTS5 boolean operators
+    q = re.sub(r'\b(AND|OR|NOT|NEAR)\b', '', q, flags=re.IGNORECASE)
+    q = q.strip()
+    if not q:
+        return '""'
+    # Wrap in double quotes for phrase search
+    safe_q = q.replace('"', '')
+    return f'"{safe_q}"'
 
 
 async def search_messages(request: web.Request) -> web.Response:
@@ -38,12 +53,10 @@ async def search_messages(request: web.Request) -> web.Response:
     except ValueError:
         offset = 0
 
-    # Escape quotes and strip FTS5 special characters for safe query string.
-    safe_q = q.replace('"', '""')
-    safe_q = safe_q.replace("*", "").replace("^", "")
+    safe_q = _sanitize_fts_query(q)
 
     conditions = ["messages_fts MATCH ?"]
-    params: list[Any] = [f'"{safe_q}"']
+    params: list[Any] = [safe_q]
 
     if session_filter:
         conditions.append("m.session_name = ?")

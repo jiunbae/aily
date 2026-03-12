@@ -80,9 +80,14 @@ async def _resolve_dashboard_url(request: web.Request) -> str:
     if config and config.dashboard_url:
         return config.dashboard_url
 
-    # Derive from request
-    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
-    host = request.headers.get("X-Forwarded-Host", request.host)
+    # Derive from request — only trust forwarded headers when trust_proxy is enabled
+    trust_proxy = getattr(config, "trust_proxy", False) if config else False
+    if trust_proxy:
+        scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+        host = request.headers.get("X-Forwarded-Host", request.host)
+    else:
+        scheme = request.scheme
+        host = request.host
     return f"{scheme}://{host}"
 
 
@@ -415,7 +420,7 @@ async def _test_ssh(host: str) -> dict:
     try:
         proc = await asyncio.create_subprocess_exec(
             "ssh", "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "StrictHostKeyChecking=yes",  # known_hosts must be pre-populated
             "-o", "BatchMode=yes",
             host, "tmux", "list-sessions", "-F", "#{session_name}",
             stdout=asyncio.subprocess.PIPE,

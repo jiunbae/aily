@@ -18,7 +18,7 @@ def main() -> None:
     config = app.get("config")
     if config and getattr(config, '_token_auto_generated', False):
         print(f"\n{'='*60}")
-        print(f"  Dashboard token (auto-generated): {config.dashboard_token}")
+        print(f"  Dashboard token (auto-generated): {config.dashboard_token[:8]}...")
         print(f"  Set DASHBOARD_TOKEN env var for persistent auth")
         print(f"{'='*60}\n")
 
