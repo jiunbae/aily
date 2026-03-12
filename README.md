@@ -243,7 +243,7 @@ For a deeper look, see [Architecture](docs/architecture.md).
 
 ## Dashboard
 
-The web dashboard provides a real-time UI for monitoring and managing sessions across hosts. Features include live session status via WebSocket, full message history, send-input controls, login authentication, dark/light theme, and mobile-friendly layout.
+The web dashboard provides a real-time UI for monitoring and managing sessions across hosts. Features include live session status via WebSocket, full message history, send-input controls, token-based authentication, dark/light theme, and mobile-friendly layout.
 
 ```bash
 aily dashboard start   # runs as a background process
@@ -252,7 +252,7 @@ aily dashboard logs    # tail recent output
 aily dashboard stop    # stop the process
 ```
 
-<!-- TODO: Add screenshot of dashboard sessions page -->
+**Authentication:** Set `DASHBOARD_TOKEN` in your config to enable login. If not set, a random token is auto-generated on each start (printed to console). All API endpoints require a Bearer token — there is no unauthenticated mode.
 
 See [API Reference](docs/api.md) for dashboard routes and REST endpoints.
 
@@ -353,8 +353,8 @@ docker run -e BRIDGE_MODE=slack \
   -e SLACK_BOT_TOKEN=... -e SLACK_APP_TOKEN=... -e SLACK_CHANNEL_ID=... \
   -e SSH_HOSTS=... aily
 
-# Dashboard
-docker run -e BRIDGE_MODE=dashboard -p 8080:8080 aily
+# Dashboard (DASHBOARD_TOKEN required for auth)
+docker run -e BRIDGE_MODE=dashboard -e DASHBOARD_TOKEN=your-secret-token -p 8080:8080 aily
 ```
 
 Bridges require Python 3.10+ and `aiohttp` when running outside Docker.
@@ -424,6 +424,8 @@ aily dashboard status  # 실행 상태 확인
 aily dashboard logs    # 최근 출력 보기
 aily dashboard stop    # 프로세스 중지
 ```
+
+**인증:** `DASHBOARD_TOKEN`을 설정하면 로그인이 활성화됩니다. 미설정 시 랜덤 토큰이 자동 생성됩니다. 비인증 모드는 없습니다.
 
 ## 멀티호스트 설정
 

@@ -243,7 +243,7 @@ flowchart LR
 
 ## Dashboard
 
-웹 대시보드는 호스트 간 세션을 모니터링하고 관리하는 실시간 UI를 제공합니다. WebSocket을 통한 실시간 세션 상태, 전체 메시지 기록, 입력 전송 컨트롤, 로그인 인증, 다크/라이트 테마, 모바일 친화적 레이아웃을 포함합니다.
+웹 대시보드는 호스트 간 세션을 모니터링하고 관리하는 실시간 UI를 제공합니다. WebSocket을 통한 실시간 세션 상태, 전체 메시지 기록, 입력 전송 컨트롤, 토큰 기반 인증, 다크/라이트 테마, 모바일 친화적 레이아웃을 포함합니다.
 
 ```bash
 aily dashboard start   # runs as a background process
@@ -251,6 +251,8 @@ aily dashboard status  # check if running
 aily dashboard logs    # tail recent output
 aily dashboard stop    # stop the process
 ```
+
+**인증:** 설정에서 `DASHBOARD_TOKEN`을 설정하면 로그인이 활성화됩니다. 미설정 시 시작할 때마다 랜덤 토큰이 자동 생성됩니다 (콘솔에 출력). 모든 API 엔드포인트는 Bearer 토큰이 필요합니다 — 비인증 모드는 없습니다.
 
 API 라우트와 REST 엔드포인트는 [API Reference](docs/api.md)를 참고하세요.
 
@@ -351,8 +353,8 @@ docker run -e BRIDGE_MODE=slack \
   -e SLACK_BOT_TOKEN=... -e SLACK_APP_TOKEN=... -e SLACK_CHANNEL_ID=... \
   -e SSH_HOSTS=... aily
 
-# Dashboard
-docker run -e BRIDGE_MODE=dashboard -p 8080:8080 aily
+# Dashboard (DASHBOARD_TOKEN 필수)
+docker run -e BRIDGE_MODE=dashboard -e DASHBOARD_TOKEN=your-secret-token -p 8080:8080 aily
 ```
 
 Docker 외부에서 브릿지를 실행하려면 Python 3.10+과 `aiohttp`가 필요합니다.
