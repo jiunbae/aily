@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Slack <-> tmux session bridge.
+Slack <-> terminal multiplexer session bridge.
 
 Monitors Slack threads named [agent] <session> and forwards user messages
-to the corresponding tmux session's Claude Code instance via SSH.
+to the corresponding session's Claude Code instance via SSH.
+
+Supports tmux (full) and zellij (partial) backends via AILY_MULTIPLEXER env var.
 
 Also handles ! commands for session/thread lifecycle management:
-  !new <name> [host]  — create tmux session + Slack thread
-  !kill <name>        — kill tmux session + close Slack thread
+  !new <name> [host]  — create session + Slack thread
+  !kill <name>        — kill session + close Slack thread
   !sessions           — list all sessions with sync status
 
 Uses Socket Mode (WebSocket) — no public URL needed.
@@ -27,6 +29,7 @@ from datetime import datetime, timezone
 
 import aiohttp
 
+from multiplexer import get_backend, Multiplexer
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.request import SocketModeRequest
@@ -94,6 +97,9 @@ AGENT_PREFIX = "[agent] "  # legacy fallback
 THREAD_NAME_FORMAT: str = "[agent] {session} - {host}"
 SEND_KEYS_DELAY = 0.3
 SESSION_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+# Multiplexer backend (initialized in main())
+_mux: Multiplexer | None = None
 
 
 def format_thread_name(session: str, host: str = "") -> str:
@@ -206,31 +212,37 @@ def is_valid_session_name(name: str) -> bool:
 
 
 def find_session_host(session_name: str) -> str | None:
-    """Find which SSH host has the tmux session."""
+    """Find which SSH host has the multiplexer session."""
+    mux = _mux
     safe_name = shlex.quote(session_name)
     for host in SSH_HOSTS:
         rc, out = run_ssh(
-            host, f"tmux has-session -t {safe_name} 2>/dev/null && echo found"
+            host, f"{mux.has_session_cmd(safe_name)} 2>/dev/null && echo found"
         )
         if rc == 0 and "found" in out:
             return host
     return None
 
 
-def send_to_tmux(host: str, session: str, message: str) -> bool:
-    """Send a message to a tmux session's Claude Code."""
+def send_to_session(host: str, session: str, message: str) -> bool:
+    """Send a message to a multiplexer session's Claude Code."""
+    mux = _mux
     safe_session = shlex.quote(session)
     safe_message = shlex.quote(message)
 
     # Step 1: Type the text
-    rc, _ = run_ssh(host, f"tmux send-keys -t {safe_session} {safe_message}")
+    rc, _ = run_ssh(host, mux.send_keys_cmd(safe_session, safe_message))
     if rc != 0:
         return False
 
     # Step 2: Press Enter (separate command — critical for Claude Code)
     time.sleep(SEND_KEYS_DELAY)
-    rc, _ = run_ssh(host, f"tmux send-keys -t {safe_session} Enter")
+    rc, _ = run_ssh(host, mux.send_enter_cmd(safe_session))
     return rc == 0
+
+
+# Backward-compatible alias
+send_to_tmux = send_to_session
 
 
 # Shell names for output capture (skip capture for non-shell processes)
@@ -238,19 +250,26 @@ _SHELL_NAMES = frozenset({"bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "c
 
 
 def get_pane_command(host: str, session: str) -> str:
-    """Get the current foreground command in a tmux session's active pane."""
+    """Get the current foreground command in a session's active pane.
+
+    Returns empty string if the multiplexer doesn't support this.
+    """
+    mux = _mux
+    if not mux.supports_pane_command:
+        return ""
     safe_session = shlex.quote(session)
-    rc, out = run_ssh(
-        host,
-        f"tmux display-message -t {safe_session} -p '#{{pane_current_command}}'"
-    )
+    rc, out = run_ssh(host, mux.get_pane_command_cmd(safe_session))
     return out.strip() if rc == 0 else ""
 
 
 def capture_pane_content(host: str, session: str) -> str:
-    """Capture visible pane content from a tmux session."""
+    """Capture visible pane content from a multiplexer session."""
+    mux = _mux
+    if not mux.supports_detached_capture:
+        logging.debug("Skipping pane capture: %s doesn't support detached capture", mux.name)
+        return ""
     safe_session = shlex.quote(session)
-    rc, out = run_ssh(host, f"tmux capture-pane -t {safe_session} -p", timeout=10)
+    rc, out = run_ssh(host, mux.capture_pane_cmd(safe_session), timeout=10)
     return out if rc == 0 else ""
 
 
@@ -275,7 +294,7 @@ def capture_shell_output(
     stable_count: int = 2,
     max_wait: float = 30.0,
 ) -> str | None:
-    """Poll tmux pane until output stabilizes, return new content.
+    """Poll pane until output stabilizes, return new content.
 
     Returns None if a non-shell process takes over (e.g., Claude Code started).
     Returns empty string if no new output detected.
@@ -283,8 +302,9 @@ def capture_shell_output(
     time.sleep(1.0)
 
     # Check: did the command spawn a non-shell process?
+    # If multiplexer doesn't support pane_command, skip this check
     pane_cmd = get_pane_command(host, session)
-    if pane_cmd.lower() not in _SHELL_NAMES:
+    if pane_cmd and pane_cmd.lower() not in _SHELL_NAMES:
         return None
 
     last_content = ""
@@ -307,8 +327,9 @@ def capture_shell_output(
         time.sleep(poll_interval)
 
     # Final check: ensure shell is still the foreground process
+    # If multiplexer doesn't support pane_command, skip this check
     pane_cmd = get_pane_command(host, session)
-    if pane_cmd.lower() not in _SHELL_NAMES:
+    if pane_cmd and pane_cmd.lower() not in _SHELL_NAMES:
         return None
 
     if not last_content:
@@ -560,17 +581,17 @@ async def cmd_new(
         )
         return
 
-    # Create tmux session
+    # Create multiplexer session
+    mux = _mux
     safe_name = shlex.quote(session_name)
-    tmux_cmd = f"tmux new-session -d -s {safe_name}"
-    if working_dir:
-        tmux_cmd += f" -c {shlex.quote(working_dir)}"
-    rc, _ = await asyncio.to_thread(run_ssh, host, tmux_cmd)
+    safe_dir = shlex.quote(working_dir) if working_dir else None
+    create_cmd = mux.new_session_cmd(safe_name, safe_dir)
+    rc, _ = await asyncio.to_thread(run_ssh, host, create_cmd)
     if rc != 0:
         await post_message(
             client,
             reply_to,
-            f"Failed to create tmux session `{session_name}` on `{host}`.",
+            f"Failed to create {mux.name} session `{session_name}` on `{host}`.",
             thread_ts=thread_ts,
         )
         return
@@ -640,15 +661,16 @@ async def cmd_kill(
         )
         return
 
-    # Kill tmux session
+    # Kill multiplexer session
+    mux = _mux
     host = await asyncio.to_thread(find_session_host, session_name)
-    tmux_killed = False
+    session_killed = False
     if host:
         safe_name = shlex.quote(session_name)
         rc, _ = await asyncio.to_thread(
-            run_ssh, host, f"tmux kill-session -t {safe_name}"
+            run_ssh, host, mux.kill_session_cmd(safe_name)
         )
-        tmux_killed = rc == 0
+        session_killed = rc == 0
 
     # Clean up Slack thread
     thread_name = format_thread_name(session_name, host or DEFAULT_HOST)
@@ -673,12 +695,12 @@ async def cmd_kill(
 
     # Report
     status = []
-    if tmux_killed:
+    if session_killed:
         status.append(f"Killed `{session_name}` on `{host}`")
     elif host:
         status.append(f"Failed to kill `{session_name}` on `{host}`")
     else:
-        status.append(f"tmux `{session_name}` not found")
+        status.append(f"`{session_name}` not found")
     if thread_cleaned:
         status.append(f"{cleanup_action} thread")
     else:
@@ -692,7 +714,7 @@ async def cmd_kill(
         "session_name": session_name,
         "platform": "slack",
         "host": host or "",
-        "tmux_killed": tmux_killed,
+        "session_killed": session_killed,
         "thread_cleanup": cleanup_action if thread_cleaned else "none",
         "timestamp": _now_iso(),
     })
@@ -704,13 +726,14 @@ async def cmd_sessions(
     thread_ts: str = None,
 ):
     """!sessions — list all sessions with thread sync status."""
-    # Gather tmux sessions from all hosts
+    mux = _mux
+    # Gather sessions from all hosts
     all_sessions: dict[str, str] = {}
     for host in SSH_HOSTS:
         rc, out = await asyncio.to_thread(
             run_ssh,
             host,
-            "tmux list-sessions -F '#{session_name}' 2>/dev/null || true",
+            f"{mux.list_sessions_cmd()} 2>/dev/null || true",
         )
         if rc == 0 and out:
             for name in out.strip().split("\n"):
@@ -1002,7 +1025,7 @@ async def handle_socket_event(
 async def main():
     global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, BOT_USER_ID, THREAD_CLEANUP
     global DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
-    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL, THREAD_NAME_FORMAT
+    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL, THREAD_NAME_FORMAT, _mux
 
     _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
     _default_path = os.path.join(_xdg_config, "aily", "env")
@@ -1043,6 +1066,10 @@ async def main():
     NEW_SESSION_AGENT = env.get("NEW_SESSION_AGENT", "").lower().strip()
     CLAUDE_REMOTE_CONTROL = env.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
 
+    # Initialize multiplexer backend (env var or config file, then auto-detect)
+    mux_type = env.get("AILY_MULTIPLEXER", "") or None
+    _mux = get_backend(mux_type)
+
     if not bot_token:
         print("SLACK_BOT_TOKEN not set", file=sys.stderr)
         sys.exit(1)
@@ -1059,6 +1086,7 @@ async def main():
     auth = await web_client.auth_test()
     BOT_USER_ID = auth.get("user_id", "")
     print(f"[slack-bridge] Connected as {auth.get('user', '')} ({BOT_USER_ID})")
+    print(f"[slack-bridge] Multiplexer: {_mux.name}")
     print(f"[slack-bridge] Channel: {CHANNEL_ID}")
     print(f"[slack-bridge] SSH hosts: {SSH_HOSTS}")
     print(f"[slack-bridge] Thread format: '{THREAD_NAME_FORMAT}'")

@@ -1,10 +1,10 @@
 #!/bin/bash
-# tmux hook: sync threads on session create/close across all enabled platforms.
+# Multiplexer hook: sync threads on session create/close across all enabled platforms.
 # Usage: thread-sync.sh create <session_name>
 #        thread-sync.sh delete <session_name>
 #
-# Called by tmux set-hook -g session-created/session-closed.
-# Forks to background immediately so tmux is not blocked.
+# Called by tmux set-hook -g session-created/session-closed (or equivalent).
+# Forks to background immediately so the multiplexer is not blocked.
 
 set -euo pipefail
 
@@ -20,12 +20,20 @@ if [[ "$SESSION_NAME" == "aily-bridge" || "$SESSION_NAME" == "slack-bridge" || "
   exit 0
 fi
 
-# Skip sessions created by the bridge (it handles thread creation itself)
-if [[ "$MODE" == "create" ]] && tmux show-environment -t "$SESSION_NAME" AILY_BRIDGE_MANAGED 2>/dev/null | grep -q '=1'; then
-  exit 0
-fi
-
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source multiplexer detection helper
+# shellcheck source=mux-detect.sh
+source "${HOOK_DIR}/mux-detect.sh"
+
+# Skip sessions created by the bridge (it handles thread creation itself)
+# Only works with tmux (zellij doesn't support session environment variables)
+if [[ "$MODE" == "create" ]]; then
+  _bridge_managed=$(mux_show_env "$SESSION_NAME" "AILY_BRIDGE_MANAGED")
+  if [[ "$_bridge_managed" == "1" ]]; then
+    exit 0
+  fi
+fi
 ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
