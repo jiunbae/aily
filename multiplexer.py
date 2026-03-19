@@ -230,19 +230,21 @@ class ZellijBackend(Multiplexer):
             f'cat "$tmp"; rm -f "$tmp"'
         )
 
+    _STRIP_ANSI = r"s/\x1b\[[0-9;]*m//g"
+
     def has_session_cmd(self, session: str) -> str:
         # Assign pre-quoted session to a shell var, then use grep -Fx for
         # exact fixed-string line match. Avoids regex injection and prefix collisions.
-        # zellij list-sessions may append metadata after session name, so we
-        # first extract only the name column before matching.
+        # zellij list-sessions outputs ANSI color codes and metadata, so we
+        # strip colors first, then extract only the name column.
         return (
             f'name={session}; '
-            f'zellij list-sessions 2>/dev/null | sed "s/ .*//" | grep -qFx -- "$name"'
+            f'zellij list-sessions 2>/dev/null | sed -e "{self._STRIP_ANSI}" -e "s/ .*//" | grep -qFx -- "$name"'
         )
 
     def list_sessions_cmd(self) -> str:
-        # zellij list-sessions outputs session names with extra info; extract names
-        return "zellij list-sessions 2>/dev/null | sed 's/ .*//'"
+        # zellij list-sessions outputs ANSI color codes + extra info; strip both
+        return f"zellij list-sessions 2>/dev/null | sed -e '{self._STRIP_ANSI}' -e 's/ .*//'"
 
     def new_session_cmd(self, name: str, working_dir: Optional[str] = None) -> str:
         # Zellij doesn't have a clean detached session creation like tmux.
@@ -253,7 +255,7 @@ class ZellijBackend(Multiplexer):
         else:
             launch = f"zellij -s {name} &>/dev/null &"
         # Verify session actually started (background launch always exits 0)
-        verify = f'sleep 1 && _n={name} && zellij list-sessions 2>/dev/null | grep -qE "^$_n($| )"'
+        verify = f'sleep 1 && _n={name} && zellij list-sessions 2>/dev/null | sed -e \'{self._STRIP_ANSI}\' | grep -qE "^$_n($| )"'
         return f"{launch} {verify}"
 
     def kill_session_cmd(self, name: str) -> str:
