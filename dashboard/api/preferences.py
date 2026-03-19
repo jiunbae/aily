@@ -64,7 +64,7 @@ async def set_preferences(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     now = db.now_iso()
@@ -113,7 +113,7 @@ async def set_preference(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     value = str(body.get("value", ""))

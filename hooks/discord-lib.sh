@@ -89,6 +89,10 @@ discord_create_thread() {
 
   local payload msg_id thread_id
   payload=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$starter_content")
+  if [[ -z "$payload" || "$payload" != "{"* ]]; then
+    _aily_log "ERR" "discord_create_thread: failed to build JSON payload for starter message"
+    return 1
+  fi
 
   local msg_resp
   msg_resp=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
@@ -106,6 +110,10 @@ discord_create_thread() {
   if [[ -n "$msg_id" ]]; then
     local name_payload
     name_payload=$(python3 -c "import json,sys; print(json.dumps({'name': sys.stdin.read().strip()}))" <<< "$thread_name")
+    if [[ -z "$name_payload" || "$name_payload" != "{"* ]]; then
+      _aily_log "ERR" "discord_create_thread: failed to build JSON payload for thread name"
+      return 1
+    fi
     local thread_resp
     thread_resp=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \
       -d "$name_payload" \
@@ -170,9 +178,17 @@ discord_post_to_thread() {
   local content="$2"
   local payload
   payload=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$content")
+  if [[ -z "$payload" || "$payload" != "{"* ]]; then
+    _aily_log "ERR" "discord_post_to_thread: failed to build JSON payload"
+    return 1
+  fi
   if [[ ${#payload} -gt 1990 ]]; then
     local short="${content:0:1800}..."
     payload=$(python3 -c "import json,sys; print(json.dumps({'content': sys.stdin.read().strip()}))" <<< "$short")
+    if [[ -z "$payload" || "$payload" != "{"* ]]; then
+      _aily_log "ERR" "discord_post_to_thread: failed to build truncated JSON payload"
+      return 1
+    fi
   fi
   local post_resp
   post_resp=$(curl -sf -X POST -H "$_DISCORD_AUTH" -H "Content-Type: application/json" \

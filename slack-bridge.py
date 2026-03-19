@@ -650,7 +650,7 @@ async def cmd_new(
 
     if new_ts:
         await post_message(
-            client, CHANNEL_ID, f"Session `{session_name}` created on `{host}`{cwd_label}.{agent_label}", new_ts
+            client, CHANNEL_ID, f"Session `{session_name}` created on `{host}`{cwd_label}.{agent_label}", thread_ts=new_ts
         )
         await post_message(
             client,
@@ -718,7 +718,7 @@ async def cmd_kill(
         else:
             await post_message(
                 client, CHANNEL_ID,
-                f"Session `{session_name}` killed. Archiving thread.", ts,
+                f"Session `{session_name}` killed. Archiving thread.", thread_ts=ts,
             )
             await archive_thread(client, ts)
             thread_cleaned = True

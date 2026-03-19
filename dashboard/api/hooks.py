@@ -154,7 +154,7 @@ def extract_last_assistant_text(
             if len(full_text) > max_chars:
                 full_text = full_text[:max_chars] + "..."
             return full_text
-        except Exception:
+        except json.JSONDecodeError:
             continue
     return None
 
@@ -181,7 +181,7 @@ async def handle_stop(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     session_id = body.get("session_id", "")
@@ -268,7 +268,7 @@ async def handle_session(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     hook_event = body.get("hook_event_name", "")
@@ -389,7 +389,7 @@ async def handle_tool_activity(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     session_id = body.get("session_id", "")
