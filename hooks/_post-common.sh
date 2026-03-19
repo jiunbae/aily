@@ -28,6 +28,7 @@ source "${HOOK_DIR}/mux-detect.sh"
 
 MUX_SESSION=$(mux_session_name)
 if [[ -z "$MUX_SESSION" ]]; then
+  echo "[aily] no multiplexer session detected, skipping notification" >&2
   exit 0
 fi
 

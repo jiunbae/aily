@@ -39,10 +39,18 @@ if files:
 " 2>/dev/null || echo "")
 
   if [[ -n "$jsonl" ]]; then
-    mtime_before=$(stat -f%m "$jsonl" 2>/dev/null || echo 0)
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      mtime_before=$(stat -f%m "$jsonl" 2>/dev/null || echo 0)
+    else
+      mtime_before=$(stat -c '%Y' "$jsonl" 2>/dev/null || echo 0)
+    fi
     for i in $(seq 1 10); do
       sleep 1
-      mtime_now=$(stat -f%m "$jsonl" 2>/dev/null || echo 0)
+      if [[ "$OSTYPE" == "darwin"* ]]; then
+        mtime_now=$(stat -f%m "$jsonl" 2>/dev/null || echo 0)
+      else
+        mtime_now=$(stat -c '%Y' "$jsonl" 2>/dev/null || echo 0)
+      fi
       if [[ "$mtime_now" != "$mtime_before" ]]; then
         _aily_log "DBG" "notify-claude: JSONL updated after ${i}s"
         break

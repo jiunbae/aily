@@ -187,8 +187,10 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                                     payload={"session_name": session_name},
                                 )
                             )
-                except (json.JSONDecodeError, Exception):
-                    pass  # Ignore malformed messages
+                except json.JSONDecodeError:
+                    pass  # Ignore malformed JSON messages
+                except Exception:
+                    logger.warning("Unexpected error handling WS message", exc_info=True)
 
             elif msg.type in (
                 aiohttp.WSMsgType.ERROR,

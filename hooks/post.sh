@@ -65,6 +65,11 @@ IFS=',' read -ra PLATFORM_LIST <<< "$PLATFORMS"
 pids=()
 for platform in "${PLATFORM_LIST[@]}"; do
   platform=$(echo "$platform" | tr -d ' ')
+  # Validate platform name
+  case "$platform" in
+    discord|slack) ;;
+    *) continue ;;
+  esac
   case "$platform" in
     discord)
       _post_with_retry discord "$@" & pids+=($!)
