@@ -2681,11 +2681,15 @@ cmd_dashboard() {
       local auth_token
       auth_token=$(env_get "AILY_AUTH_TOKEN" "")
 
-      PYTHONPATH="${SCRIPT_DIR}" \
-        DASHBOARD_HOST="127.0.0.1" DASHBOARD_PORT="$port" \
-        DASHBOARD_DB_PATH="${db_dir}/aily.db" \
-        AGENT_BRIDGE_ENV="$ENV_FILE" \
-        ${auth_token:+DASHBOARD_TOKEN="$auth_token"} \
+      local -a dashboard_env=(
+        PYTHONPATH="${SCRIPT_DIR}"
+        DASHBOARD_HOST="127.0.0.1" DASHBOARD_PORT="$port"
+        DASHBOARD_DB_PATH="${db_dir}/aily.db"
+        AGENT_BRIDGE_ENV="$ENV_FILE"
+      )
+      [[ -n "$auth_token" ]] && dashboard_env+=(DASHBOARD_TOKEN="$auth_token")
+
+      env "${dashboard_env[@]}" \
         nohup python3 -m dashboard \
         >>"$DASHBOARD_LOG_FILE" 2>&1 &
       local pid=$!
