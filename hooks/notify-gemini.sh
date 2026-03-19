@@ -39,7 +39,8 @@ ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi
-if [[ -z "${TMUX:-}" && -z "${TMUX_PANE:-}" ]]; then
+# Require a terminal multiplexer session (tmux or zellij)
+if [[ -z "${TMUX:-}" && -z "${TMUX_PANE:-}" && -z "${ZELLIJ:-}" ]]; then
   exit 0
 fi
 

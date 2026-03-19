@@ -28,8 +28,8 @@ def main():
     if notification.get("type") != "agent-turn-complete":
         return
 
-    # Only notify for runs inside tmux sessions (thread is based on tmux session name).
-    if not (os.environ.get("TMUX") or os.environ.get("TMUX_PANE")):
+    # Only notify for runs inside a terminal multiplexer session (tmux or zellij).
+    if not (os.environ.get("TMUX") or os.environ.get("TMUX_PANE") or os.environ.get("ZELLIJ")):
         return
 
     last_message = notification.get("last-assistant-message") or ""

@@ -446,9 +446,19 @@ api_call() {
 }
 
 # ---------------------------------------------------------------------------
-# tmux helpers
+# Multiplexer helpers
 # ---------------------------------------------------------------------------
-detect_tmux_session() {
+detect_mux_session() {
+  # Detect current session name from zellij or tmux
+  if [[ -n "${ZELLIJ_SESSION_NAME:-}" ]]; then
+    echo "$ZELLIJ_SESSION_NAME"
+    return
+  fi
+  if [[ -n "${ZELLIJ:-}" ]]; then
+    # Inside zellij but ZELLIJ_SESSION_NAME not set — can't determine name
+    return
+  fi
+
   local TMUX_BIN="/opt/homebrew/bin/tmux"
   if [[ ! -x "$TMUX_BIN" ]]; then
     TMUX_BIN="tmux"
@@ -459,6 +469,46 @@ detect_tmux_session() {
   elif [[ -n "${TMUX:-}" ]]; then
     "$TMUX_BIN" display-message -p '#S' 2>/dev/null || true
   fi
+}
+
+# Backward-compatible alias
+detect_tmux_session() { detect_mux_session "$@"; }
+
+detect_mux_type() {
+  # Return "zellij", "tmux", or empty
+  local explicit="${AILY_MULTIPLEXER:-}"
+  if [[ -n "$explicit" ]]; then
+    echo "${explicit,,}"
+    return
+  fi
+  if [[ -n "${ZELLIJ:-}" ]]; then echo "zellij"; return; fi
+  if [[ -n "${TMUX:-}" ]]; then echo "tmux"; return; fi
+  # Check remote host
+  if [[ ${#SSH_HOSTS_ARR[@]:-0} -gt 0 ]]; then
+    local host="${SSH_HOSTS_ARR[0]}"
+    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
+        'zellij list-sessions >/dev/null 2>&1' 2>/dev/null; then
+      echo "zellij"; return
+    fi
+    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
+        'tmux list-sessions >/dev/null 2>&1' 2>/dev/null; then
+      echo "tmux"; return
+    fi
+  fi
+  echo "tmux"  # default fallback
+}
+
+_list_sessions_cmd() {
+  # Return shell command to list sessions for the detected multiplexer
+  local mux="${1:-$(detect_mux_type)}"
+  case "$mux" in
+    zellij)
+      echo "zellij list-sessions 2>/dev/null | sed -e 's/\x1b\[[0-9;]*m//g' -e 's/ .*//'"
+      ;;
+    *)
+      echo "tmux list-sessions -F '#{session_name}' 2>/dev/null"
+      ;;
+  esac
 }
 
 format_thread_name() {
@@ -1495,14 +1545,22 @@ cmd_status() {
   box_empty
 
   local session_count="0"
-  if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
-    session_count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
+  local mux_label
+  mux_label=$(detect_mux_type)
+  local list_cmd
+  list_cmd=$(_list_sessions_cmd "$mux_label")
+  # Count sessions on first SSH host (or localhost)
+  local _host="${SSH_HOSTS_ARR[0]:-localhost}"
+  if [[ "$_host" == "localhost" ]]; then
+    session_count=$(eval "$list_cmd" 2>/dev/null | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
+  else
+    session_count=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$_host" "$list_cmd" 2>/dev/null | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
   fi
   local sync_status
   sync_status=$(env_get "TMUX_THREAD_SYNC" "true")
   local cleanup_status
   cleanup_status=$(env_get "THREAD_CLEANUP" "archive")
-  box_line "tmux  ${C_BOLD}${session_count}${C_RESET} sessions ${C_DIM}· sync:${sync_status} · ${cleanup_status}${C_RESET}"
+  box_line "${mux_label}  ${C_BOLD}${session_count}${C_RESET} sessions ${C_DIM}· sync:${sync_status} · ${cleanup_status}${C_RESET}"
 
   box_empty
   box_sep
@@ -1617,6 +1675,9 @@ _sessions_ssh() {
   hosts_str=$(env_get "SSH_HOSTS" "localhost")
   IFS=',' read -ra hosts <<< "$hosts_str"
 
+  local list_cmd
+  list_cmd=$(_list_sessions_cmd)
+
   if [[ "$json_output" == "true" ]]; then
     echo "["
     local first=true
@@ -1624,10 +1685,10 @@ _sessions_ssh() {
       host=$(echo "$host" | tr -d ' ')
       local sessions
       if [[ "$host" == "localhost" ]]; then
-        sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
+        sessions=$(eval "$list_cmd" 2>/dev/null || echo "")
       else
         sessions=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
-          "tmux list-sessions -F '#{session_name}' 2>/dev/null" 2>/dev/null || echo "")
+          "$list_cmd" 2>/dev/null | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" || echo "")
       fi
       while IFS= read -r name; do
         [[ -z "$name" ]] && continue
@@ -1640,17 +1701,19 @@ _sessions_ssh() {
     return
   fi
 
-  hdr "tmux sessions (via SSH)"
+  local mux_label
+  mux_label=$(detect_mux_type)
+  hdr "${mux_label} sessions (via SSH)"
   echo ""
 
   for host in "${hosts[@]}"; do
     host=$(echo "$host" | tr -d ' ')
     local sessions
     if [[ "$host" == "localhost" ]]; then
-      sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
+      sessions=$(eval "$list_cmd" 2>/dev/null || echo "")
     else
       sessions=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
-        "tmux list-sessions -F '#{session_name}' 2>/dev/null" 2>/dev/null || echo "")
+        "$list_cmd" 2>/dev/null | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" || echo "")
     fi
     if [[ -n "$sessions" ]]; then
       printf "  ${C_BOLD}%s${C_RESET}\n" "$host"
@@ -1676,7 +1739,7 @@ cmd_sync() {
     session_name=$(detect_tmux_session)
   fi
   if [[ -z "$session_name" ]]; then
-    err "No session name provided and not inside tmux"
+    err "No session name provided and not inside a terminal multiplexer session"
     echo "  Usage: aily sync <session-name>" >&2
     exit 1
   fi
@@ -1722,7 +1785,7 @@ cmd_logs() {
     session_name=$(detect_tmux_session)
   fi
   if [[ -z "$session_name" ]]; then
-    err "No session name provided and not inside tmux"
+    err "No session name provided and not inside a terminal multiplexer session"
     echo "  Usage: aily logs <session-name>" >&2
     exit 1
   fi
@@ -1776,23 +1839,39 @@ cmd_logs() {
 # aily attach [session-name]
 # -------------------------------------------------------------------
 cmd_attach() {
-  require_cmd tmux "install via your package manager" || return 1
+  local mux
+  mux=$(detect_mux_type)
 
   local session_name="${1:-}"
   if [[ -z "$session_name" ]]; then
-    printf "${C_BOLD}Active tmux sessions:${C_RESET}\n"
-    tmux list-sessions 2>/dev/null || { err "No tmux sessions found"; return 1; }
+    local list_cmd
+    list_cmd=$(_list_sessions_cmd "$mux")
+    printf "${C_BOLD}Active ${mux} sessions:${C_RESET}\n"
+    local _host="${SSH_HOSTS_ARR[0]:-localhost}"
+    if [[ "$_host" == "localhost" ]]; then
+      eval "$list_cmd" 2>/dev/null || { err "No ${mux} sessions found"; return 1; }
+    else
+      ssh -o ConnectTimeout=3 -o BatchMode=yes "$_host" "$list_cmd" 2>/dev/null \
+        | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" || { err "No ${mux} sessions found"; return 1; }
+    fi
     printf "\n"
     read -rp "Session name: " session_name
     [[ -z "$session_name" ]] && return 1
   fi
 
-  if tmux has-session -t "$session_name" 2>/dev/null; then
-    exec tmux attach-session -t "$session_name"
-  else
-    err "Session '$session_name' not found"
-    return 1
-  fi
+  case "$mux" in
+    zellij)
+      exec zellij attach "$session_name"
+      ;;
+    *)
+      if tmux has-session -t "$session_name" 2>/dev/null; then
+        exec tmux attach-session -t "$session_name"
+      else
+        err "Session '$session_name' not found"
+        return 1
+      fi
+      ;;
+  esac
 }
 
 # -------------------------------------------------------------------
@@ -1973,13 +2052,14 @@ cmd_doctor() {
   box_line "${C_BOLD}Dependencies${C_RESET}"
   local dep_line1="" dep_line2=""
   local dep_count=0
-  for cmd in curl jq tmux ssh python3; do
+  for cmd in curl jq tmux zellij ssh python3; do
     local mark="" ver=""
     if command -v "$cmd" >/dev/null 2>&1; then
       case "$cmd" in
         curl)    ver=$(curl --version 2>/dev/null | head -1 | awk '{print $2}') ;;
         jq)      ver=$(jq --version 2>/dev/null | tr -d 'jq-') ;;
         tmux)    ver=$(tmux -V 2>/dev/null | awk '{print $2}') ;;
+        zellij)  ver=$(zellij --version 2>/dev/null | awk '{print $2}') ;;
         ssh)     ver="" ;;
         python3) ver=$(python3 --version 2>/dev/null | awk '{print $2}') ;;
       esac
