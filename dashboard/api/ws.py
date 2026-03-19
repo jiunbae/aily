@@ -83,7 +83,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     # Send initial heartbeat
     try:
         await ws.send_str(Event.heartbeat().to_json())
-    except Exception:
+    except Exception as e:
+        logger.warning("WebSocket initial heartbeat failed: %s", e)
         await event_bus.unsubscribe(subscriber_id)
         return ws
 
@@ -101,7 +102,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     if not ws.closed:
                         try:
                             await ws.send_str(Event.heartbeat().to_json())
-                        except Exception:
+                        except Exception as e:
+                            logger.warning("WebSocket heartbeat error: %s", e)
                             break
                     continue
 
@@ -117,7 +119,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 if not ws.closed:
                     try:
                         await ws.send_str(event.to_json())
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("WebSocket send error: %s", e)
                         break
 
         send_task = asyncio.create_task(send_events())

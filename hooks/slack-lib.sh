@@ -9,10 +9,14 @@ _SLACK_AUTH="Authorization: Bearer ${SLACK_BOT_TOKEN}"
 
 slack_find_thread() {
   local thread_name="$1"
-  local result
-  result=$(curl -sf -H "$_SLACK_AUTH" \
-    "${_SLACK_API}/conversations.history?channel=${SLACK_CHANNEL_ID}&limit=200" 2>/dev/null \
-    | _THREAD_NAME="$thread_name" python3 -c "
+  local resp result
+  resp=$(curl -sf -H "$_SLACK_AUTH" \
+    "${_SLACK_API}/conversations.history?channel=${SLACK_CHANNEL_ID}&limit=200" 2>/dev/null || echo "")
+  if [[ -z "$resp" || "$resp" != "{"* ]]; then
+    echo ""
+    return
+  fi
+  result=$(echo "$resp" | _THREAD_NAME="$thread_name" python3 -c "
 import sys, json, os
 try:
     name = os.environ['_THREAD_NAME']
@@ -43,6 +47,10 @@ slack_create_thread() {
     "${_SLACK_API}/chat.postMessage" 2>&1) || {
     _aily_log "ERR" "slack: create thread failed: $create_resp"; create_resp=""
   }
+  if [[ -z "$create_resp" || "$create_resp" != "{"* ]]; then
+    _aily_log "ERR" "slack: create thread response is not valid JSON: ${create_resp:0:120}"
+    return
+  fi
   parent_ts=$(echo "$create_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message',{}).get('ts','') if d.get('ok') else '')" 2>/dev/null || echo "")
 
   if [[ -n "$parent_ts" ]]; then

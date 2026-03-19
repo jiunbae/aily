@@ -221,6 +221,10 @@ def is_valid_session_name(name: str) -> bool:
     return bool(SESSION_NAME_RE.match(name)) and len(name) <= 64
 
 
+# Infrastructure sessions that should be hidden from session lists and not matched
+_INFRA_SESSIONS = {"aily-bridge", "slack-bridge", "aily-dashboard"}
+
+
 def find_session_host(session_name: str) -> str | None:
     """Find which SSH host has the multiplexer session."""
     mux = _mux
@@ -235,6 +239,10 @@ def find_session_host(session_name: str) -> str | None:
             sessions = exact.splitlines()
             if session_name in sessions:
                 return host
+            # Prefix matched an infra session — not a real match
+            if any(s.startswith(session_name) and s in _INFRA_SESSIONS for s in sessions):
+                continue
+            return host
     return None
 
 
@@ -509,11 +517,6 @@ async def get_thread_session(
         await _cache_thread(thread_ts, session_name)
         return session_name
 
-    session_name = parse_thread_name(parent_text.split("\n")[0])
-    if session_name:
-        await _cache_thread(thread_ts, session_name)
-        return session_name
-
     return None
 
 
@@ -769,7 +772,7 @@ async def cmd_sessions(
         if rc == 0 and out:
             for name in out.strip().split("\n"):
                 name = name.strip()
-                if name:
+                if name and name not in _INFRA_SESSIONS:
                     if name in all_sessions:
                         all_sessions[name] += f", {host}"
                     else:

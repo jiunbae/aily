@@ -201,7 +201,7 @@ async def create_session(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     name = body.get("name", "").strip()
@@ -343,7 +343,7 @@ async def update_session(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     updates: list[str] = []
@@ -390,7 +390,7 @@ async def bulk_delete_sessions(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     names = body.get("names", [])
@@ -447,7 +447,7 @@ async def send_message(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     message = body.get("message", "").strip()
@@ -640,7 +640,7 @@ async def receive_bridge_event(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     message_svc: MessageService = request.app["message_service"]
@@ -648,6 +648,8 @@ async def receive_bridge_event(request: web.Request) -> web.Response:
     try:
         await message_svc.ingest_bridge_event(body)
     except Exception:
-        logger.warning("Failed to ingest bridge event", exc_info=True)
+        evt_type = body.get("type", "unknown") if isinstance(body, dict) else "unknown"
+        session = body.get("session_name", "unknown") if isinstance(body, dict) else "unknown"
+        logger.warning("Failed to ingest bridge event (type=%s, session=%s)", evt_type, session, exc_info=True)
 
     return json_ok({"accepted": True}, status=202)
