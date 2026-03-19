@@ -21,10 +21,18 @@ fi
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 
-TMUX_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
-if [[ -z "$TMUX_SESSION" ]]; then
+# Source multiplexer detection helper
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=mux-detect.sh
+source "${HOOK_DIR}/mux-detect.sh"
+
+MUX_SESSION=$(mux_session_name)
+if [[ -z "$MUX_SESSION" ]]; then
   exit 0
 fi
+
+# Backward-compatible alias
+TMUX_SESSION="$MUX_SESSION"
 
 HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
 PROJECT=$(basename "${PWD:-unknown}")
@@ -32,5 +40,5 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
 _DEFAULT_FMT='[agent] {session} - {host}'
 THREAD_NAME="${THREAD_NAME_FORMAT:-$_DEFAULT_FMT}"
-THREAD_NAME="${THREAD_NAME//\{session\}/$TMUX_SESSION}"
+THREAD_NAME="${THREAD_NAME//\{session\}/$MUX_SESSION}"
 THREAD_NAME="${THREAD_NAME//\{host\}/$HOSTNAME_SHORT}"
