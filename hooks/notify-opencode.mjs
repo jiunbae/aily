@@ -33,7 +33,7 @@ export const ailyNotify = async ({ project, directory }) => {
 
     "session.idle": async () => {
       if (!lastMessageText || lastMessageText.length < 20) return;
-      if (!process.env.TMUX && !process.env.TMUX_PANE) return;
+      if (!process.env.TMUX && !process.env.TMUX_PANE && !process.env.ZELLIJ) return;
 
       const message =
         lastMessageText.length > 1000

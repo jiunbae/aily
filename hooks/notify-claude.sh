@@ -19,8 +19,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi
 
-# Require tmux: check env first, fall back to tmux query
-if [[ -z "${TMUX:-}" ]] && ! tmux display-message -p '' >/dev/null 2>&1; then
+# Require a terminal multiplexer session (tmux or zellij)
+if [[ -z "${TMUX:-}" && -z "${ZELLIJ:-}" ]] && ! tmux display-message -p '' >/dev/null 2>&1; then
   exit 0
 fi
 
