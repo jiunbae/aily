@@ -160,7 +160,7 @@ async def put_settings(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     now = db.now_iso()
@@ -232,7 +232,7 @@ async def test_connection(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
         return error_response(400, "INVALID_JSON", "Request body must be JSON")
 
     test_type = str(body.get("type", "")).lower()

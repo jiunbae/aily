@@ -40,6 +40,10 @@ slack_create_thread() {
 
   local payload parent_ts
   payload=$(python3 -c "import json,sys; print(json.dumps({'channel': sys.argv[1], 'text': sys.stdin.read().strip()}))" "$SLACK_CHANNEL_ID" <<< "$starter_content")
+  if [[ -z "$payload" || "$payload" != "{"* ]]; then
+    _aily_log "ERR" "slack_create_thread: failed to build JSON payload"
+    return 1
+  fi
 
   local create_resp
   create_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
@@ -90,6 +94,10 @@ slack_archive_thread() {
   local react_resp
   local react_payload
   react_payload=$(python3 -c "import json,sys; print(json.dumps({'channel': sys.argv[1], 'timestamp': sys.argv[2], 'name': 'lock'}))" "$SLACK_CHANNEL_ID" "$thread_ts")
+  if [[ -z "$react_payload" || "$react_payload" != "{"* ]]; then
+    _aily_log "ERR" "slack_archive_thread: failed to build JSON payload"
+    return 1
+  fi
   react_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
     -d "$react_payload" \
     "${_SLACK_API}/reactions.add" 2>&1) || _aily_log "ERR" "slack: add reaction failed: $react_resp"
@@ -99,6 +107,10 @@ slack_delete_thread() {
   local thread_ts="$1"
   local delete_payload
   delete_payload=$(python3 -c "import json,sys; print(json.dumps({'channel': sys.argv[1], 'ts': sys.argv[2]}))" "$SLACK_CHANNEL_ID" "$thread_ts")
+  if [[ -z "$delete_payload" || "$delete_payload" != "{"* ]]; then
+    _aily_log "ERR" "slack_delete_thread: failed to build JSON payload"
+    return 1
+  fi
   curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
     -d "$delete_payload" \
     "${_SLACK_API}/chat.delete" > /dev/null 2>&1 || true
@@ -119,6 +131,10 @@ print(json.dumps({
     'text': sys.stdin.read().strip()
 }))
 " "$SLACK_CHANNEL_ID" "$thread_ts" <<< "$content")
+  if [[ -z "$payload" || "$payload" != "{"* ]]; then
+    _aily_log "ERR" "slack_post_to_thread: failed to build JSON payload"
+    return 1
+  fi
   local post_resp
   post_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
     -d "$payload" \
