@@ -42,7 +42,7 @@ mux_has_session() {
   local name="$1"
   case "$MUX_TYPE" in
     zellij)
-      zellij list-sessions 2>/dev/null | sed 's/ .*//' | grep -qFx -- "${name}"
+      zellij list-sessions 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/ .*//' | grep -qFx -- "${name}"
       ;;
     *)
       tmux has-session -t "$name" 2>/dev/null
@@ -54,7 +54,7 @@ mux_list_sessions() {
   # List session names, one per line.
   case "$MUX_TYPE" in
     zellij)
-      zellij list-sessions 2>/dev/null | sed 's/ .*//'
+      zellij list-sessions 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/ .*//'
       ;;
     *)
       tmux list-sessions -F '#{session_name}' 2>/dev/null
