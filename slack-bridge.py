@@ -220,7 +220,11 @@ def find_session_host(session_name: str) -> str | None:
             host, f"{mux.has_session_cmd(safe_name)} 2>/dev/null && echo found"
         )
         if rc == 0 and "found" in out:
-            return host
+            # Verify it's not a prefix match against an infra session
+            _, exact = run_ssh(host, f"{mux.list_sessions_cmd()} 2>/dev/null")
+            sessions = exact.splitlines()
+            if session_name in sessions:
+                return host
     return None
 
 
@@ -595,6 +599,11 @@ async def cmd_new(
             thread_ts=thread_ts,
         )
         return
+
+    # Set marker so thread-sync.sh skips this session (bridge handles the thread)
+    if mux.supports_environment:
+        marker_cmd = mux.set_environment_cmd(safe_name, "AILY_BRIDGE_MANAGED", "1")
+        await asyncio.to_thread(run_ssh, host, marker_cmd)
 
     # Launch agent in session (if configured)
     agent_cmd = _build_agent_command(NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL)
