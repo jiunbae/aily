@@ -18,6 +18,7 @@ are ALWAYS forwarded to the session, never answered by a chatbot.
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shlex

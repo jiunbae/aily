@@ -18,6 +18,7 @@ Requires: slack-sdk (pip install slack-sdk)
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shlex
@@ -152,6 +153,7 @@ def _track_task(coro) -> asyncio.Task:
 # Capped at 256 entries with LRU eviction via OrderedDict
 _THREAD_CACHE_MAX = 256
 _thread_cache: OrderedDict[str, str] = OrderedDict()
+_thread_cache_lock: asyncio.Lock = asyncio.Lock()
 
 
 _SECRET_PATTERNS = re.compile(
@@ -188,6 +190,14 @@ def load_env(env_path: str) -> dict:
                 key, val = line.split("=", 1)
                 env[key.strip()] = val.strip().strip('"').strip("'")
     return env
+
+
+_SAFE_PATH_RE = re.compile(r'^[a-zA-Z0-9_./@:~-]+$')
+
+
+def _validate_path(path: str) -> bool:
+    """Reject paths with shell metacharacters or directory traversal."""
+    return bool(_SAFE_PATH_RE.match(path)) and '..' not in path
 
 
 def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
@@ -465,20 +475,22 @@ async def post_message(
 # --- Resolve thread parent ---
 
 
-def _cache_thread(thread_ts: str, session_name: str):
+async def _cache_thread(thread_ts: str, session_name: str):
     """Add entry to thread cache with LRU eviction."""
-    _thread_cache[thread_ts] = session_name
-    while len(_thread_cache) > _THREAD_CACHE_MAX:
-        _thread_cache.popitem(last=False)
+    async with _thread_cache_lock:
+        _thread_cache[thread_ts] = session_name
+        while len(_thread_cache) > _THREAD_CACHE_MAX:
+            _thread_cache.popitem(last=False)
 
 
 async def get_thread_session(
     client: AsyncWebClient, channel: str, thread_ts: str
 ) -> str | None:
     """Get session name from a thread's parent message. Uses cache."""
-    if thread_ts in _thread_cache:
-        _thread_cache.move_to_end(thread_ts)
-        return _thread_cache[thread_ts]
+    async with _thread_cache_lock:
+        if thread_ts in _thread_cache:
+            _thread_cache.move_to_end(thread_ts)
+            return _thread_cache[thread_ts]
 
     try:
         result = await client.conversations_replies(
@@ -494,12 +506,12 @@ async def get_thread_session(
     first_line = parent_text.split("\n")[0].strip()
     session_name = parse_thread_name(first_line)
     if session_name:
-        _cache_thread(thread_ts, session_name)
+        await _cache_thread(thread_ts, session_name)
         return session_name
 
     session_name = parse_thread_name(parent_text.split("\n")[0])
     if session_name:
-        _cache_thread(thread_ts, session_name)
+        await _cache_thread(thread_ts, session_name)
         return session_name
 
     return None
@@ -561,6 +573,15 @@ async def cmd_new(
             client,
             reply_to,
             "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).",
+            thread_ts=thread_ts,
+        )
+        return
+
+    if working_dir and not _validate_path(working_dir):
+        await post_message(
+            client,
+            reply_to,
+            "Invalid working directory. Path contains disallowed characters.",
             thread_ts=thread_ts,
         )
         return
@@ -700,7 +721,8 @@ async def cmd_kill(
             thread_cleaned = True
             cleanup_action = "archived"
         # Clear cache
-        _thread_cache.pop(ts, None)
+        async with _thread_cache_lock:
+            _thread_cache.pop(ts, None)
 
     # Report
     status = []
@@ -821,7 +843,7 @@ async def cmd_queue(
                 thread_ts=thread_ts,
             )
             return
-        command = parts[3]
+        command = " ".join(parts[3:])
         result = await dashboard_api("POST", "/api/usage/queue", {
             "session_name": session_name,
             "command": command,

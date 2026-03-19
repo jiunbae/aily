@@ -80,7 +80,7 @@ def _client_ip(request: web.Request) -> str:
     When TRUST_PROXY is not set (default), only ``request.remote`` is used,
     preventing clients from spoofing their IP via the X-Forwarded-For header.
     """
-    if os.environ.get("TRUST_PROXY", "").lower() in ("1", "true", "yes"):
+    if os.environ.get("TRUST_PROXY", "").lower() == "true":
         xff = request.headers.get("X-Forwarded-For", "")
         if xff:
             return xff.split(",")[0].strip()

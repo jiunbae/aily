@@ -339,7 +339,7 @@ env_get() {
   local key="$1" default="${2:-}"
   if [[ -f "$ENV_FILE" ]]; then
     local val
-    val=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+    val=$(grep -F "${key}=" "$ENV_FILE" 2>/dev/null | grep -E "^${key}=" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
     echo "${val:-$default}"
   else
     echo "$default"
@@ -382,6 +382,7 @@ load_env() {
     key="${key// /}"
     value="${value#\"}" ; value="${value%\"}"
     value="${value#\'}" ; value="${value%\'}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     export "$key=$value"
   done < "$ENV_FILE"
 }
@@ -907,7 +908,7 @@ cmd_init() {
     config_content+="# AILY_AUTH_TOKEN=\"\"\n"
   fi
 
-  printf '%b' "$config_content" > "$ENV_FILE"
+  (umask 077; printf '%b' "$config_content" > "$ENV_FILE")
   chmod 600 "$ENV_FILE"
   ok "Saved to ${ENV_FILE} (chmod 600)"
   echo ""
@@ -1552,7 +1553,13 @@ cmd_status() {
   # Count sessions on first SSH host (or localhost)
   local _host="${SSH_HOSTS_ARR[0]:-localhost}"
   if [[ "$_host" == "localhost" ]]; then
-    session_count=$(eval "$list_cmd" 2>/dev/null | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
+    local _sessions_raw
+    if [[ "$mux_label" == "zellij" ]]; then
+      _sessions_raw=$(zellij list-sessions 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/ .*//' || echo "")
+    else
+      _sessions_raw=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
+    fi
+    session_count=$(echo "$_sessions_raw" | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
   else
     session_count=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$_host" "$list_cmd" 2>/dev/null | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
   fi
@@ -1675,8 +1682,10 @@ _sessions_ssh() {
   hosts_str=$(env_get "SSH_HOSTS" "localhost")
   IFS=',' read -ra hosts <<< "$hosts_str"
 
+  local mux_label
+  mux_label=$(detect_mux_type)
   local list_cmd
-  list_cmd=$(_list_sessions_cmd)
+  list_cmd=$(_list_sessions_cmd "$mux_label")
 
   if [[ "$json_output" == "true" ]]; then
     echo "["
@@ -1685,7 +1694,11 @@ _sessions_ssh() {
       host=$(echo "$host" | tr -d ' ')
       local sessions
       if [[ "$host" == "localhost" ]]; then
-        sessions=$(eval "$list_cmd" 2>/dev/null || echo "")
+        if [[ "$mux_label" == "zellij" ]]; then
+          sessions=$(zellij list-sessions 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/ .*//' || echo "")
+        else
+          sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
+        fi
       else
         sessions=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
           "$list_cmd" 2>/dev/null | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" || echo "")
@@ -1701,8 +1714,6 @@ _sessions_ssh() {
     return
   fi
 
-  local mux_label
-  mux_label=$(detect_mux_type)
   hdr "${mux_label} sessions (via SSH)"
   echo ""
 
@@ -1710,7 +1721,11 @@ _sessions_ssh() {
     host=$(echo "$host" | tr -d ' ')
     local sessions
     if [[ "$host" == "localhost" ]]; then
-      sessions=$(eval "$list_cmd" 2>/dev/null || echo "")
+      if [[ "$mux_label" == "zellij" ]]; then
+        sessions=$(zellij list-sessions 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/ .*//' || echo "")
+      else
+        sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
+      fi
     else
       sessions=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
         "$list_cmd" 2>/dev/null | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" || echo "")
@@ -1849,7 +1864,11 @@ cmd_attach() {
     printf "${C_BOLD}Active ${mux} sessions:${C_RESET}\n"
     local _host="${SSH_HOSTS_ARR[0]:-localhost}"
     if [[ "$_host" == "localhost" ]]; then
-      eval "$list_cmd" 2>/dev/null || { err "No ${mux} sessions found"; return 1; }
+      if [[ "$mux" == "zellij" ]]; then
+        zellij list-sessions 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/ .*//' || { err "No ${mux} sessions found"; return 1; }
+      else
+        tmux list-sessions -F '#{session_name}' 2>/dev/null || { err "No ${mux} sessions found"; return 1; }
+      fi
     else
       ssh -o ConnectTimeout=3 -o BatchMode=yes "$_host" "$list_cmd" 2>/dev/null \
         | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" || { err "No ${mux} sessions found"; return 1; }

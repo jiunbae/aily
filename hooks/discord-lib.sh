@@ -18,7 +18,12 @@ discord_get_guild_id() {
     "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}" 2>&1) || {
     _aily_log "ERR" "discord: get guild_id failed: $resp"; resp=""
   }
-  _DISCORD_GUILD_ID=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('guild_id',''))" 2>/dev/null || echo "")
+  if [[ -z "$resp" || "$resp" != "{"* ]]; then
+    _aily_log "ERR" "discord: guild_id response is not valid JSON: ${resp:0:120}"
+    _DISCORD_GUILD_ID=""
+  else
+    _DISCORD_GUILD_ID=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('guild_id',''))" 2>/dev/null || echo "")
+  fi
   echo "$_DISCORD_GUILD_ID"
 }
 
@@ -91,7 +96,12 @@ discord_create_thread() {
     "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages" 2>&1) || {
     _aily_log "ERR" "discord: create starter message failed: $msg_resp"; msg_resp=""
   }
-  msg_id=$(echo "$msg_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+  if [[ -z "$msg_resp" || "$msg_resp" != "{"* ]]; then
+    _aily_log "ERR" "discord: starter message response is not valid JSON: ${msg_resp:0:120}"
+    msg_id=""
+  else
+    msg_id=$(echo "$msg_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+  fi
 
   if [[ -n "$msg_id" ]]; then
     local name_payload
@@ -102,7 +112,12 @@ discord_create_thread() {
       "${_DISCORD_API}/channels/${DISCORD_CHANNEL_ID}/messages/${msg_id}/threads" 2>&1) || {
       _aily_log "ERR" "discord: create thread failed: $thread_resp"; thread_resp=""
     }
-    thread_id=$(echo "$thread_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+    if [[ -z "$thread_resp" || "$thread_resp" != "{"* ]]; then
+      _aily_log "ERR" "discord: create thread response is not valid JSON: ${thread_resp:0:120}"
+      thread_id=""
+    else
+      thread_id=$(echo "$thread_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+    fi
 
     # Post welcome message with usage guide
     if [[ -n "$thread_id" ]]; then

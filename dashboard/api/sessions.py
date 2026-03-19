@@ -648,8 +648,6 @@ async def receive_bridge_event(request: web.Request) -> web.Response:
     try:
         await message_svc.ingest_bridge_event(body)
     except Exception:
-        logger.exception("Error processing bridge event")
-        # Still return 202 — bridges should not retry on dashboard errors
-        pass
+        logger.warning("Failed to ingest bridge event", exc_info=True)
 
     return json_ok({"accepted": True}, status=202)
