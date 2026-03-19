@@ -10,6 +10,7 @@ if [[ "${1:-}" == "--raw" ]]; then
   MESSAGE_TEXT=""
 else
   AGENT_NAME="${1:-unknown}"
+  [[ "$AGENT_NAME" =~ ^[a-zA-Z0-9_.-]+$ ]] || AGENT_NAME="unknown"
   MESSAGE_TEXT="${2:-}"
 fi
 
