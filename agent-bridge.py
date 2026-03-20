@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Discord ↔ terminal multiplexer session bridge.
+Discord <-> terminal multiplexer session bridge.
 
 Monitors Discord threads named [agent] <session> and forwards user messages
 to the corresponding session's Claude Code instance via SSH.
@@ -11,6 +11,7 @@ Also handles ! commands for session/thread lifecycle management:
   !new <name> [host|dir] [dir] [-- cmd] — create session + Discord thread
   !kill <name>        — kill session + archive Discord thread
   !sessions           — list all sessions with sync status
+  !queue              — list / add / execute deferred commands
 
 This is a deterministic forwarder — no AI involved. Messages in [agent] threads
 are ALWAYS forwarded to the session, never answered by a chatbot.
@@ -19,433 +20,35 @@ are ALWAYS forwarded to the session, never answered by a chatbot.
 import asyncio
 import json
 import logging
-import os
-import re
-import shlex
-import subprocess
 import sys
-import time
-from datetime import datetime, timezone
+from typing import Any
 
 import aiohttp
 
-from multiplexer import get_backend, Multiplexer
-
-# Dashboard webhook URL (optional — if not set, events are silently skipped)
-DASHBOARD_URL: str = os.environ.get("AILY_DASHBOARD_URL", "")
-DASHBOARD_AUTH_TOKEN: str = os.environ.get("AILY_AUTH_TOKEN", "")
-
-# Multiplexer backend (initialized in main())
-_mux: Multiplexer | None = None
-
-# Shared aiohttp session for dashboard POSTs (set in main)
-_dashboard_http: aiohttp.ClientSession | None = None
-
-
-async def emit_dashboard_event(event: dict):
-    """POST an event to the aily dashboard webhook. Non-blocking, fire-and-forget."""
-    if not DASHBOARD_URL or _dashboard_http is None:
-        return
-    url = f"{DASHBOARD_URL.rstrip('/')}/api/hooks/event"
-    try:
-        headers = {}
-        if DASHBOARD_AUTH_TOKEN:
-            headers["Authorization"] = f"Bearer {DASHBOARD_AUTH_TOKEN}"
-        async with _dashboard_http.post(url, json=event, timeout=aiohttp.ClientTimeout(total=5), headers=headers) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                print(f"[dashboard] POST {resp.status}: {body[:200]}", file=sys.stderr)
-    except Exception as e:
-        print(f"[dashboard] POST failed: {e}", file=sys.stderr)
-
-
-def _fire_dashboard_event(event: dict):
-    """Schedule a dashboard event from sync or async context without awaiting."""
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(emit_dashboard_event(event))
-    except RuntimeError:
-        pass  # No running loop — skip silently
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-async def dashboard_api(method: str, path: str, json_body: dict = None) -> dict | None:
-    """Call dashboard REST API and return parsed JSON response, or None on failure."""
-    if not DASHBOARD_URL or _dashboard_http is None:
-        return None
-    url = f"{DASHBOARD_URL.rstrip('/')}{path}"
-    try:
-        headers: dict = {}
-        if DASHBOARD_AUTH_TOKEN:
-            headers["Authorization"] = f"Bearer {DASHBOARD_AUTH_TOKEN}"
-        kwargs: dict = {"timeout": aiohttp.ClientTimeout(total=10), "headers": headers}
-        if json_body is not None:
-            kwargs["json"] = json_body
-        async with _dashboard_http.request(method, url, **kwargs) as resp:
-            if resp.status < 400:
-                return await resp.json()
-            body = await resp.text()
-            print(f"[dashboard] {method} {path} {resp.status}: {body[:200]}", file=sys.stderr)
-            return None
-    except (aiohttp.ClientError, TimeoutError) as e:
-        print(f"[dashboard] {method} {path} failed: {e}", file=sys.stderr)
-        return None
-
+from bridge_core import (
+    BridgeCore,
+    BridgeState,
+    PlatformBridge,
+    load_env,
+    parse_thread_name,
+    SHORTCUTS,
+)
 
 # Discord gateway intents
 INTENT_GUILDS = 1 << 0
 INTENT_GUILD_MESSAGES = 1 << 9
 INTENT_MESSAGE_CONTENT = 1 << 15
 
-AGENT_PREFIX = "[agent] "  # legacy fallback
-THREAD_NAME_FORMAT: str = "[agent] {session} - {host}"
-SEND_KEYS_DELAY = 0.3
-SESSION_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
-
-
-def format_thread_name(session: str, host: str = "") -> str:
-    """Build thread name from format template."""
-    if not host:
-        host = DEFAULT_HOST or "localhost"
-    return THREAD_NAME_FORMAT.replace("{session}", session).replace("{host}", host)
-
-
-def parse_thread_name(thread_name: str) -> str | None:
-    """Extract session name from a thread name using the format template.
-
-    Builds a regex from THREAD_NAME_FORMAT by replacing {session} with a capture
-    group and {host} with a wildcard, then matches against the thread name.
-    Falls back to legacy AGENT_PREFIX stripping.
-    """
-    fmt = re.escape(THREAD_NAME_FORMAT)
-    fmt = fmt.replace(re.escape("{session}"), r"([a-zA-Z0-9_-]+)")
-    fmt = fmt.replace(re.escape("{host}"), r".+")
-    m = re.match(f"^{fmt}$", thread_name)
-    if m:
-        return m.group(1)
-    # Legacy fallback: [agent] <session>
-    if thread_name.startswith(AGENT_PREFIX):
-        return thread_name[len(AGENT_PREFIX):]
-    return None
-
 API_BASE = "https://discord.com/api/v10"
 
-# Globals set at startup
-CHANNEL_ID: str = ""
-GUILD_ID: str = ""
-SSH_HOSTS: list[str] = []
-DEFAULT_HOST: str = ""
-DEFAULT_WORKING_DIR: str = ""
-THREAD_CLEANUP: str = "archive"
-NEW_SESSION_AGENT: str = ""
-CLAUDE_REMOTE_CONTROL: bool = False
-_announced: bool = False
 
-# Track background tasks to prevent GC and surface exceptions
-_background_tasks: set[asyncio.Task] = set()
-_MAX_BACKGROUND_TASKS = 20
-_background_sem = asyncio.Semaphore(_MAX_BACKGROUND_TASKS)
+# --- Discord REST helper ---
 
-
-def _track_task(coro) -> asyncio.Task:
-    """Create a tracked background task that logs exceptions on completion."""
-    async def _limited():
-        async with _background_sem:
-            return await coro
-    task = asyncio.create_task(_limited())
-    _background_tasks.add(task)
-
-    def _on_done(t: asyncio.Task):
-        _background_tasks.discard(t)
-        if not t.cancelled() and t.exception():
-            print(f"[bridge] background task failed: {t.exception()}", file=sys.stderr)
-
-    task.add_done_callback(_on_done)
-    return task
-
-
-_SECRET_PATTERNS = re.compile(
-    r'(?i)'
-    r'((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
-    r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string'
-    r'|key[_-]?id|client[_-]?secret)'
-    r'\s*[=:])\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
-)
-_PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
-
-
-def _sanitize_backticks(text: str) -> str:
-    """Escape triple backticks in text to prevent markdown injection."""
-    return text.replace('```', r'\`\`\`')
-
-
-def _redact_secrets(text: str) -> str:
-    """Redact common secret patterns from shell output."""
-    text = _SECRET_PATTERNS.sub(r'\1 [REDACTED]', text)
-    text = _PEM_RE.sub('[REDACTED PEM KEY]', text)
-    return text
-
-
-def load_env(env_path: str) -> dict:
-    """Load env config file."""
-    env = {}
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, val = line.split("=", 1)
-                env[key.strip()] = val.strip().strip('"').strip("'")
-    return env
-
-
-_SAFE_PATH_RE = re.compile(r'^[a-zA-Z0-9_./@:~-]+$')
-
-
-def _validate_path(path: str) -> bool:
-    """Reject paths with shell metacharacters or directory traversal."""
-    return bool(_SAFE_PATH_RE.match(path)) and '..' not in path
-
-
-def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
-    """Run a command over SSH (or locally for localhost). Returns (returncode, stdout)."""
-    try:
-        if host in ("localhost", "127.0.0.1", "::1"):
-            result = subprocess.run(
-                ["bash", "-c", cmd],
-                capture_output=True, text=True, timeout=timeout
-            )
-        else:
-            result = subprocess.run(
-                ["ssh", host, cmd],
-                capture_output=True, text=True, timeout=timeout
-            )
-        return result.returncode, result.stdout.strip()
-    except subprocess.TimeoutExpired:
-        return 1, ""
-    except Exception as e:
-        return 1, str(e)
-
-
-def is_valid_session_name(name: str) -> bool:
-    """Check if session name is safe for use in shell commands."""
-    return bool(SESSION_NAME_RE.match(name)) and len(name) <= 64
-
-
-# Infrastructure sessions that should be hidden from session lists and not matched
-_INFRA_SESSIONS = {"aily-bridge", "slack-bridge", "aily-dashboard"}
-
-
-def find_session_host(session_name: str) -> str | None:
-    """Find which SSH host has the multiplexer session."""
-    mux = _mux
-    safe_name = shlex.quote(session_name)
-    for host in SSH_HOSTS:
-        rc, out = run_ssh(host, f"{mux.has_session_cmd(safe_name)} 2>/dev/null && echo found")
-        if rc == 0 and "found" in out:
-            # Verify it's not a prefix match against an infra session
-            _, exact = run_ssh(host, f"{mux.list_sessions_cmd()} 2>/dev/null")
-            sessions = exact.splitlines()
-            if session_name in sessions:
-                return host
-            # Prefix matched an infra session — not a real match
-            if any(s.startswith(session_name) and s in _INFRA_SESSIONS for s in sessions):
-                continue
-            return host
-    return None
-
-
-def send_keys_raw(host: str, session: str, keys: str) -> bool:
-    """Send raw key sequences (e.g., C-c, C-d, C-z) to a session."""
-    mux = _mux
-    safe_session = shlex.quote(session)
-    rc, _ = run_ssh(host, mux.send_raw_key_cmd(safe_session, keys))
-    return rc == 0
-
-
-# Shortcut commands: Discord message → tmux key sequence
-_SHORTCUTS = {
-    "!c":     "C-c",
-    "!d":     "C-d",
-    "!z":     "C-z",
-    "!q":     "q",
-    "!enter": "Enter",
-    "!esc":   "Escape",
-}
-
-
-def send_to_session(host: str, session: str, message: str) -> bool:
-    """Send a message to a multiplexer session's Claude Code."""
-    mux = _mux
-    safe_session = shlex.quote(session)
-    safe_message = shlex.quote(message)
-
-    # Step 1: Type the text
-    rc, _ = run_ssh(host, mux.send_keys_cmd(safe_session, safe_message))
-    if rc != 0:
-        return False
-
-    # Step 2: Press Enter (separate command — critical for Claude Code)
-    time.sleep(SEND_KEYS_DELAY)
-    rc, _ = run_ssh(host, mux.send_enter_cmd(safe_session))
-    if rc != 0:
-        # Clear ghost text to prevent corruption of next message
-        run_ssh(host, mux.send_raw_key_cmd(safe_session, "C-c"))
-        return False
-    return True
-
-
-# Backward-compatible alias
-send_to_tmux = send_to_session
-
-
-# Shell names for output capture (skip capture for non-shell processes)
-_SHELL_NAMES = frozenset({"bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh"})
-
-
-def get_pane_command(host: str, session: str) -> str:
-    """Get the current foreground command in a session's active pane.
-
-    Returns empty string if the multiplexer doesn't support this.
-    """
-    mux = _mux
-    if not mux.supports_pane_command:
-        return ""
-    safe_session = shlex.quote(session)
-    rc, out = run_ssh(host, mux.get_pane_command_cmd(safe_session))
-    return out.strip() if rc == 0 else ""
-
-
-def capture_pane_content(host: str, session: str) -> str:
-    """Capture visible pane content from a multiplexer session."""
-    mux = _mux
-    if not mux.supports_detached_capture:
-        logging.debug("Skipping pane capture: %s doesn't support detached capture", mux.name)
-        return ""
-    safe_session = shlex.quote(session)
-    rc, out = run_ssh(host, mux.capture_pane_cmd(safe_session), timeout=10)
-    return out if rc == 0 else ""
-
-
-def _build_agent_command(agent: str, remote_control: bool) -> str | None:
-    """Build the shell command to launch an agent. Returns None if agent is empty."""
-    if not agent:
-        return None
-    if agent == "claude":
-        return "claude remote-control" if remote_control else "claude"
-    if agent == "codex":
-        return "codex"
-    if agent == "gemini":
-        return "gemini"
-    if agent == "opencode":
-        return "opencode"
-    return None
-
-
-def capture_shell_output(
-    host: str, session: str, pre_content: str,
-    poll_interval: float = 1.0,
-    stable_count: int = 2,
-    max_wait: float = 30.0,
-) -> str | None:
-    """Poll pane until output stabilizes, return new content.
-
-    Returns None if a non-shell process takes over (e.g., Claude Code started).
-    Returns empty string if no new output detected.
-    """
-    time.sleep(1.0)
-
-    # Check: did the command spawn a non-shell process?
-    # If multiplexer doesn't support pane_command, skip this check
-    pane_cmd = get_pane_command(host, session)
-    if pane_cmd and pane_cmd.lower() not in _SHELL_NAMES:
-        return None
-
-    last_content = ""
-    stable_hits = 0
-    deadline = time.monotonic() + max_wait
-
-    while time.monotonic() < deadline:
-        current = capture_pane_content(host, session)
-        if not current:
-            break
-
-        if current == last_content:
-            stable_hits += 1
-            if stable_hits >= stable_count:
-                break
-        else:
-            stable_hits = 0
-            last_content = current
-
-        time.sleep(poll_interval)
-
-    # Final check: ensure shell is still the foreground process
-    # If multiplexer doesn't support pane_command, skip this check
-    pane_cmd = get_pane_command(host, session)
-    if pane_cmd and pane_cmd.lower() not in _SHELL_NAMES:
-        return None
-
-    if not last_content:
-        return ""
-
-    # Diff: find new lines compared to pre_content
-    pre_lines = pre_content.rstrip().split('\n') if pre_content.strip() else []
-    post_lines = last_content.rstrip().split('\n') if last_content.strip() else []
-
-    common_len = 0
-    for i, (a, b) in enumerate(zip(pre_lines, post_lines)):
-        if a == b:
-            common_len = i + 1
-        else:
-            break
-
-    new_lines = post_lines[common_len:]
-
-    # Strip prompt/decoration lines from both ends
-    while new_lines and (not new_lines[-1].strip() or _is_prompt_line(new_lines[-1])):
-        new_lines.pop()
-    while new_lines and (not new_lines[0].strip() or _is_prompt_line(new_lines[0])):
-        new_lines.pop(0)
-
-    # Also strip the command echo line (first line often repeats the sent command)
-    # e.g. " ls" or "❯ pwd" — matches if it looks like a typed command
-    if new_lines and re.match(r'^[❯$%>]\s+\S', new_lines[0].strip()):
-        new_lines.pop(0)
-
-    return '\n'.join(new_lines)
-
-
-def _is_prompt_line(line: str) -> bool:
-    """Detect common shell prompt lines (powerline, starship, p10k, plain)."""
-    stripped = line.strip()
-    if not stripped:
-        return False
-    # Strip ANSI escape codes for clean matching
-    clean = re.sub(r'\x1b\[[0-9;]*m', '', stripped)
-
-    # Lines containing many box-drawing chars (─, ═, ━) — prompt decorations
-    decor_count = sum(1 for c in clean if c in '─═━')
-    if decor_count >= 5:
-        return True
-    # Lines ending with common prompt chars
-    if clean.rstrip().endswith(('❯', '$ ', '% ', '> ', '$', '%', '>')):
-        return True
-    # Lines starting with prompt indicators
-    if re.match(r'^\s*[❯$%>]\s*$', clean):
-        return True
-    return False
-
-
-# --- Discord REST helpers ---
-
-async def discord_request(session: aiohttp.ClientSession, token: str,
-                          method: str, path: str, json_data: dict = None) -> dict | list:
-    """Make a Discord REST API request."""
+async def discord_request(
+    session: aiohttp.ClientSession, token: str,
+    method: str, path: str, json_data: dict = None,
+) -> dict | list:
+    """Make a Discord REST API request with 429 rate-limit retry."""
     headers = {"Authorization": f"Bot {token}"}
     url = f"{API_BASE}{path}"
 
@@ -463,479 +66,154 @@ async def discord_request(session: aiohttp.ClientSession, token: str,
             async with session.request(method, url, headers=headers, json=json_data) as retry_resp:
                 if retry_resp.status >= 400:
                     retry_body = await retry_resp.text()
-                    print(f"[discord] {method} {path} -> {retry_resp.status}: {retry_body[:200]}", file=sys.stderr)
+                    print(f"[discord] {method} {path} -> {retry_resp.status}: "
+                          f"{retry_body[:200]}", file=sys.stderr)
                     return {}
                 text = await retry_resp.text()
                 return json.loads(text) if text else {}
         if resp.status >= 400:
             body = await resp.text()
-            print(f"[discord] {method} {path} -> {resp.status}: {body[:200]}", file=sys.stderr)
+            print(f"[discord] {method} {path} -> {resp.status}: {body[:200]}",
+                  file=sys.stderr)
             return {}
         text = await resp.text()
         return json.loads(text) if text else {}
 
 
-async def post_message(http: aiohttp.ClientSession, token: str,
-                       channel_id: str, content: str):
-    """Post a message to a channel or thread."""
-    if len(content) > 1900:
-        content = content[:1900] + "\n...(truncated)"
-    await discord_request(http, token, "POST",
-                          f"/channels/{channel_id}/messages", {"content": content})
+# --- Discord platform implementation ---
 
+class DiscordPlatform(PlatformBridge):
+    """Discord-specific platform bridge using REST API and gateway."""
 
-# --- Thread management ---
+    platform_name = "discord"
+    max_message_len = 1900
 
-async def find_thread(http: aiohttp.ClientSession, token: str, thread_name: str) -> str | None:
-    """Find a thread by name. Checks active, archived, then message threads."""
-    global GUILD_ID
+    def __init__(self, http: aiohttp.ClientSession, token: str,
+                 channel_id: str, guild_id: str = ""):
+        self.http = http
+        self.token = token
+        self.channel_id = channel_id
+        self.guild_id = guild_id
 
-    # 1. Active threads (guild-level endpoint)
-    if GUILD_ID:
-        data = await discord_request(http, token, "GET",
-            f"/guilds/{GUILD_ID}/threads/active")
-        for t in data.get("threads", []):
-            if t.get("name") == thread_name and t.get("parent_id") == CHANNEL_ID:
-                return t["id"]
+    async def post_message(self, channel_id: str, content: str, **kwargs) -> Any:
+        """Post a message to a channel or thread."""
+        if len(content) > self.max_message_len:
+            content = content[:self.max_message_len] + "\n...(truncated)"
+        return await discord_request(
+            self.http, self.token, "POST",
+            f"/channels/{channel_id}/messages", {"content": content})
 
-    # 2. Archived threads
-    data = await discord_request(http, token, "GET",
-        f"/channels/{CHANNEL_ID}/threads/archived/public")
-    if isinstance(data, dict):
-        for t in data.get("threads", []):
-            if t.get("name") == thread_name:
-                return t["id"]
+    async def find_thread(self, thread_name: str) -> str | None:
+        """Find a thread by name. Checks active, archived, then message threads."""
+        # 1. Active threads (guild-level endpoint)
+        if self.guild_id:
+            data = await discord_request(
+                self.http, self.token, "GET",
+                f"/guilds/{self.guild_id}/threads/active")
+            for t in data.get("threads", []):
+                if (t.get("name") == thread_name
+                        and t.get("parent_id") == self.channel_id):
+                    return t["id"]
 
-    # 3. Channel messages with thread metadata
-    data = await discord_request(http, token, "GET",
-        f"/channels/{CHANNEL_ID}/messages?limit=50")
-    if isinstance(data, list):
-        for m in data:
-            t = m.get("thread", {})
-            if t.get("name") == thread_name:
-                return t["id"]
-
-    return None
-
-
-async def create_thread(http: aiohttp.ClientSession, token: str,
-                        thread_name: str, starter_msg: str) -> str | None:
-    """Create a new thread: post starter message, then create thread on it."""
-    msg = await discord_request(http, token, "POST",
-        f"/channels/{CHANNEL_ID}/messages", {"content": starter_msg})
-    msg_id = msg.get("id") if isinstance(msg, dict) else None
-    if not msg_id:
-        return None
-    thread = await discord_request(http, token, "POST",
-        f"/channels/{CHANNEL_ID}/messages/{msg_id}/threads", {"name": thread_name})
-    thread_id = thread.get("id") if isinstance(thread, dict) else None
-    if thread_id:
-        session_name = parse_thread_name(thread_name) or thread_name
-        welcome = (
-            f"**Welcome to {thread_name}** \U0001f44b\n\n"
-            "Type a message here to forward it to the tmux session.\n\n"
-            "**Commands:**\n"
-            "`!sessions` \u2014 list all sessions\n"
-            f"`!kill {session_name}` \u2014 kill this session + archive thread\n\n"
-            "**Shortcuts:**\n"
-            "`!c` Ctrl+C \u2022 `!d` Ctrl+D \u2022 `!z` Ctrl+Z\n"
-            "`!q` quit pager \u2022 `!esc` Escape \u2022 `!enter` Enter"
-        )
-        await post_message(http, token, thread_id, welcome)
-    return thread_id
-
-
-async def ensure_thread(http: aiohttp.ClientSession, token: str,
-                        thread_name: str, starter_msg: str = None) -> str | None:
-    """Find or create a thread. Unarchive if archived."""
-    thread_id = await find_thread(http, token, thread_name)
-    if thread_id:
-        await discord_request(http, token, "PATCH",
-            f"/channels/{thread_id}", {"archived": False})
-        return thread_id
-    if starter_msg is None:
-        starter_msg = f"tmux session: **{thread_name}**"
-    return await create_thread(http, token, thread_name, starter_msg)
-
-
-async def archive_thread(http: aiohttp.ClientSession, token: str, thread_id: str):
-    """Archive a thread."""
-    await discord_request(http, token, "PATCH",
-        f"/channels/{thread_id}", {"archived": True})
-
-
-async def delete_thread(http: aiohttp.ClientSession, token: str, thread_id: str):
-    """Delete a thread (Discord channel delete)."""
-    await discord_request(http, token, "DELETE", f"/channels/{thread_id}")
-
-
-# --- ! commands ---
-
-async def handle_command(http: aiohttp.ClientSession, token: str,
-                         channel_id: str, message: dict):
-    """Handle ! commands from Discord."""
-    content = message.get("content", "").strip()
-    parts = content.split(None, 3)
-    cmd = parts[0].lower() if parts else ""
-
-    if cmd == "!new":
-        raw_after_cmd = content[len("!new"):].strip()
-        await cmd_new(http, token, channel_id, raw_after_cmd)
-    elif cmd == "!kill":
-        await cmd_kill(http, token, channel_id, parts)
-    elif cmd in ("!sessions", "!ls"):
-        await cmd_sessions(http, token, channel_id)
-    elif cmd == "!queue":
-        await cmd_queue(http, token, channel_id, parts)
-    else:
-        await post_message(http, token, channel_id,
-            "Unknown command. Available: `!new <name> [host|dir] [dir] [-- cmd]`, `!kill <name>`, `!sessions`, `!queue`")
-
-
-async def cmd_new(http: aiohttp.ClientSession, token: str,
-                  reply_to: str, raw_args: str):
-    """!new <name> [host|dir] [dir] [-- cmd] — create tmux session + Discord thread."""
-    if not raw_args:
-        await post_message(http, token, reply_to,
-            "Usage: `!new <name> [host|dir] [dir] [-- command]`\n"
-            f"Available hosts: `{'`, `'.join(SSH_HOSTS)}`")
-        return
-
-    # Split off shell command after --
-    shell_cmd = None
-    if " -- " in raw_args:
-        args_part, shell_cmd = raw_args.split(" -- ", 1)
-        shell_cmd = shell_cmd.strip()
-    else:
-        args_part = raw_args
-
-    parts = args_part.split()
-    if not parts:
-        await post_message(http, token, reply_to,
-            "Usage: `!new <name> [host|dir] [dir] [-- command]`\n"
-            f"Available hosts: `{'`, `'.join(SSH_HOSTS)}`")
-        return
-
-    session_name = parts[0]
-
-    # Parse host and working_dir: !new <name> [host] [dir] or !new <name> [dir]
-    # If the arg starts with / or ~ it's a directory, not a host
-    host = DEFAULT_HOST
-    working_dir = DEFAULT_WORKING_DIR or None
-    rest = parts[1:]
-    if rest:
-        if rest[0].startswith("/") or rest[0].startswith("~"):
-            working_dir = rest[0]
-        else:
-            host = rest[0]
-            if len(rest) > 1:
-                working_dir = rest[1]
-
-    if not is_valid_session_name(session_name):
-        await post_message(http, token, reply_to,
-            "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).")
-        return
-
-    if working_dir and not _validate_path(working_dir):
-        await post_message(http, token, reply_to,
-            "Invalid working directory. Path contains disallowed characters.")
-        return
-
-    if host not in SSH_HOSTS:
-        await post_message(http, token, reply_to,
-            f"Unknown host `{host}`. Available: `{'`, `'.join(SSH_HOSTS)}`")
-        return
-
-    # Check if session already exists
-    existing = await asyncio.to_thread(find_session_host, session_name)
-    if existing:
-        await post_message(http, token, reply_to,
-            f"Session `{session_name}` already exists on `{existing}`.")
-        return
-
-    # Create multiplexer session
-    mux = _mux
-    safe_name = shlex.quote(session_name)
-    safe_dir = shlex.quote(working_dir) if working_dir else None
-    create_cmd = mux.new_session_cmd(safe_name, safe_dir)
-    rc, _ = await asyncio.to_thread(run_ssh, host, create_cmd)
-    if rc != 0:
-        await post_message(http, token, reply_to,
-            f"Failed to create {mux.name} session `{session_name}` on `{host}`.")
-        return
-
-    # Set marker so thread-sync.sh skips this session (bridge handles the thread)
-    if mux.supports_environment:
-        marker_cmd = mux.set_environment_cmd(safe_name, "AILY_BRIDGE_MANAGED", "1")
-        await asyncio.to_thread(run_ssh, host, marker_cmd)
-
-    # Launch shell command or agent in session
-    agent_label = ""
-    if shell_cmd:
-        # User-provided command takes priority over auto-launch agent
-        await asyncio.sleep(0.5)
-        launched = await asyncio.to_thread(send_to_tmux, host, session_name, shell_cmd)
-        if launched:
-            agent_label = f" | cmd: `{shell_cmd}`"
-        else:
-            agent_label = f" | failed to run `{shell_cmd}`"
-    else:
-        # Launch agent in session (if configured)
-        agent_cmd = _build_agent_command(NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL)
-        if agent_cmd:
-            await asyncio.sleep(0.5)
-            launched = await asyncio.to_thread(send_to_tmux, host, session_name, agent_cmd)
-            if launched:
-                agent_label = f" | agent: `{agent_cmd}`"
-            else:
-                agent_label = f" | failed to launch `{agent_cmd}`"
-
-    # Create Discord thread
-    cwd_label = f" in `{working_dir}`" if working_dir else ""
-    thread_name = format_thread_name(session_name, host)
-    thread_id = await ensure_thread(http, token, thread_name,
-        f"tmux session: **{thread_name}** (`{host}`{cwd_label})")
-
-    if thread_id:
-        await post_message(http, token, thread_id,
-            f"Session `{session_name}` created on `{host}`{cwd_label}.{agent_label}")
-        await post_message(http, token, reply_to,
-            f"Created `{session_name}` on `{host}`{cwd_label} + thread <#{thread_id}>{agent_label}")
-    else:
-        await post_message(http, token, reply_to,
-            f"Created tmux `{session_name}` on `{host}`{cwd_label} but failed to create thread.{agent_label}")
-
-
-async def cmd_kill(http: aiohttp.ClientSession, token: str,
-                   reply_to: str, parts: list[str]):
-    """!kill <session_name> — kill tmux session + archive Discord thread."""
-    if len(parts) < 2:
-        await post_message(http, token, reply_to, "Usage: `!kill <session_name>`")
-        return
-
-    session_name = parts[1]
-
-    if not is_valid_session_name(session_name):
-        await post_message(http, token, reply_to,
-            "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).")
-        return
-
-    # Kill multiplexer session
-    mux = _mux
-    host = await asyncio.to_thread(find_session_host, session_name)
-    session_killed = False
-    if host:
-        safe_name = shlex.quote(session_name)
-        rc, _ = await asyncio.to_thread(run_ssh, host,
-            mux.kill_session_cmd(safe_name))
-        session_killed = (rc == 0)
-
-    # Clean up Discord thread
-    thread_name = format_thread_name(session_name, host or DEFAULT_HOST)
-    thread_id = await find_thread(http, token, thread_name)
-    thread_cleaned = False
-    cleanup_action = "archived"
-    if thread_id:
-        if THREAD_CLEANUP == "delete":
-            await delete_thread(http, token, thread_id)
-            thread_cleaned = True
-            cleanup_action = "deleted"
-        else:
-            await post_message(http, token, thread_id,
-                f"Session `{session_name}` killed. Archiving thread.")
-            await archive_thread(http, token, thread_id)
-            thread_cleaned = True
-            cleanup_action = "archived"
-
-    # Report
-    status = []
-    if session_killed:
-        status.append(f"Killed `{session_name}` on `{host}`")
-    elif host:
-        status.append(f"Failed to kill `{session_name}` on `{host}`")
-    else:
-        status.append(f"`{session_name}` not found")
-    if thread_cleaned:
-        status.append(f"{cleanup_action} thread")
-    else:
-        status.append("no thread found")
-
-    await post_message(http, token, reply_to, " / ".join(status))
-
-    # Emit dashboard event for session lifecycle tracking
-    _fire_dashboard_event({
-        "type": "session.killed",
-        "session_name": session_name,
-        "platform": "discord",
-        "host": host or "",
-        "session_killed": session_killed,
-        "thread_cleanup": cleanup_action if thread_cleaned else "none",
-        "timestamp": _now_iso(),
-    })
-
-
-async def cmd_sessions(http: aiohttp.ClientSession, token: str, reply_to: str):
-    """!sessions — list all sessions with thread sync status."""
-    mux = _mux
-    # Gather sessions from all hosts
-    all_sessions: dict[str, str] = {}
-    for host in SSH_HOSTS:
-        rc, out = await asyncio.to_thread(run_ssh, host,
-            f"{mux.list_sessions_cmd()} 2>/dev/null || true")
-        if rc == 0 and out:
-            for name in out.strip().split("\n"):
-                name = name.strip()
-                if name and name not in _INFRA_SESSIONS:
-                    if name in all_sessions:
-                        all_sessions[name] += f", {host}"
-                    else:
-                        all_sessions[name] = host
-
-    # Gather active Discord threads
-    active_threads: set[str] = set()
-    if GUILD_ID:
-        data = await discord_request(http, token, "GET",
-            f"/guilds/{GUILD_ID}/threads/active")
+        # 2. Archived threads
+        data = await discord_request(
+            self.http, self.token, "GET",
+            f"/channels/{self.channel_id}/threads/archived/public")
         if isinstance(data, dict):
             for t in data.get("threads", []):
-                name = t.get("name", "")
-                if t.get("parent_id") == CHANNEL_ID:
-                    parsed = parse_thread_name(name)
-                    if parsed:
-                        active_threads.add(parsed)
+                if t.get("name") == thread_name:
+                    return t["id"]
 
-    if not all_sessions and not active_threads:
-        await post_message(http, token, reply_to, "No sessions found.")
-        return
+        # 3. Channel messages with thread metadata
+        data = await discord_request(
+            self.http, self.token, "GET",
+            f"/channels/{self.channel_id}/messages?limit=50")
+        if isinstance(data, list):
+            for m in data:
+                t = m.get("thread", {})
+                if t.get("name") == thread_name:
+                    return t["id"]
 
-    all_names = sorted(set(all_sessions.keys()) | active_threads)
-    lines = ["```"]
-    for name in all_names:
-        host = all_sessions.get(name, "---")
-        has_tmux = name in all_sessions
-        has_thread = name in active_threads
+        return None
 
-        if has_tmux and has_thread:
-            sync = "synced"
-        elif has_tmux:
-            sync = "no thread"
-        else:
-            sync = "orphan thread"
+    async def create_thread(self, thread_name: str, starter_msg: str) -> str | None:
+        """Create a new thread: post starter message, then create thread on it."""
+        msg = await discord_request(
+            self.http, self.token, "POST",
+            f"/channels/{self.channel_id}/messages", {"content": starter_msg})
+        msg_id = msg.get("id") if isinstance(msg, dict) else None
+        if not msg_id:
+            return None
 
-        lines.append(f"  {name:<20} {host:<24} {sync}")
-    lines.append("```")
-
-    await post_message(http, token, reply_to, "\n".join(lines))
-
-
-async def cmd_queue(http: aiohttp.ClientSession, token: str,
-                    reply_to: str, parts: list[str]):
-    """!queue [add <session> <command> | execute] — manage deferred command queue."""
-    subcmd = parts[1].lower() if len(parts) > 1 else ""
-
-    if subcmd == "add":
-        if len(parts) < 4:
-            await post_message(http, token, reply_to,
-                "Usage: `!queue add <session_name> <command>`")
-            return
-        session_name = parts[2]
-        if not is_valid_session_name(session_name):
-            await post_message(http, token, reply_to,
-                "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).")
-            return
-        command = " ".join(parts[3:])
-        result = await dashboard_api("POST", "/api/usage/queue", {
-            "session_name": session_name,
-            "command": command,
-        })
-        if result:
-            cmd_id = result.get("command", {}).get("id", "?")
-            await post_message(http, token, reply_to,
-                f"Queued command #{cmd_id} for `{session_name}`: `{command}`")
-        else:
-            await post_message(http, token, reply_to,
-                "Failed to queue command. Is the usage monitor enabled?")
-
-    elif subcmd == "execute":
-        result = await dashboard_api("POST", "/api/usage/queue/execute")
-        if result:
-            count = result.get("executed", 0)
-            await post_message(http, token, reply_to,
-                f"Executed {count} pending command(s).")
-        else:
-            await post_message(http, token, reply_to,
-                "Failed to execute queue. Is the usage monitor enabled?")
-
-    else:
-        # List pending commands
-        result = await dashboard_api("GET", "/api/usage/queue?status=pending")
-        if not result:
-            await post_message(http, token, reply_to,
-                "Dashboard unavailable or usage monitor not enabled.")
-            return
-
-        commands = result.get("commands", [])
-        total = result.get("total", 0)
-        if total == 0:
-            await post_message(http, token, reply_to, "No pending commands in queue.")
-            return
-
-        lines = [f"**Command Queue** ({total} pending)", "```"]
-        lines.append(f"  {'ID':<6} {'SESSION':<20} {'HOST':<12} COMMAND")
-        for cmd in commands[:15]:
-            lines.append(
-                f"  {cmd.get('id', '?'):<6} {cmd.get('session_name', '?'):<20} "
-                f"{cmd.get('host', '?'):<12} {cmd.get('command', '?')}"
+        thread = await discord_request(
+            self.http, self.token, "POST",
+            f"/channels/{self.channel_id}/messages/{msg_id}/threads",
+            {"name": thread_name})
+        thread_id = thread.get("id") if isinstance(thread, dict) else None
+        if thread_id:
+            session_name = parse_thread_name(thread_name) or thread_name
+            welcome = (
+                f"**Welcome to {thread_name}** \U0001f44b\n\n"
+                "Type a message here to forward it to the tmux session.\n\n"
+                "**Commands:**\n"
+                "`!sessions` \u2014 list all sessions\n"
+                f"`!kill {session_name}` \u2014 kill this session + archive thread\n\n"
+                "**Shortcuts:**\n"
+                "`!c` Ctrl+C \u2022 `!d` Ctrl+D \u2022 `!z` Ctrl+Z\n"
+                "`!q` quit pager \u2022 `!esc` Escape \u2022 `!enter` Enter"
             )
-        if total > 15:
-            lines.append(f"  ... and {total - 15} more")
-        lines.append("```")
-        await post_message(http, token, reply_to, "\n".join(lines))
+            await self.post_message(thread_id, welcome)
+        return thread_id
+
+    async def ensure_thread(self, thread_name: str,
+                            starter_msg: str = None) -> str | None:
+        """Find or create a thread. Unarchive if archived."""
+        thread_id = await self.find_thread(thread_name)
+        if thread_id:
+            await discord_request(
+                self.http, self.token, "PATCH",
+                f"/channels/{thread_id}", {"archived": False})
+            return thread_id
+        if starter_msg is None:
+            starter_msg = f"tmux session: **{thread_name}**"
+        return await self.create_thread(thread_name, starter_msg)
+
+    async def archive_thread(self, thread_id: str):
+        """Archive a thread."""
+        await discord_request(
+            self.http, self.token, "PATCH",
+            f"/channels/{thread_id}", {"archived": True})
+
+    async def delete_thread(self, thread_id: str):
+        """Delete a thread (Discord channel delete)."""
+        await discord_request(
+            self.http, self.token, "DELETE",
+            f"/channels/{thread_id}")
+
+    async def get_active_thread_sessions(self) -> set[str]:
+        """List session names from active [agent] threads."""
+        active: set[str] = set()
+        if self.guild_id:
+            data = await discord_request(
+                self.http, self.token, "GET",
+                f"/guilds/{self.guild_id}/threads/active")
+            if isinstance(data, dict):
+                for t in data.get("threads", []):
+                    name = t.get("name", "")
+                    if t.get("parent_id") == self.channel_id:
+                        parsed = parse_thread_name(name)
+                        if parsed:
+                            active.add(parsed)
+        return active
 
 
-# --- Shell output capture ---
+# --- Message handler ---
 
-async def _capture_and_post_output(
-    http: aiohttp.ClientSession, token: str,
-    channel_id: str, host: str, session: str,
-    pre_content: str,
+async def handle_message(
+    core: BridgeCore, platform: DiscordPlatform,
+    bot_user_id: str, message: dict,
 ):
-    """Background task: capture shell output and post to Discord.
-
-    Skips capture if a non-shell process (e.g., Claude Code) is running.
-    pre_content must be captured BEFORE send_to_tmux to avoid missing
-    fast command output.
-    """
-    try:
-        output = await asyncio.to_thread(
-            capture_shell_output, host, session, pre_content
-        )
-
-        if output is None:
-            # Non-shell process (Claude Code etc.) — its own hooks handle output
-            return
-        if not output.strip():
-            return
-
-        output = _redact_secrets(output)
-        output = _sanitize_backticks(output)
-
-        if len(output) > 1800:
-            output = output[:1800] + "\n...(truncated)"
-
-        safe_name = session.replace('`', "'")
-        await post_message(http, token, channel_id,
-            f"Shell output from `{safe_name}`:\n```\n{output}\n```")
-
-    except Exception as e:
-        print(f"[bridge] output capture error: {e}", file=sys.stderr)
-
-
-# --- Message routing ---
-
-async def handle_message(http: aiohttp.ClientSession, token: str,
-                         bot_user_id: str, message: dict):
-    """Handle a Discord message — commands or forward to tmux."""
+    """Handle a Discord MESSAGE_CREATE — route to core.handle_command() or relay."""
     author = message.get("author", {})
     if author.get("id") == bot_user_id or author.get("bot"):
         return
@@ -943,20 +221,24 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
     channel_id = message.get("channel_id", "")
     content = message.get("content", "").strip()
 
-    # Check if we're in an [agent] thread first (for shortcuts)
-    ch = await discord_request(http, token, "GET", f"/channels/{channel_id}")
-    is_agent_thread = (isinstance(ch, dict) and ch.get("type") in (11, 12)
-                       and parse_thread_name(ch.get("name", "")))
+    # Check if we're in an [agent] thread
+    ch = await discord_request(
+        platform.http, platform.token, "GET", f"/channels/{channel_id}")
+    is_agent_thread = (
+        isinstance(ch, dict)
+        and ch.get("type") in (11, 12)
+        and parse_thread_name(ch.get("name", ""))
+    )
 
     # In agent threads: handle shortcuts before global commands
-    if is_agent_thread and content.lower() in _SHORTCUTS:
-        pass  # fall through to thread handler below
+    if is_agent_thread and content.lower() in SHORTCUTS:
+        pass  # fall through to thread forwarding below
     elif content.startswith("!"):
         print(f"[bridge] command: {content[:80]}")
-        await handle_command(http, token, channel_id, message)
+        await core.handle_command(channel_id, message)
         return
 
-    # Forward messages in [agent] threads to tmux
+    # Only forward messages in [agent] threads
     if not is_agent_thread:
         return
 
@@ -975,69 +257,34 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
         if url:
             parts_msg.append(url)
     user_message = " ".join(parts_msg)
-
     if not user_message:
         return
 
     print(f"[bridge] {user_name} -> [{session_name}]: ({len(user_message)} chars)")
 
-    host = await asyncio.to_thread(find_session_host, session_name)
-    if not host:
-        await post_message(http, token, channel_id,
-            f"Session `{session_name}` not found on any host.\n"
-            f"Available hosts: {', '.join(SSH_HOSTS)}")
-        return
+    # Typing indicator
+    await discord_request(
+        platform.http, platform.token, "POST",
+        f"/channels/{channel_id}/typing")
 
-    # Handle shortcut commands (e.g., !c → Ctrl+C)
-    shortcut_key = _SHORTCUTS.get(user_message.lower())
-    if shortcut_key:
-        sent = await asyncio.to_thread(send_keys_raw, host, session_name, shortcut_key)
-        label = user_message.upper().replace("!", "")
-        if sent:
-            await post_message(http, token, channel_id, f"Sent `{shortcut_key}` to `{session_name}`")
-        else:
-            await post_message(http, token, channel_id, f"Failed to send `{shortcut_key}` to `{session_name}`")
-        return
-
-    # Show typing indicator for faster perceived response
-    await discord_request(http, token, "POST", f"/channels/{channel_id}/typing")
-
-    await post_message(http, token, channel_id,
-        f"Forwarding to `{session_name}` on `{host}`...")
-
-    # Emit dashboard event: user message relayed to tmux
-    _fire_dashboard_event({
-        "type": "message.relayed",
-        "session_name": session_name,
-        "platform": "discord",
-        "content": user_message,
-        "role": "user",
-        "source_id": message.get("id", ""),
-        "source_author": user_name,
-        "timestamp": _now_iso(),
-    })
-
-    # Capture pane BEFORE sending — critical for catching fast command output
-    pre_content = await asyncio.to_thread(capture_pane_content, host, session_name)
-
-    sent = await asyncio.to_thread(send_to_tmux, host, session_name, user_message)
-    if sent:
-        _track_task(
-            _capture_and_post_output(
-                http, token, channel_id, host, session_name, pre_content
-            )
-        )
-    else:
-        await post_message(http, token, channel_id,
-            f"Failed to send to `{session_name}` on `{host}`. The session may have exited.")
+    # Delegate to core for session lookup, shortcut handling, forwarding,
+    # and shell output capture
+    await core.relay_message(
+        channel_id=channel_id,
+        session_name=session_name,
+        user_message=user_message,
+        user_name=user_name,
+        source_id=message.get("id", ""),
+    )
 
 
 # --- Gateway ---
 
-async def gateway_connect(token: str):
+async def gateway_connect(
+    token: str, core: BridgeCore, platform: DiscordPlatform,
+    announced: dict,
+):
     """Connect to Discord gateway via WebSocket and listen for messages."""
-    global GUILD_ID
-
     async with aiohttp.ClientSession() as http:
         # Get gateway URL
         gw = await discord_request(http, token, "GET", "/gateway/bot")
@@ -1049,16 +296,17 @@ async def gateway_connect(token: str):
         print(f"[bridge] Connected as {me.get('username')} ({bot_user_id})")
 
         # Cache guild ID
-        if not GUILD_ID and CHANNEL_ID:
-            ch = await discord_request(http, token, "GET", f"/channels/{CHANNEL_ID}")
-            GUILD_ID = ch.get("guild_id", "") if isinstance(ch, dict) else ""
-            if GUILD_ID:
-                print(f"[bridge] Guild: {GUILD_ID}")
+        if not platform.guild_id and platform.channel_id:
+            ch = await discord_request(http, token, "GET",
+                                       f"/channels/{platform.channel_id}")
+            platform.guild_id = (ch.get("guild_id", "")
+                                 if isinstance(ch, dict) else "")
+            if platform.guild_id:
+                print(f"[bridge] Guild: {platform.guild_id}")
 
         # Announce commands on first connect
-        global _announced
-        if not _announced:
-            _announced = True
+        if not announced.get("done"):
+            announced["done"] = True
             lines = [
                 "**aily bridge connected**",
                 "Available commands:",
@@ -1066,10 +314,10 @@ async def gateway_connect(token: str):
                 "- `!kill <name>` — kill tmux session",
                 "- `!sessions` — list active sessions",
                 "- `!queue` — list / add / execute deferred commands",
-                f"Hosts: `{'`, `'.join(SSH_HOSTS)}`",
+                f"Hosts: `{'`, `'.join(core.state.ssh_hosts)}`",
             ]
             # Append live usage status if dashboard is reachable
-            usage = await dashboard_api("GET", "/api/usage")
+            usage = await core.dashboard_api("GET", "/api/usage")
             if usage and usage.get("usage"):
                 lines.append("")
                 lines.append("**API Usage**")
@@ -1088,7 +336,10 @@ async def gateway_connect(token: str):
                 pending = qs.get("pending", 0)
                 if pending:
                     lines.append(f"Queued commands: **{pending}** pending")
-            await post_message(http, token, CHANNEL_ID, "\n".join(lines))
+            await platform.post_message(platform.channel_id, "\n".join(lines))
+
+        # Update the platform's http session for this gateway cycle
+        platform.http = http
 
         intents = INTENT_GUILDS | INTENT_GUILD_MESSAGES | INTENT_MESSAGE_CONTENT
         sequence = None
@@ -1106,7 +357,6 @@ async def gateway_connect(token: str):
                     if s is not None:
                         sequence = s
 
-
                     # Hello — identify and start heartbeating
                     if op == 10:
                         heartbeat_interval = d["heartbeat_interval"] / 1000
@@ -1118,12 +368,13 @@ async def gateway_connect(token: str):
                                 "properties": {
                                     "os": "linux",
                                     "browser": "agent-bridge",
-                                    "device": "agent-bridge"
-                                }
-                            }
+                                    "device": "agent-bridge",
+                                },
+                            },
                         })
                         hb_task = asyncio.create_task(
-                            heartbeat_loop(ws, heartbeat_interval, lambda: sequence))
+                            heartbeat_loop(ws, heartbeat_interval,
+                                           lambda: sequence))
 
                     # Heartbeat ACK
                     elif op == 11:
@@ -1132,8 +383,8 @@ async def gateway_connect(token: str):
                     # Dispatch events
                     elif op == 0:
                         if t == "MESSAGE_CREATE":
-                            _track_task(
-                                handle_message(http, token, bot_user_id, d))
+                            core.track_task(
+                                handle_message(core, platform, bot_user_id, d))
 
                     # Reconnect / Invalid session
                     elif op in (7, 9):
@@ -1142,13 +393,13 @@ async def gateway_connect(token: str):
                         break
 
                 elif msg.type == aiohttp.WSMsgType.CLOSE:
-                    print(f"[bridge] WebSocket CLOSE: code={ws.close_code} data={msg.data} extra={msg.extra}",
-                          file=sys.stderr)
+                    print(f"[bridge] WebSocket CLOSE: code={ws.close_code} "
+                          f"data={msg.data} extra={msg.extra}", file=sys.stderr)
                     break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED,
                                   aiohttp.WSMsgType.ERROR):
-                    print(f"[bridge] WebSocket closed/error: type={msg.type} data={msg.data} extra={msg.extra}",
-                          file=sys.stderr)
+                    print(f"[bridge] WebSocket closed/error: type={msg.type} "
+                          f"data={msg.data} extra={msg.extra}", file=sys.stderr)
                     break
 
             # Cancel heartbeat task on disconnect
@@ -1161,15 +412,17 @@ async def gateway_connect(token: str):
 
             # Log close reason for debugging
             if ws.close_code:
-                print(f"[bridge] Gateway closed: code={ws.close_code}", file=sys.stderr)
+                print(f"[bridge] Gateway closed: code={ws.close_code}",
+                      file=sys.stderr)
                 if ws.close_code == 4004:
-                    print("[bridge] FATAL: Invalid bot token (close code 4004). Exiting.",
-                          file=sys.stderr)
+                    print("[bridge] FATAL: Invalid bot token (close code 4004). "
+                          "Exiting.", file=sys.stderr)
                     sys.exit(1)
                 if ws.close_code == 4014:
-                    print("[bridge] FATAL: Message Content Intent not enabled (close code 4014). Exiting.",
-                          file=sys.stderr)
-                    print("[bridge] Enable it at: https://discord.com/developers/applications -> Bot -> Privileged Intents",
+                    print("[bridge] FATAL: Message Content Intent not enabled "
+                          "(close code 4014). Exiting.", file=sys.stderr)
+                    print("[bridge] Enable it at: https://discord.com/developers/"
+                          "applications -> Bot -> Privileged Intents",
                           file=sys.stderr)
                     sys.exit(1)
 
@@ -1184,11 +437,13 @@ async def heartbeat_loop(ws, interval: float, get_sequence):
             break
 
 
-async def main():
-    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, DEFAULT_WORKING_DIR, THREAD_CLEANUP, DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
-    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL, THREAD_NAME_FORMAT, _mux
+# --- Entry point ---
 
-    _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+async def main():
+    import os
+
+    _xdg_config = os.environ.get("XDG_CONFIG_HOME",
+                                  os.path.expanduser("~/.config"))
     _default_path = os.path.join(_xdg_config, "aily", "env")
     env_path = os.environ.get("AGENT_BRIDGE_ENV", _default_path)
 
@@ -1197,86 +452,74 @@ async def main():
         sys.exit(1)
 
     env = load_env(env_path)
+
+    # Load shared config via BridgeCore
+    state = BridgeCore.load_common_config(env)
+
+    # Discord-specific env vars
     token = env.get("DISCORD_BOT_TOKEN")
-    CHANNEL_ID = env.get("DISCORD_CHANNEL_ID", "")
-
-    # Dashboard URL and auth token from env var (K8s) or config file
-    if not DASHBOARD_URL:
-        DASHBOARD_URL = env.get("AILY_DASHBOARD_URL", "")
-    if not DASHBOARD_AUTH_TOKEN:
-        DASHBOARD_AUTH_TOKEN = env.get("AILY_AUTH_TOKEN", "")
-
-    # SSH hosts from env (comma-separated) or defaults
-    hosts_str = env.get("SSH_HOSTS", "")
-    if hosts_str:
-        SSH_HOSTS = [h.strip() for h in hosts_str.split(",") if h.strip()]
-    else:
-        SSH_HOSTS = ["localhost"]
-    DEFAULT_HOST = SSH_HOSTS[0] if SSH_HOSTS else ""
-
-    # Default working directory for new sessions
-    DEFAULT_WORKING_DIR = env.get("DEFAULT_WORKING_DIR", "")
-
-    # Thread cleanup mode: "archive" (default) or "delete"
-    THREAD_CLEANUP = env.get("THREAD_CLEANUP", "archive").lower()
-    if THREAD_CLEANUP not in ("archive", "delete"):
-        THREAD_CLEANUP = "archive"
-
-    # Thread name format
-    THREAD_NAME_FORMAT = env.get("THREAD_NAME_FORMAT", "[agent] {session} - {host}")
-
-    # Agent auto-launch on !new
-    NEW_SESSION_AGENT = env.get("NEW_SESSION_AGENT", "").lower().strip()
-    CLAUDE_REMOTE_CONTROL = env.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
-
-    # Initialize multiplexer backend (env var or config file, then auto-detect)
-    mux_type = env.get("AILY_MULTIPLEXER", "") or None
-    _mux = get_backend(mux_type)
+    channel_id = env.get("DISCORD_CHANNEL_ID", "")
 
     if not token:
         print("DISCORD_BOT_TOKEN not set", file=sys.stderr)
         sys.exit(1)
-    if not CHANNEL_ID:
+    if not channel_id:
         print("DISCORD_CHANNEL_ID not set", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[bridge] Starting agent bridge...")
-    print(f"[bridge] Multiplexer: {_mux.name}")
-    print(f"[bridge] SSH hosts: {SSH_HOSTS}")
-    print(f"[bridge] Channel: {CHANNEL_ID}")
-    print(f"[bridge] Thread format: '{THREAD_NAME_FORMAT}'")
-    print(f"[bridge] Thread cleanup: {THREAD_CLEANUP}")
-    if DEFAULT_WORKING_DIR:
-        print(f"[bridge] Default working dir: {DEFAULT_WORKING_DIR}")
-    if NEW_SESSION_AGENT:
-        rc_label = " + remote-control" if NEW_SESSION_AGENT == "claude" and CLAUDE_REMOTE_CONTROL else ""
-        print(f"[bridge] Auto-launch agent: {NEW_SESSION_AGENT}{rc_label}")
-    if DASHBOARD_URL:
-        print(f"[bridge] Dashboard: {DASHBOARD_URL}")
+    print("[bridge] Starting agent bridge...")
+    print(f"[bridge] Multiplexer: {state.mux.name}")
+    print(f"[bridge] SSH hosts: {state.ssh_hosts}")
+    print(f"[bridge] Channel: {channel_id}")
+    print(f"[bridge] Thread format: '{state.thread_name_format}'")
+    print(f"[bridge] Thread cleanup: {state.thread_cleanup}")
+    if state.default_working_dir:
+        print(f"[bridge] Default working dir: {state.default_working_dir}")
+    if state.new_session_agent:
+        rc_label = (" + remote-control"
+                     if state.new_session_agent == "claude"
+                     and state.claude_remote_control else "")
+        print(f"[bridge] Auto-launch agent: {state.new_session_agent}{rc_label}")
+    if state.dashboard_url:
+        print(f"[bridge] Dashboard: {state.dashboard_url}")
     else:
         print("[bridge] Dashboard: not configured (AILY_DASHBOARD_URL not set)")
 
-    # Create a shared aiohttp session for dashboard POSTs
-    _dashboard_http = aiohttp.ClientSession()
+    # Create shared aiohttp session for dashboard POSTs
+    dashboard_http = aiohttp.ClientSession()
+    state.dashboard_http = dashboard_http
+
+    # Create platform and core
+    platform = DiscordPlatform(
+        http=dashboard_http,  # temporary; replaced per gateway_connect cycle
+        token=token,
+        channel_id=channel_id,
+    )
+    core = BridgeCore(state, platform)
+
+    announced: dict = {"done": False}
     reconnect_delay = 5
     max_delay = 300  # 5 minutes cap
     consecutive_failures = 0
+
     try:
         while True:
             try:
-                await gateway_connect(token)
+                await gateway_connect(token, core, platform, announced)
                 reconnect_delay = 5  # reset on successful connection
                 consecutive_failures = 0
             except Exception as e:
                 consecutive_failures += 1
-                print(f"[bridge] Connection error (attempt {consecutive_failures}): {e}, reconnecting in {reconnect_delay}s...", file=sys.stderr)
+                print(f"[bridge] Connection error (attempt {consecutive_failures}): "
+                      f"{e}, reconnecting in {reconnect_delay}s...", file=sys.stderr)
                 if consecutive_failures >= 50:
-                    print("[bridge] Too many consecutive failures, exiting.", file=sys.stderr)
+                    print("[bridge] Too many consecutive failures, exiting.",
+                          file=sys.stderr)
                     sys.exit(1)
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, max_delay)
     finally:
-        await _dashboard_http.close()
+        await dashboard_http.close()
 
 
 if __name__ == "__main__":
