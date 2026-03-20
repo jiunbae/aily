@@ -1115,14 +1115,17 @@ _dashboard_via_docker() {
   ok "Image built"
 
   info "Starting container on port ${port}..."
+  local -a docker_args=(
+    docker run -d --rm
+    --name aily-dashboard
+    -p "${port}:8080"
+    -v "${ENV_FILE}:/app/env:ro"
+    -e AGENT_BRIDGE_ENV=/app/env
+  )
+  [[ -n "$token" ]] && docker_args+=(-e "DASHBOARD_TOKEN=$token")
+  docker_args+=("$image")
   local cid
-  cid=$(docker run -d --rm \
-    --name aily-dashboard \
-    -p "${port}:8080" \
-    -v "${ENV_FILE}:/app/env:ro" \
-    -e AGENT_BRIDGE_ENV=/app/env \
-    ${token:+-e DASHBOARD_TOKEN="$token"} \
-    "$image" 2>/dev/null) || {
+  cid=$("${docker_args[@]}" 2>/dev/null) || {
     warn "Failed to start container"
     return 1
   }
@@ -1157,11 +1160,14 @@ _dashboard_start_process() {
   }
 
   info "Starting dashboard on port ${port}..."
-  PYTHONPATH="${SCRIPT_DIR}" \
-    DASHBOARD_HOST="0.0.0.0" DASHBOARD_PORT="$port" \
-    DASHBOARD_DB_PATH="${db_dir}/aily.db" \
-    AGENT_BRIDGE_ENV="$ENV_FILE" \
-    ${token:+DASHBOARD_TOKEN="$token"} \
+  local -a dashboard_env=(
+    PYTHONPATH="${SCRIPT_DIR}"
+    DASHBOARD_HOST="0.0.0.0" DASHBOARD_PORT="$port"
+    DASHBOARD_DB_PATH="${db_dir}/aily.db"
+    AGENT_BRIDGE_ENV="$ENV_FILE"
+  )
+  [[ -n "$token" ]] && dashboard_env+=(DASHBOARD_TOKEN="$token")
+  env "${dashboard_env[@]}" \
     nohup "$py" -m dashboard >/tmp/aily-dashboard.log 2>&1 &
   local pid=$!
 

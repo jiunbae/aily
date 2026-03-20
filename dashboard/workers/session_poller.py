@@ -24,6 +24,7 @@ from dashboard.services.session_service import SessionService
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 30
+_POLLER_CONCURRENCY = 5
 _cleanup_counter = 0
 
 
@@ -60,6 +61,72 @@ async def session_poller(
         await asyncio.sleep(interval)
 
 
+async def _process_new_session(
+    sem: asyncio.Semaphore,
+    name: str,
+    host: str,
+    now: str,
+    session_svc: SessionService,
+    platform_svc: PlatformService,
+    event_bus: EventBus,
+) -> None:
+    """Process a single newly discovered session (called concurrently)."""
+    async with sem:
+        async with db.batch():
+            # Insert new session
+            await db.execute(
+                """INSERT OR IGNORE INTO sessions
+                   (name, host, status, created_at, updated_at)
+                   VALUES (?, ?, 'active', ?, ?)""",
+                (name, host, now, now),
+            )
+
+            logger.info("Discovered new session: %s on %s", name, host)
+
+            # Sync platform thread IDs for new sessions
+            try:
+                thread_ids = await platform_svc.sync_thread_ids(name)
+                if thread_ids.get("discord_thread_id"):
+                    await db.execute(
+                        "UPDATE sessions SET discord_thread_id = ? WHERE name = ?",
+                        (thread_ids["discord_thread_id"], name),
+                    )
+                if thread_ids.get("slack_thread_ts"):
+                    await db.execute(
+                        "UPDATE sessions SET slack_thread_ts = ? WHERE name = ?",
+                        (thread_ids["slack_thread_ts"], name),
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to sync thread IDs for session '%s'", name
+                )
+
+            # Get working directory
+            try:
+                cwd = await session_svc.get_session_cwd(host, name)
+                if cwd:
+                    await db.execute(
+                        "UPDATE sessions SET working_dir = ? WHERE name = ?",
+                        (cwd, name),
+                    )
+            except Exception:
+                pass
+
+            # Fetch the complete session record for the event
+            session_row = await db.fetchone(
+                "SELECT * FROM sessions WHERE name = ?", (name,)
+            )
+            if session_row:
+                await event_bus.publish(Event.session_created(dict(session_row)))
+
+                # Also record in events table
+                await db.execute(
+                    """INSERT INTO events (event_type, session_name, payload, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    ("session.created", name, json.dumps({"host": host}), now),
+                )
+
+
 async def _poll_once(
     session_svc: SessionService,
     platform_svc: PlatformService,
@@ -88,63 +155,15 @@ async def _poll_once(
 
     now = db.now_iso()
 
-    # --- New sessions: in tmux but not in DB ---
-    for name, host in live.items():
-        if name in db_sessions:
-            continue
-
-        # Insert new session
-        await db.execute(
-            """INSERT OR IGNORE INTO sessions
-               (name, host, status, created_at, updated_at)
-               VALUES (?, ?, 'active', ?, ?)""",
-            (name, host, now, now),
-        )
-
-        logger.info("Discovered new session: %s on %s", name, host)
-
-        # Sync platform thread IDs for new sessions
-        try:
-            thread_ids = await platform_svc.sync_thread_ids(name)
-            if thread_ids.get("discord_thread_id"):
-                await db.execute(
-                    "UPDATE sessions SET discord_thread_id = ? WHERE name = ?",
-                    (thread_ids["discord_thread_id"], name),
-                )
-            if thread_ids.get("slack_thread_ts"):
-                await db.execute(
-                    "UPDATE sessions SET slack_thread_ts = ? WHERE name = ?",
-                    (thread_ids["slack_thread_ts"], name),
-                )
-        except Exception:
-            logger.exception(
-                "Failed to sync thread IDs for session '%s'", name
-            )
-
-        # Get working directory
-        try:
-            cwd = await session_svc.get_session_cwd(host, name)
-            if cwd:
-                await db.execute(
-                    "UPDATE sessions SET working_dir = ? WHERE name = ?",
-                    (cwd, name),
-                )
-        except Exception:
-            pass
-
-        # Fetch the complete session record for the event
-        session_row = await db.fetchone(
-            "SELECT * FROM sessions WHERE name = ?", (name,)
-        )
-        if session_row:
-            await event_bus.publish(Event.session_created(dict(session_row)))
-
-            # Also record in events table
-            await db.execute(
-                """INSERT INTO events (event_type, session_name, payload, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                ("session.created", name, json.dumps({"host": host}), now),
-            )
+    # --- New sessions: in tmux but not in DB (parallel with semaphore) ---
+    new_sessions = {name: host for name, host in live.items() if name not in db_sessions}
+    if new_sessions:
+        sem = asyncio.Semaphore(_POLLER_CONCURRENCY)
+        tasks = [
+            _process_new_session(sem, name, host, now, session_svc, platform_svc, event_bus)
+            for name, host in new_sessions.items()
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     # --- Existing sessions: update status ---
     for name, session in db_sessions.items():

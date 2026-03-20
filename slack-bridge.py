@@ -50,7 +50,10 @@ async def emit_dashboard_event(event: dict):
         return
     url = f"{DASHBOARD_URL.rstrip('/')}/api/hooks/event"
     try:
-        async with _dashboard_http.post(url, json=event, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+        headers = {}
+        if DASHBOARD_AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {DASHBOARD_AUTH_TOKEN}"
+        async with _dashboard_http.post(url, json=event, timeout=aiohttp.ClientTimeout(total=5), headers=headers) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 print(f"[dashboard] POST {resp.status}: {body[:200]}", file=sys.stderr)
@@ -134,11 +137,16 @@ _announced: bool = False
 
 # Track background tasks to prevent GC and surface exceptions
 _background_tasks: set[asyncio.Task] = set()
+_MAX_BACKGROUND_TASKS = 20
+_background_sem = asyncio.Semaphore(_MAX_BACKGROUND_TASKS)
 
 
 def _track_task(coro) -> asyncio.Task:
     """Create a tracked background task that logs exceptions on completion."""
-    task = asyncio.create_task(coro)
+    async def _limited():
+        async with _background_sem:
+            return await coro
+    task = asyncio.create_task(_limited())
     _background_tasks.add(task)
 
     def _on_done(t: asyncio.Task):
@@ -260,7 +268,11 @@ def send_to_session(host: str, session: str, message: str) -> bool:
     # Step 2: Press Enter (separate command — critical for Claude Code)
     time.sleep(SEND_KEYS_DELAY)
     rc, _ = run_ssh(host, mux.send_enter_cmd(safe_session))
-    return rc == 0
+    if rc != 0:
+        # Clear ghost text to prevent corruption of next message
+        run_ssh(host, mux.send_raw_key_cmd(safe_session, "C-c"))
+        return False
+    return True
 
 
 # Backward-compatible alias
@@ -1136,51 +1148,76 @@ async def main():
     # Create a shared aiohttp session for dashboard POSTs
     _dashboard_http = aiohttp.ClientSession()
 
-    socket_client = SocketModeClient(app_token=app_token, web_client=web_client)
-    socket_client.socket_mode_request_listeners.append(handle_socket_event)
-
-    print("[slack-bridge] Starting Socket Mode connection...")
-    await socket_client.connect()
-
     # Announce commands on first connect
     global _announced
-    if not _announced:
-        _announced = True
-        lines = [
-            "*aily bridge connected*",
-            "Available commands:",
-            "- `!new <name> [host] [pwd]` — create tmux session",
-            "- `!kill <name>` — kill tmux session",
-            "- `!sessions` — list active sessions",
-            "- `!queue` — list / add / execute deferred commands",
-            f"Hosts: `{'`, `'.join(SSH_HOSTS)}`",
-        ]
-        # Append live usage status if dashboard is reachable
-        usage = await dashboard_api("GET", "/api/usage")
-        if usage and usage.get("usage"):
-            lines.append("")
-            lines.append("*API Usage*")
-            for provider, snap in usage["usage"].items():
-                req_rem = snap.get("requests_remaining")
-                req_lim = snap.get("requests_limit")
-                tok_rem = snap.get("tokens_remaining")
-                tok_lim = snap.get("tokens_limit")
-                parts_ = [f"*{provider}*:"]
-                if req_lim is not None:
-                    parts_.append(f"requests {req_rem}/{req_lim}")
-                if tok_lim is not None:
-                    parts_.append(f"tokens {tok_rem}/{tok_lim}")
-                lines.append("  ".join(parts_))
-            qs = usage.get("queue_stats", {})
-            pending = qs.get("pending", 0)
-            if pending:
-                lines.append(f"Queued commands: *{pending}* pending")
-        await post_message(web_client, CHANNEL_ID, "\n".join(lines))
 
-    # Keep alive
+    reconnect_delay = 5
+    max_delay = 300  # 5 minutes cap
+    consecutive_failures = 0
     try:
         while True:
-            await asyncio.sleep(1)
+            socket_client = None
+            try:
+                socket_client = SocketModeClient(app_token=app_token, web_client=web_client)
+                socket_client.socket_mode_request_listeners.append(handle_socket_event)
+
+                print("[slack-bridge] Starting Socket Mode connection...")
+                await socket_client.connect()
+                consecutive_failures = 0
+                reconnect_delay = 5
+
+                if not _announced:
+                    _announced = True
+                    lines = [
+                        "*aily bridge connected*",
+                        "Available commands:",
+                        "- `!new <name> [host] [pwd]` — create tmux session",
+                        "- `!kill <name>` — kill tmux session",
+                        "- `!sessions` — list active sessions",
+                        "- `!queue` — list / add / execute deferred commands",
+                        f"Hosts: `{'`, `'.join(SSH_HOSTS)}`",
+                    ]
+                    # Append live usage status if dashboard is reachable
+                    usage = await dashboard_api("GET", "/api/usage")
+                    if usage and usage.get("usage"):
+                        lines.append("")
+                        lines.append("*API Usage*")
+                        for provider, snap in usage["usage"].items():
+                            req_rem = snap.get("requests_remaining")
+                            req_lim = snap.get("requests_limit")
+                            tok_rem = snap.get("tokens_remaining")
+                            tok_lim = snap.get("tokens_limit")
+                            parts_ = [f"*{provider}*:"]
+                            if req_lim is not None:
+                                parts_.append(f"requests {req_rem}/{req_lim}")
+                            if tok_lim is not None:
+                                parts_.append(f"tokens {tok_rem}/{tok_lim}")
+                            lines.append("  ".join(parts_))
+                        qs = usage.get("queue_stats", {})
+                        pending = qs.get("pending", 0)
+                        if pending:
+                            lines.append(f"Queued commands: *{pending}* pending")
+                    await post_message(web_client, CHANNEL_ID, "\n".join(lines))
+
+                # Keep alive
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                consecutive_failures += 1
+                print(f"[slack-bridge] Connection error (attempt {consecutive_failures}): {e}, reconnecting in {reconnect_delay}s...", file=sys.stderr)
+                if consecutive_failures >= 50:
+                    print("[slack-bridge] Too many consecutive failures, exiting.", file=sys.stderr)
+                    break
+            finally:
+                if socket_client is not None:
+                    try:
+                        await socket_client.close()
+                    except Exception:
+                        pass
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, max_delay)
     finally:
         await _dashboard_http.close()
 
