@@ -26,6 +26,7 @@ from dashboard.api import sessions as sessions_api
 from dashboard.api import settings as settings_api
 from dashboard.api import stats as stats_api
 from dashboard.api import usage as usage_api
+from dashboard.api import session_queue as session_queue_api
 from dashboard.api import ws as ws_api
 from dashboard.access_log import access_log_middleware
 from dashboard.auth import (
@@ -249,6 +250,13 @@ def _setup_routes(app: web.Application) -> None:
     app.router.add_post("/api/usage/queue", usage_api.enqueue_command)
     app.router.add_delete("/api/usage/queue/{id}", usage_api.cancel_queue_command)
     app.router.add_post("/api/usage/queue/execute", usage_api.execute_queue)
+
+    # Session limit queue
+    app.router.add_get("/api/session-queue", session_queue_api.list_queue)
+    app.router.add_get("/api/session-queue/stats", session_queue_api.queue_stats)
+    app.router.add_post("/api/session-queue", session_queue_api.enqueue)
+    app.router.add_patch("/api/session-queue/{id}", session_queue_api.update_queue_item)
+    app.router.add_delete("/api/session-queue/{id}", session_queue_api.delete_queue_item)
 
     # Settings
     settings_api.setup_routes(app)

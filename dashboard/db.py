@@ -26,7 +26,7 @@ _db: aiosqlite.Connection | None = None
 _batch_depth: contextvars.ContextVar[int] = contextvars.ContextVar("_batch_depth", default=0)
 
 # Allowed table names for insert_or_ignore (prevents SQL injection via table name)
-_VALID_TABLES = {"sessions", "messages", "events", "kv", "usage_snapshots", "command_queue"}
+_VALID_TABLES = {"sessions", "messages", "events", "kv", "usage_snapshots", "command_queue", "session_limit_queue"}
 
 
 SCHEMA_SQL = """
@@ -133,6 +133,30 @@ CREATE TABLE IF NOT EXISTS command_queue (
 
 CREATE INDEX IF NOT EXISTS idx_cmdq_status ON command_queue(status);
 CREATE INDEX IF NOT EXISTS idx_cmdq_created ON command_queue(created_at);
+
+CREATE TABLE IF NOT EXISTS session_limit_queue (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_name    TEXT NOT NULL,
+    host            TEXT NOT NULL,
+    platform        TEXT NOT NULL,
+    channel_id      TEXT NOT NULL,
+    thread_id       TEXT,
+    user_message    TEXT NOT NULL,
+    user_name       TEXT,
+    source_msg_id   TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    max_retries     INTEGER NOT NULL DEFAULT 12,
+    retry_interval  INTEGER NOT NULL DEFAULT 1800,
+    next_retry_at   TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    completed_at    TEXT,
+    last_error      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_slq_status_platform ON session_limit_queue(status, platform);
+CREATE INDEX IF NOT EXISTS idx_slq_next_retry ON session_limit_queue(next_retry_at);
 """
 
 _TRIGGER_SQL = [
