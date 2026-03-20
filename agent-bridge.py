@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 import aiohttp
 
 from multiplexer import get_backend, Multiplexer
+from session_limit import detect_session_limit
 
 # Dashboard webhook URL (optional — if not set, events are silently skipped)
 DASHBOARD_URL: str = os.environ.get("AILY_DASHBOARD_URL", "")
@@ -142,6 +143,10 @@ DEFAULT_WORKING_DIR: str = ""
 THREAD_CLEANUP: str = "archive"
 NEW_SESSION_AGENT: str = ""
 CLAUDE_REMOTE_CONTROL: bool = False
+SESSION_QUEUE_ENABLED: bool = True
+SESSION_QUEUE_RETRY_INTERVAL: int = 1800
+SESSION_QUEUE_MAX_RETRIES: int = 12
+SESSION_QUEUE_DETECT_DELAY: int = 15
 _announced: bool = False
 
 # Track background tasks to prevent GC and surface exceptions
@@ -569,6 +574,167 @@ async def delete_thread(http: aiohttp.ClientSession, token: str, thread_id: str)
     await discord_request(http, token, "DELETE", f"/channels/{thread_id}")
 
 
+# --- Session limit queue helpers ---
+
+async def _enqueue_session_limit(
+    session_name: str, host: str, channel_id: str,
+    user_message: str, user_name: str = None, source_msg_id: str = None,
+) -> dict | None:
+    """Enqueue a rate-limited message for later retry via dashboard API."""
+    return await dashboard_api("POST", "/api/session-queue", {
+        "session_name": session_name,
+        "host": host,
+        "platform": "discord",
+        "channel_id": channel_id,
+        "thread_id": channel_id,
+        "user_message": user_message,
+        "user_name": user_name,
+        "source_msg_id": source_msg_id,
+        "max_retries": SESSION_QUEUE_MAX_RETRIES,
+        "retry_interval": SESSION_QUEUE_RETRY_INTERVAL,
+    })
+
+
+async def _fetch_due_queue_items() -> list[dict]:
+    """Fetch queue items that are due for retry."""
+    result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=discord&due=true")
+    if not result:
+        return []
+    return result.get("items", [])
+
+
+async def _mark_queue_item_completed(item_id: int):
+    """Mark a queue item as completed."""
+    await dashboard_api("PATCH", f"/api/session-queue/{item_id}", {
+        "status": "completed",
+        "completed_at": _now_iso(),
+    })
+
+
+async def _mark_queue_item_failed(item_id: int, error: str):
+    """Mark a queue item as permanently failed."""
+    await dashboard_api("PATCH", f"/api/session-queue/{item_id}", {
+        "status": "failed",
+        "last_error": error,
+        "completed_at": _now_iso(),
+    })
+
+
+async def _update_queue_retry(item: dict):
+    """Increment retry count and schedule next retry."""
+    from datetime import datetime, timezone, timedelta
+    next_retry = (datetime.now(timezone.utc) + timedelta(seconds=item.get("retry_interval", SESSION_QUEUE_RETRY_INTERVAL))).isoformat()
+    await dashboard_api("PATCH", f"/api/session-queue/{item['id']}", {
+        "retry_count": item.get("retry_count", 0) + 1,
+        "next_retry_at": next_retry,
+        "last_error": "Still rate limited",
+    })
+
+
+async def _detect_session_limit_after_send(
+    http: aiohttp.ClientSession, token: str,
+    channel_id: str, host: str, session_name: str,
+    pre_content: str, user_message: str,
+    user_name: str = None, source_msg_id: str = None,
+):
+    """Background task: detect session limit after sending and enqueue if needed."""
+    if not SESSION_QUEUE_ENABLED:
+        return
+    try:
+        await asyncio.sleep(SESSION_QUEUE_DETECT_DELAY)
+        post_content = await asyncio.to_thread(capture_pane_content, host, session_name)
+        if not post_content:
+            return
+        error_line = detect_session_limit(pre_content, post_content)
+        if not error_line:
+            return
+
+        print(f"[session-queue] Rate limit detected for {session_name}: {error_line}", file=sys.stderr)
+        result = await _enqueue_session_limit(
+            session_name, host, channel_id,
+            user_message, user_name, source_msg_id,
+        )
+        if result:
+            item = result.get("item", {})
+            await post_message(http, token, channel_id,
+                f"Session limit detected for `{session_name}`.\n"
+                f"Message queued for auto-retry (#{item.get('id', '?')}, "
+                f"interval: {SESSION_QUEUE_RETRY_INTERVAL}s, max retries: {SESSION_QUEUE_MAX_RETRIES}).\n"
+                f"Error: `{error_line[:200]}`")
+        else:
+            await post_message(http, token, channel_id,
+                f"Session limit detected for `{session_name}` but failed to enqueue retry.\n"
+                f"Error: `{error_line[:200]}`")
+    except Exception as e:
+        print(f"[session-queue] Detection error: {e}", file=sys.stderr)
+
+
+async def _session_limit_retry_loop(http: aiohttp.ClientSession, token: str):
+    """Background task: periodically check for queued messages and retry."""
+    while True:
+        await asyncio.sleep(60)
+        if not SESSION_QUEUE_ENABLED:
+            continue
+        try:
+            pending = await _fetch_due_queue_items()
+            if not pending:
+                continue
+
+            for item in pending:
+                session_name = item.get("session_name", "")
+                host = await asyncio.to_thread(find_session_host, session_name)
+                if not host:
+                    await _mark_queue_item_failed(item["id"], "Session no longer exists")
+                    thread_id = item.get("thread_id") or item.get("channel_id", "")
+                    if thread_id:
+                        await post_message(http, token, thread_id,
+                            f"Retry failed for `{session_name}`: session no longer exists. Removed from queue.")
+                    continue
+
+                # Capture pre-content
+                pre_content = await asyncio.to_thread(capture_pane_content, host, session_name)
+
+                # Retry sending
+                sent = await asyncio.to_thread(send_to_tmux, host, session_name, item.get("user_message", ""))
+                if not sent:
+                    await _mark_queue_item_failed(item["id"], "Failed to send to session")
+                    thread_id = item.get("thread_id") or item.get("channel_id", "")
+                    if thread_id:
+                        await post_message(http, token, thread_id,
+                            f"Retry failed for `{session_name}`: could not send to session.")
+                    continue
+
+                # Check if still rate limited
+                await asyncio.sleep(SESSION_QUEUE_DETECT_DELAY)
+                post_content = await asyncio.to_thread(capture_pane_content, host, session_name)
+                error_line = detect_session_limit(pre_content, post_content) if post_content else None
+
+                if error_line:
+                    # Still rate limited
+                    retry_count = item.get("retry_count", 0) + 1
+                    max_retries = item.get("max_retries", SESSION_QUEUE_MAX_RETRIES)
+                    if retry_count >= max_retries:
+                        await _mark_queue_item_failed(item["id"], f"Max retries exceeded: {error_line}")
+                        thread_id = item.get("thread_id") or item.get("channel_id", "")
+                        if thread_id:
+                            await post_message(http, token, thread_id,
+                                f"Retry permanently failed for `{session_name}` after {max_retries} attempts.\n"
+                                f"Last error: `{error_line[:200]}`")
+                    else:
+                        await _update_queue_retry(item)
+                        print(f"[session-queue] Retry {retry_count}/{max_retries} still rate limited for {session_name}", file=sys.stderr)
+                    break  # Stop draining — still rate limited
+                else:
+                    # Success
+                    await _mark_queue_item_completed(item["id"])
+                    thread_id = item.get("thread_id") or item.get("channel_id", "")
+                    if thread_id:
+                        await post_message(http, token, thread_id,
+                            f"Queued message successfully retried for `{session_name}`.")
+        except Exception as e:
+            print(f"[session-queue] Retry loop error: {e}", file=sys.stderr)
+
+
 # --- ! commands ---
 
 async def handle_command(http: aiohttp.ClientSession, token: str,
@@ -587,9 +753,11 @@ async def handle_command(http: aiohttp.ClientSession, token: str,
         await cmd_sessions(http, token, channel_id)
     elif cmd == "!queue":
         await cmd_queue(http, token, channel_id, parts)
+    elif cmd in ("!lq", "!limit-queue"):
+        await cmd_limit_queue(http, token, channel_id, parts)
     else:
         await post_message(http, token, channel_id,
-            "Unknown command. Available: `!new <name> [host|dir] [dir] [-- cmd]`, `!kill <name>`, `!sessions`, `!queue`")
+            "Unknown command. Available: `!new <name> [host|dir] [dir] [-- cmd]`, `!kill <name>`, `!sessions`, `!queue`, `!lq`")
 
 
 async def cmd_new(http: aiohttp.ClientSession, token: str,
@@ -893,6 +1061,99 @@ async def cmd_queue(http: aiohttp.ClientSession, token: str,
         await post_message(http, token, reply_to, "\n".join(lines))
 
 
+async def cmd_limit_queue(http: aiohttp.ClientSession, token: str,
+                          reply_to: str, parts: list[str]):
+    """!lq [clear|retry|status] — manage session limit retry queue."""
+    subcmd = parts[1].lower() if len(parts) > 1 else ""
+
+    if subcmd == "clear":
+        # Cancel all pending retries
+        result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=discord")
+        if not result:
+            await post_message(http, token, reply_to, "Dashboard unavailable.")
+            return
+        items = result.get("items", [])
+        if not items:
+            await post_message(http, token, reply_to, "No pending items in limit queue.")
+            return
+        cleared = 0
+        for item in items:
+            await dashboard_api("DELETE", f"/api/session-queue/{item['id']}")
+            cleared += 1
+        await post_message(http, token, reply_to, f"Cleared {cleared} pending item(s) from limit queue.")
+
+    elif subcmd == "retry":
+        # Force immediate retry by setting next_retry_at to now
+        result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=discord")
+        if not result:
+            await post_message(http, token, reply_to, "Dashboard unavailable.")
+            return
+        items = result.get("items", [])
+        if not items:
+            await post_message(http, token, reply_to, "No pending items to retry.")
+            return
+        now = _now_iso()
+        for item in items:
+            await dashboard_api("PATCH", f"/api/session-queue/{item['id']}", {
+                "next_retry_at": now,
+            })
+        await post_message(http, token, reply_to,
+            f"Forced immediate retry for {len(items)} item(s). Will process within 60s.")
+
+    elif subcmd == "status":
+        result = await dashboard_api("GET", "/api/session-queue/stats")
+        if not result:
+            await post_message(http, token, reply_to, "Dashboard unavailable.")
+            return
+        stats = result.get("stats", {})
+        total = result.get("total", 0)
+        lines = [f"**Session Limit Queue** (total: {total})"]
+        for status, count in sorted(stats.items()):
+            lines.append(f"  {status}: {count}")
+
+        # Show next retry time for pending items
+        pending_result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=discord&limit=5")
+        if pending_result:
+            pending_items = pending_result.get("items", [])
+            if pending_items:
+                lines.append("\n**Pending items:**")
+                for item in pending_items:
+                    lines.append(
+                        f"  #{item.get('id')} `{item.get('session_name')}` "
+                        f"retry {item.get('retry_count')}/{item.get('max_retries')} "
+                        f"next: {item.get('next_retry_at', '?')[:19]}"
+                    )
+        await post_message(http, token, reply_to, "\n".join(lines))
+
+    else:
+        # Default: list pending items
+        result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=discord")
+        if not result:
+            await post_message(http, token, reply_to, "Dashboard unavailable or session queue not enabled.")
+            return
+
+        items = result.get("items", [])
+        total = result.get("total", 0)
+        if total == 0:
+            await post_message(http, token, reply_to, "No pending items in session limit queue.")
+            return
+
+        lines = [f"**Session Limit Queue** ({total} pending)", "```"]
+        lines.append(f"  {'ID':<6} {'SESSION':<20} {'RETRY':<10} NEXT RETRY")
+        for item in items[:15]:
+            retry = f"{item.get('retry_count', 0)}/{item.get('max_retries', '?')}"
+            next_at = item.get('next_retry_at', '?')[:19]
+            lines.append(
+                f"  {item.get('id', '?'):<6} {item.get('session_name', '?'):<20} "
+                f"{retry:<10} {next_at}"
+            )
+        if total > 15:
+            lines.append(f"  ... and {total - 15} more")
+        lines.append("```")
+        lines.append("Use `!lq clear` to cancel all, `!lq retry` to force immediate retry, `!lq status` for details.")
+        await post_message(http, token, reply_to, "\n".join(lines))
+
+
 # --- Shell output capture ---
 
 async def _capture_and_post_output(
@@ -1027,6 +1288,16 @@ async def handle_message(http: aiohttp.ClientSession, token: str,
                 http, token, channel_id, host, session_name, pre_content
             )
         )
+        # Session limit detection (runs in background)
+        if SESSION_QUEUE_ENABLED:
+            _track_task(
+                _detect_session_limit_after_send(
+                    http, token, channel_id, host, session_name,
+                    pre_content, user_message,
+                    user_name=user_name,
+                    source_msg_id=message.get("id", ""),
+                )
+            )
     else:
         await post_message(http, token, channel_id,
             f"Failed to send to `{session_name}` on `{host}`. The session may have exited.")
@@ -1187,6 +1458,7 @@ async def heartbeat_loop(ws, interval: float, get_sequence):
 async def main():
     global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, DEFAULT_WORKING_DIR, THREAD_CLEANUP, DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
     global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL, THREAD_NAME_FORMAT, _mux
+    global SESSION_QUEUE_ENABLED, SESSION_QUEUE_RETRY_INTERVAL, SESSION_QUEUE_MAX_RETRIES, SESSION_QUEUE_DETECT_DELAY
 
     _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
     _default_path = os.path.join(_xdg_config, "aily", "env")
@@ -1233,6 +1505,12 @@ async def main():
     mux_type = env.get("AILY_MULTIPLEXER", "") or None
     _mux = get_backend(mux_type)
 
+    # Session limit queue config
+    SESSION_QUEUE_ENABLED = os.getenv("AILY_SESSION_QUEUE_ENABLED", env.get("AILY_SESSION_QUEUE_ENABLED", "true")).lower() == "true"
+    SESSION_QUEUE_RETRY_INTERVAL = int(os.getenv("AILY_SESSION_QUEUE_RETRY_INTERVAL", env.get("AILY_SESSION_QUEUE_RETRY_INTERVAL", "1800")))
+    SESSION_QUEUE_MAX_RETRIES = int(os.getenv("AILY_SESSION_QUEUE_MAX_RETRIES", env.get("AILY_SESSION_QUEUE_MAX_RETRIES", "12")))
+    SESSION_QUEUE_DETECT_DELAY = int(os.getenv("AILY_SESSION_QUEUE_DETECT_DELAY", env.get("AILY_SESSION_QUEUE_DETECT_DELAY", "15")))
+
     if not token:
         print("DISCORD_BOT_TOKEN not set", file=sys.stderr)
         sys.exit(1)
@@ -1255,12 +1533,25 @@ async def main():
         print(f"[bridge] Dashboard: {DASHBOARD_URL}")
     else:
         print("[bridge] Dashboard: not configured (AILY_DASHBOARD_URL not set)")
+    if SESSION_QUEUE_ENABLED:
+        print(f"[bridge] Session limit queue: enabled (interval={SESSION_QUEUE_RETRY_INTERVAL}s, max_retries={SESSION_QUEUE_MAX_RETRIES}, detect_delay={SESSION_QUEUE_DETECT_DELAY}s)")
+    else:
+        print("[bridge] Session limit queue: disabled")
 
     # Create a shared aiohttp session for dashboard POSTs
     _dashboard_http = aiohttp.ClientSession()
     reconnect_delay = 5
     max_delay = 300  # 5 minutes cap
     consecutive_failures = 0
+
+    # Start session limit retry loop if enabled
+    retry_task = None
+    if SESSION_QUEUE_ENABLED and DASHBOARD_URL:
+        retry_task = asyncio.create_task(
+            _session_limit_retry_loop(_dashboard_http, token)
+        )
+        print("[bridge] Session limit retry loop started")
+
     try:
         while True:
             try:
@@ -1276,6 +1567,12 @@ async def main():
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, max_delay)
     finally:
+        if retry_task:
+            retry_task.cancel()
+            try:
+                await retry_task
+            except asyncio.CancelledError:
+                pass
         await _dashboard_http.close()
 
 
