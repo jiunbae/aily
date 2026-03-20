@@ -48,7 +48,10 @@ async def emit_dashboard_event(event: dict):
         return
     url = f"{DASHBOARD_URL.rstrip('/')}/api/hooks/event"
     try:
-        async with _dashboard_http.post(url, json=event, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+        headers = {}
+        if DASHBOARD_AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {DASHBOARD_AUTH_TOKEN}"
+        async with _dashboard_http.post(url, json=event, timeout=aiohttp.ClientTimeout(total=5), headers=headers) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 print(f"[dashboard] POST {resp.status}: {body[:200]}", file=sys.stderr)
@@ -143,11 +146,16 @@ _announced: bool = False
 
 # Track background tasks to prevent GC and surface exceptions
 _background_tasks: set[asyncio.Task] = set()
+_MAX_BACKGROUND_TASKS = 20
+_background_sem = asyncio.Semaphore(_MAX_BACKGROUND_TASKS)
 
 
 def _track_task(coro) -> asyncio.Task:
     """Create a tracked background task that logs exceptions on completion."""
-    task = asyncio.create_task(coro)
+    async def _limited():
+        async with _background_sem:
+            return await coro
+    task = asyncio.create_task(_limited())
     _background_tasks.add(task)
 
     def _on_done(t: asyncio.Task):
@@ -284,7 +292,11 @@ def send_to_session(host: str, session: str, message: str) -> bool:
     # Step 2: Press Enter (separate command — critical for Claude Code)
     time.sleep(SEND_KEYS_DELAY)
     rc, _ = run_ssh(host, mux.send_enter_cmd(safe_session))
-    return rc == 0
+    if rc != 0:
+        # Clear ghost text to prevent corruption of next message
+        run_ssh(host, mux.send_raw_key_cmd(safe_session, "C-c"))
+        return False
+    return True
 
 
 # Backward-compatible alias
@@ -438,6 +450,23 @@ async def discord_request(session: aiohttp.ClientSession, token: str,
     url = f"{API_BASE}{path}"
 
     async with session.request(method, url, headers=headers, json=json_data) as resp:
+        if resp.status == 429:
+            body = await resp.text()
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                data = {}
+            retry_after = data.get("retry_after", 1.0)
+            logging.warning("Rate limited, retrying after %.1fs", retry_after)
+            await asyncio.sleep(retry_after)
+            # Retry the request once
+            async with session.request(method, url, headers=headers, json=json_data) as retry_resp:
+                if retry_resp.status >= 400:
+                    retry_body = await retry_resp.text()
+                    print(f"[discord] {method} {path} -> {retry_resp.status}: {retry_body[:200]}", file=sys.stderr)
+                    return {}
+                text = await retry_resp.text()
+                return json.loads(text) if text else {}
         if resp.status >= 400:
             body = await resp.text()
             print(f"[discord] {method} {path} -> {resp.status}: {body[:200]}", file=sys.stderr)
@@ -1063,6 +1092,7 @@ async def gateway_connect(token: str):
 
         intents = INTENT_GUILDS | INTENT_GUILD_MESSAGES | INTENT_MESSAGE_CONTENT
         sequence = None
+        hb_task = None
 
         async with http.ws_connect(ws_url) as ws:
             async for msg in ws:
@@ -1092,7 +1122,7 @@ async def gateway_connect(token: str):
                                 }
                             }
                         })
-                        _track_task(
+                        hb_task = asyncio.create_task(
                             heartbeat_loop(ws, heartbeat_interval, lambda: sequence))
 
                     # Heartbeat ACK
@@ -1121,14 +1151,27 @@ async def gateway_connect(token: str):
                           file=sys.stderr)
                     break
 
+            # Cancel heartbeat task on disconnect
+            if hb_task is not None:
+                hb_task.cancel()
+                try:
+                    await hb_task
+                except asyncio.CancelledError:
+                    pass
+
             # Log close reason for debugging
             if ws.close_code:
                 print(f"[bridge] Gateway closed: code={ws.close_code}", file=sys.stderr)
+                if ws.close_code == 4004:
+                    print("[bridge] FATAL: Invalid bot token (close code 4004). Exiting.",
+                          file=sys.stderr)
+                    sys.exit(1)
                 if ws.close_code == 4014:
-                    print("[bridge] ERROR: Message Content Intent not enabled in Discord Developer Portal",
+                    print("[bridge] FATAL: Message Content Intent not enabled (close code 4014). Exiting.",
                           file=sys.stderr)
-                    print("[bridge] Enable it at: https://discord.com/developers/applications → Bot → Privileged Intents",
+                    print("[bridge] Enable it at: https://discord.com/developers/applications -> Bot -> Privileged Intents",
                           file=sys.stderr)
+                    sys.exit(1)
 
 
 async def heartbeat_loop(ws, interval: float, get_sequence):
@@ -1215,14 +1258,23 @@ async def main():
 
     # Create a shared aiohttp session for dashboard POSTs
     _dashboard_http = aiohttp.ClientSession()
+    reconnect_delay = 5
+    max_delay = 300  # 5 minutes cap
+    consecutive_failures = 0
     try:
         while True:
             try:
                 await gateway_connect(token)
+                reconnect_delay = 5  # reset on successful connection
+                consecutive_failures = 0
             except Exception as e:
-                print(f"[bridge] Connection error: {e}, reconnecting in 5s...",
-                      file=sys.stderr)
-            await asyncio.sleep(5)
+                consecutive_failures += 1
+                print(f"[bridge] Connection error (attempt {consecutive_failures}): {e}, reconnecting in {reconnect_delay}s...", file=sys.stderr)
+                if consecutive_failures >= 50:
+                    print("[bridge] Too many consecutive failures, exiting.", file=sys.stderr)
+                    sys.exit(1)
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, max_delay)
     finally:
         await _dashboard_http.close()
 
