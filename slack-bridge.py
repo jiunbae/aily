@@ -8,1251 +8,222 @@ to the corresponding session's Claude Code instance via SSH.
 Supports tmux (full) and zellij (partial) backends via AILY_MULTIPLEXER env var.
 
 Also handles ! commands for session/thread lifecycle management:
-  !new <name> [host]  — create session + Slack thread
-  !kill <name>        — kill session + close Slack thread
-  !sessions           — list all sessions with sync status
+  !new <name> [host|dir] [dir] [-- cmd] -- create session + Slack thread
+  !kill <name>        -- kill session + close Slack thread
+  !sessions           -- list all sessions with sync status
+  !c / !d / !z / !q   -- keyboard shortcuts forwarded to session
+  !lq                 -- session limit queue management
 
-Uses Socket Mode (WebSocket) — no public URL needed.
+Uses Socket Mode (WebSocket) -- no public URL needed.
 Requires: slack-sdk (pip install slack-sdk)
+
+Thin platform layer -- all shared logic lives in bridge_core.py.
 """
 
 import asyncio
-import json
-import logging
-import os
-import re
-import shlex
-import subprocess
 import sys
-import time
 from collections import OrderedDict
-from datetime import datetime, timezone
 
-import aiohttp
-
-from multiplexer import get_backend, Multiplexer
-from session_limit import detect_session_limit
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
 
-# Dashboard webhook URL (optional — if not set, events are silently skipped)
-DASHBOARD_URL: str = os.environ.get("AILY_DASHBOARD_URL", "")
-DASHBOARD_AUTH_TOKEN: str = os.environ.get("AILY_AUTH_TOKEN", "")
-
-# Shared aiohttp session for dashboard POSTs (set in main)
-_dashboard_http: aiohttp.ClientSession | None = None
-
-
-async def emit_dashboard_event(event: dict):
-    """POST an event to the aily dashboard webhook. Non-blocking, fire-and-forget."""
-    if not DASHBOARD_URL or _dashboard_http is None:
-        return
-    url = f"{DASHBOARD_URL.rstrip('/')}/api/hooks/event"
-    try:
-        headers = {}
-        if DASHBOARD_AUTH_TOKEN:
-            headers["Authorization"] = f"Bearer {DASHBOARD_AUTH_TOKEN}"
-        async with _dashboard_http.post(url, json=event, timeout=aiohttp.ClientTimeout(total=5), headers=headers) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                print(f"[dashboard] POST {resp.status}: {body[:200]}", file=sys.stderr)
-    except Exception as e:
-        print(f"[dashboard] POST failed: {e}", file=sys.stderr)
-
-
-def _fire_dashboard_event(event: dict):
-    """Schedule a dashboard event from sync or async context without awaiting."""
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(emit_dashboard_event(event))
-    except RuntimeError:
-        pass  # No running loop — skip silently
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-async def dashboard_api(method: str, path: str, json_body: dict = None) -> dict | None:
-    """Call dashboard REST API and return parsed JSON response, or None on failure."""
-    if not DASHBOARD_URL or _dashboard_http is None:
-        return None
-    url = f"{DASHBOARD_URL.rstrip('/')}{path}"
-    try:
-        headers: dict = {}
-        if DASHBOARD_AUTH_TOKEN:
-            headers["Authorization"] = f"Bearer {DASHBOARD_AUTH_TOKEN}"
-        kwargs: dict = {"timeout": aiohttp.ClientTimeout(total=10), "headers": headers}
-        if json_body is not None:
-            kwargs["json"] = json_body
-        async with _dashboard_http.request(method, url, **kwargs) as resp:
-            if resp.status < 400:
-                return await resp.json()
-            body = await resp.text()
-            print(f"[dashboard] {method} {path} {resp.status}: {body[:200]}", file=sys.stderr)
-            return None
-    except (aiohttp.ClientError, TimeoutError) as e:
-        print(f"[dashboard] {method} {path} failed: {e}", file=sys.stderr)
-        return None
-
-
-AGENT_PREFIX = "[agent] "  # legacy fallback
-THREAD_NAME_FORMAT: str = "[agent] {session} - {host}"
-SEND_KEYS_DELAY = 0.3
-SESSION_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-# Multiplexer backend (initialized in main())
-_mux: Multiplexer | None = None
-
-
-def format_thread_name(session: str, host: str = "") -> str:
-    """Build thread name from format template."""
-    if not host:
-        host = DEFAULT_HOST or "localhost"
-    return THREAD_NAME_FORMAT.replace("{session}", session).replace("{host}", host)
-
-
-def parse_thread_name(thread_name: str) -> str | None:
-    """Extract session name from a thread name using the format template."""
-    fmt = re.escape(THREAD_NAME_FORMAT)
-    fmt = fmt.replace(re.escape("{session}"), r"([a-zA-Z0-9_-]+)")
-    fmt = fmt.replace(re.escape("{host}"), r".+")
-    m = re.match(f"^{fmt}$", thread_name)
-    if m:
-        return m.group(1)
-    if thread_name.startswith(AGENT_PREFIX):
-        return thread_name[len(AGENT_PREFIX):]
-    return None
-
-# Globals set at startup
-CHANNEL_ID: str = ""
-SSH_HOSTS: list[str] = []
-DEFAULT_HOST: str = ""
-BOT_USER_ID: str = ""
-THREAD_CLEANUP: str = "archive"
-NEW_SESSION_AGENT: str = ""
-CLAUDE_REMOTE_CONTROL: bool = False
-SESSION_QUEUE_ENABLED: bool = True
-SESSION_QUEUE_RETRY_INTERVAL: int = 1800
-SESSION_QUEUE_MAX_RETRIES: int = 12
-SESSION_QUEUE_DETECT_DELAY: int = 15
-_announced: bool = False
-
-# Track background tasks to prevent GC and surface exceptions
-_background_tasks: set[asyncio.Task] = set()
-_MAX_BACKGROUND_TASKS = 20
-_background_sem = asyncio.Semaphore(_MAX_BACKGROUND_TASKS)
-
-
-def _track_task(coro) -> asyncio.Task:
-    """Create a tracked background task that logs exceptions on completion."""
-    async def _limited():
-        async with _background_sem:
-            return await coro
-    task = asyncio.create_task(_limited())
-    _background_tasks.add(task)
-
-    def _on_done(t: asyncio.Task):
-        _background_tasks.discard(t)
-        if not t.cancelled() and t.exception():
-            print(f"[slack-bridge] background task failed: {t.exception()}", file=sys.stderr)
-
-    task.add_done_callback(_on_done)
-    return task
-
-# Cache: thread_ts -> session_name (avoid repeated conversations.replies calls)
-# Capped at 256 entries with LRU eviction via OrderedDict
-_THREAD_CACHE_MAX = 256
-_thread_cache: OrderedDict[str, str] = OrderedDict()
-_thread_cache_lock: asyncio.Lock = asyncio.Lock()
-
-
-_SECRET_PATTERNS = re.compile(
-    r'(?i)'
-    r'((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key'
-    r'|credential|auth|bearer|ssh[_-]?key|database[_-]?url|connection[_-]?string'
-    r'|key[_-]?id|client[_-]?secret)'
-    r'\s*[=:])\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
+from bridge_core import (
+    BridgeCore,
+    BridgeState,
+    PlatformBridge,
+    load_env,
+    parse_thread_name,
+    AGENT_PREFIX,
 )
-_PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
 
 
-def _sanitize_backticks(text: str) -> str:
-    """Escape triple backticks in text to prevent markdown injection."""
-    return text.replace('```', r'\`\`\`')
-
-
-def _redact_secrets(text: str) -> str:
-    """Redact common secret patterns from shell output."""
-    text = _SECRET_PATTERNS.sub(r'\1 [REDACTED]', text)
-    text = _PEM_RE.sub('[REDACTED PEM KEY]', text)
-    return text
-
-
-def load_env(env_path: str) -> dict:
-    """Load env config file."""
-    env = {}
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, val = line.split("=", 1)
-                env[key.strip()] = val.strip().strip('"').strip("'")
-    return env
-
-
-_SAFE_PATH_RE = re.compile(r'^[a-zA-Z0-9_./@:~-]+$')
-
-
-def _validate_path(path: str) -> bool:
-    """Reject paths with shell metacharacters or directory traversal."""
-    return bool(_SAFE_PATH_RE.match(path)) and '..' not in path
-
-
-def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
-    """Run a command over SSH. Returns (returncode, stdout)."""
-    try:
-        result = subprocess.run(
-            ["ssh", host, cmd],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return result.returncode, result.stdout.strip()
-    except subprocess.TimeoutExpired:
-        return 1, ""
-    except Exception as e:
-        return 1, str(e)
-
-
-def is_valid_session_name(name: str) -> bool:
-    """Check if session name is safe for use in shell commands."""
-    return bool(SESSION_NAME_RE.match(name)) and len(name) <= 64
-
-
-# Infrastructure sessions that should be hidden from session lists and not matched
-_INFRA_SESSIONS = {"aily-bridge", "slack-bridge", "aily-dashboard"}
-
-
-def find_session_host(session_name: str) -> str | None:
-    """Find which SSH host has the multiplexer session."""
-    mux = _mux
-    safe_name = shlex.quote(session_name)
-    for host in SSH_HOSTS:
-        rc, out = run_ssh(
-            host, f"{mux.has_session_cmd(safe_name)} 2>/dev/null && echo found"
-        )
-        if rc == 0 and "found" in out:
-            # Verify it's not a prefix match against an infra session
-            _, exact = run_ssh(host, f"{mux.list_sessions_cmd()} 2>/dev/null")
-            sessions = exact.splitlines()
-            if session_name in sessions:
-                return host
-            # Prefix matched an infra session — not a real match
-            if any(s.startswith(session_name) and s in _INFRA_SESSIONS for s in sessions):
-                continue
-            return host
-    return None
-
-
-def send_to_session(host: str, session: str, message: str) -> bool:
-    """Send a message to a multiplexer session's Claude Code."""
-    mux = _mux
-    safe_session = shlex.quote(session)
-    safe_message = shlex.quote(message)
-
-    # Step 1: Type the text
-    rc, _ = run_ssh(host, mux.send_keys_cmd(safe_session, safe_message))
-    if rc != 0:
-        return False
-
-    # Step 2: Press Enter (separate command — critical for Claude Code)
-    time.sleep(SEND_KEYS_DELAY)
-    rc, _ = run_ssh(host, mux.send_enter_cmd(safe_session))
-    if rc != 0:
-        # Clear ghost text to prevent corruption of next message
-        run_ssh(host, mux.send_raw_key_cmd(safe_session, "C-c"))
-        return False
-    return True
-
-
-# Backward-compatible alias
-send_to_tmux = send_to_session
-
-
-# Shell names for output capture (skip capture for non-shell processes)
-_SHELL_NAMES = frozenset({"bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh"})
-
-
-def get_pane_command(host: str, session: str) -> str:
-    """Get the current foreground command in a session's active pane.
-
-    Returns empty string if the multiplexer doesn't support this.
-    """
-    mux = _mux
-    if not mux.supports_pane_command:
-        return ""
-    safe_session = shlex.quote(session)
-    rc, out = run_ssh(host, mux.get_pane_command_cmd(safe_session))
-    return out.strip() if rc == 0 else ""
-
-
-def capture_pane_content(host: str, session: str) -> str:
-    """Capture visible pane content from a multiplexer session."""
-    mux = _mux
-    if not mux.supports_detached_capture:
-        logging.debug("Skipping pane capture: %s doesn't support detached capture", mux.name)
-        return ""
-    safe_session = shlex.quote(session)
-    rc, out = run_ssh(host, mux.capture_pane_cmd(safe_session), timeout=10)
-    return out if rc == 0 else ""
-
-
-def _build_agent_command(agent: str, remote_control: bool) -> str | None:
-    """Build the shell command to launch an agent. Returns None if agent is empty."""
-    if not agent:
-        return None
-    if agent == "claude":
-        return "claude remote-control" if remote_control else "claude"
-    if agent == "codex":
-        return "codex"
-    if agent == "gemini":
-        return "gemini"
-    if agent == "opencode":
-        return "opencode"
-    return None
-
-
-def capture_shell_output(
-    host: str, session: str, pre_content: str,
-    poll_interval: float = 1.0,
-    stable_count: int = 2,
-    max_wait: float = 30.0,
-) -> str | None:
-    """Poll pane until output stabilizes, return new content.
-
-    Returns None if a non-shell process takes over (e.g., Claude Code started).
-    Returns empty string if no new output detected.
-    """
-    time.sleep(1.0)
-
-    # Check: did the command spawn a non-shell process?
-    # If multiplexer doesn't support pane_command, skip this check
-    pane_cmd = get_pane_command(host, session)
-    if pane_cmd and pane_cmd.lower() not in _SHELL_NAMES:
-        return None
-
-    last_content = ""
-    stable_hits = 0
-    deadline = time.monotonic() + max_wait
-
-    while time.monotonic() < deadline:
-        current = capture_pane_content(host, session)
-        if not current:
-            break
-
-        if current == last_content:
-            stable_hits += 1
-            if stable_hits >= stable_count:
-                break
-        else:
-            stable_hits = 0
-            last_content = current
-
-        time.sleep(poll_interval)
-
-    # Final check: ensure shell is still the foreground process
-    # If multiplexer doesn't support pane_command, skip this check
-    pane_cmd = get_pane_command(host, session)
-    if pane_cmd and pane_cmd.lower() not in _SHELL_NAMES:
-        return None
-
-    if not last_content:
-        return ""
-
-    # Diff: find new lines compared to pre_content
-    pre_lines = pre_content.rstrip().split('\n') if pre_content.strip() else []
-    post_lines = last_content.rstrip().split('\n') if last_content.strip() else []
-
-    common_len = 0
-    for i, (a, b) in enumerate(zip(pre_lines, post_lines)):
-        if a == b:
-            common_len = i + 1
-        else:
-            break
-
-    new_lines = post_lines[common_len:]
-
-    # Strip trailing empty lines
-    while new_lines and not new_lines[-1].strip():
-        new_lines.pop()
-
-    return '\n'.join(new_lines)
-
-
-# --- Slack REST helpers ---
-
-
-async def find_thread_ts(
-    client: AsyncWebClient, thread_name: str
-) -> str | None:
-    """Find a parent message whose text starts with thread_name."""
-    try:
-        result = await client.conversations_history(
-            channel=CHANNEL_ID, limit=200
-        )
-        for msg in result.get("messages", []):
-            text = msg.get("text", "")
-            first_line = text.split("\n")[0].strip()
-            if first_line == thread_name or text.startswith(thread_name):
-                return msg["ts"]
-    except Exception as e:
-        print(f"[slack-bridge] find_thread_ts error: {e}", file=sys.stderr)
-    return None
-
-
-async def create_thread(
-    client: AsyncWebClient, thread_name: str, starter_msg: str
-) -> str | None:
-    """Create a new thread: post parent message, then welcome reply."""
-    try:
-        result = await client.chat_postMessage(
-            channel=CHANNEL_ID, text=starter_msg
-        )
-        parent_ts = result.get("ts")
-        if not parent_ts:
-            return None
-
-        session_name = parse_thread_name(thread_name) or thread_name
-        welcome = (
-            f"*Welcome to {thread_name}*\n\n"
-            "Type a message here to forward it to the tmux session.\n\n"
-            "*Commands:*\n"
-            "`!sessions` \u2014 list all sessions\n"
-            f"`!kill {session_name}` \u2014 kill this session + close thread"
-        )
-        await client.chat_postMessage(
-            channel=CHANNEL_ID, thread_ts=parent_ts, text=welcome
-        )
-        return parent_ts
-    except Exception as e:
-        print(f"[slack-bridge] create_thread error: {e}", file=sys.stderr)
-        return None
-
-
-async def ensure_thread(
-    client: AsyncWebClient, thread_name: str, starter_msg: str = None
-) -> str | None:
-    """Find or create a thread."""
-    ts = await find_thread_ts(client, thread_name)
-    if ts:
-        return ts
-    if starter_msg is None:
-        starter_msg = f"tmux session: *{thread_name}*"
-    return await create_thread(client, thread_name, starter_msg)
-
-
-async def archive_thread(client: AsyncWebClient, thread_ts: str):
-    """Archive a thread (post closing message + lock reaction)."""
-    try:
-        await client.chat_postMessage(
-            channel=CHANNEL_ID,
-            thread_ts=thread_ts,
-            text=":lock: Thread archived. Session closed.",
-        )
-        await client.reactions_add(
-            channel=CHANNEL_ID, timestamp=thread_ts, name="lock"
-        )
-    except Exception as e:
-        print(f"[slack-bridge] archive_thread error: {e}", file=sys.stderr)
-
-
-async def delete_thread(client: AsyncWebClient, thread_ts: str):
-    """Delete a thread by deleting the parent message."""
-    try:
-        await client.chat_delete(channel=CHANNEL_ID, ts=thread_ts)
-    except Exception as e:
-        print(f"[slack-bridge] delete_thread error: {e}", file=sys.stderr)
-
-
-async def post_message(
-    client: AsyncWebClient,
-    channel_id: str,
-    text: str,
-    thread_ts: str = None,
-):
-    """Post a message, optionally in a thread."""
-    if len(text) > 3800:
-        text = text[:3800] + "\n...(truncated)"
-    kwargs = {"channel": channel_id, "text": text}
-    if thread_ts:
-        kwargs["thread_ts"] = thread_ts
-    try:
-        await client.chat_postMessage(**kwargs)
-    except Exception as e:
-        print(f"[slack-bridge] post_message error: {e}", file=sys.stderr)
-
-
-# --- Resolve thread parent ---
-
-
-async def _cache_thread(thread_ts: str, session_name: str):
-    """Add entry to thread cache with LRU eviction."""
-    async with _thread_cache_lock:
-        _thread_cache[thread_ts] = session_name
-        while len(_thread_cache) > _THREAD_CACHE_MAX:
-            _thread_cache.popitem(last=False)
-
-
-async def get_thread_session(
-    client: AsyncWebClient, channel: str, thread_ts: str
-) -> str | None:
-    """Get session name from a thread's parent message. Uses cache."""
-    async with _thread_cache_lock:
-        if thread_ts in _thread_cache:
-            _thread_cache.move_to_end(thread_ts)
-            return _thread_cache[thread_ts]
-
-    try:
-        result = await client.conversations_replies(
-            channel=channel, ts=thread_ts, limit=1
-        )
-        messages = result.get("messages", [])
-        if not messages:
-            return None
-        parent_text = messages[0].get("text", "")
-    except Exception:
-        return None
-
-    first_line = parent_text.split("\n")[0].strip()
-    session_name = parse_thread_name(first_line)
-    if session_name:
-        await _cache_thread(thread_ts, session_name)
-        return session_name
-
-    return None
-
-
-# --- Session limit queue helpers ---
-
-async def _enqueue_session_limit(
-    session_name: str, host: str, channel_id: str, thread_ts: str,
-    user_message: str, user_name: str = None, source_msg_id: str = None,
-) -> dict | None:
-    """Enqueue a rate-limited message for later retry via dashboard API."""
-    return await dashboard_api("POST", "/api/session-queue", {
-        "session_name": session_name,
-        "host": host,
-        "platform": "slack",
-        "channel_id": channel_id,
-        "thread_id": thread_ts,
-        "user_message": user_message,
-        "user_name": user_name,
-        "source_msg_id": source_msg_id,
-        "max_retries": SESSION_QUEUE_MAX_RETRIES,
-        "retry_interval": SESSION_QUEUE_RETRY_INTERVAL,
-    })
-
-
-async def _fetch_due_queue_items() -> list[dict]:
-    """Fetch queue items that are due for retry."""
-    result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=slack&due=true")
-    if not result:
-        return []
-    return result.get("items", [])
-
-
-async def _mark_queue_item_completed(item_id: int):
-    """Mark a queue item as completed."""
-    await dashboard_api("PATCH", f"/api/session-queue/{item_id}", {
-        "status": "completed",
-        "completed_at": _now_iso(),
-    })
-
-
-async def _mark_queue_item_failed(item_id: int, error: str):
-    """Mark a queue item as permanently failed."""
-    await dashboard_api("PATCH", f"/api/session-queue/{item_id}", {
-        "status": "failed",
-        "last_error": error,
-        "completed_at": _now_iso(),
-    })
-
-
-async def _update_queue_retry(item: dict):
-    """Increment retry count and schedule next retry."""
-    from datetime import timedelta
-    next_retry = (datetime.now(timezone.utc) + timedelta(seconds=item.get("retry_interval", SESSION_QUEUE_RETRY_INTERVAL))).isoformat()
-    await dashboard_api("PATCH", f"/api/session-queue/{item['id']}", {
-        "retry_count": item.get("retry_count", 0) + 1,
-        "next_retry_at": next_retry,
-        "last_error": "Still rate limited",
-    })
-
-
-async def _detect_session_limit_after_send(
-    client: AsyncWebClient,
-    channel: str, thread_ts: str,
-    host: str, session_name: str,
-    pre_content: str, user_message: str,
-    user_name: str = None, source_msg_id: str = None,
-):
-    """Background task: detect session limit after sending and enqueue if needed."""
-    if not SESSION_QUEUE_ENABLED:
-        return
-    try:
-        await asyncio.sleep(SESSION_QUEUE_DETECT_DELAY)
-        post_content = await asyncio.to_thread(capture_pane_content, host, session_name)
-        if not post_content:
-            return
-        error_line = detect_session_limit(pre_content, post_content)
-        if not error_line:
-            return
-
-        print(f"[session-queue] Rate limit detected for {session_name}: {error_line}", file=sys.stderr)
-        result = await _enqueue_session_limit(
-            session_name, host, channel, thread_ts,
-            user_message, user_name, source_msg_id,
-        )
-        if result:
-            item = result.get("item", {})
-            await post_message(client, channel,
-                f"Session limit detected for `{session_name}`.\n"
-                f"Message queued for auto-retry (#{item.get('id', '?')}, "
-                f"interval: {SESSION_QUEUE_RETRY_INTERVAL}s, max retries: {SESSION_QUEUE_MAX_RETRIES}).\n"
-                f"Error: `{error_line[:200]}`",
-                thread_ts=thread_ts)
-        else:
-            await post_message(client, channel,
-                f"Session limit detected for `{session_name}` but failed to enqueue retry.\n"
-                f"Error: `{error_line[:200]}`",
-                thread_ts=thread_ts)
-    except Exception as e:
-        print(f"[session-queue] Detection error: {e}", file=sys.stderr)
-
-
-async def _session_limit_retry_loop(web_client: AsyncWebClient):
-    """Background task: periodically check for queued messages and retry."""
-    while True:
-        await asyncio.sleep(60)
-        if not SESSION_QUEUE_ENABLED:
-            continue
+# ---------------------------------------------------------------------------
+# Slack platform implementation
+# ---------------------------------------------------------------------------
+
+class SlackPlatform(PlatformBridge):
+    """Slack-specific bridge operations using slack-sdk."""
+
+    platform_name = "slack"
+    max_message_len = 3800
+
+    def __init__(self, web_client: AsyncWebClient, channel_id: str):
+        self._client = web_client
+        self._channel_id = channel_id
+        # Cache: thread_ts -> session_name (LRU via OrderedDict)
+        self._THREAD_CACHE_MAX = 256
+        self._thread_cache: OrderedDict[str, str] = OrderedDict()
+        self._thread_cache_lock: asyncio.Lock = asyncio.Lock()
+
+    # -- PlatformBridge interface ------------------------------------------
+
+    async def post_message(self, channel_id: str, text: str, **kwargs) -> None:
+        """Post a message, optionally in a thread (thread_ts kwarg)."""
+        if len(text) > self.max_message_len:
+            text = text[:self.max_message_len] + "\n...(truncated)"
+        msg_kwargs = {"channel": channel_id, "text": text}
+        thread_ts = kwargs.get("thread_ts")
+        if thread_ts:
+            msg_kwargs["thread_ts"] = thread_ts
         try:
-            pending = await _fetch_due_queue_items()
-            if not pending:
-                continue
-
-            for item in pending:
-                session_name = item.get("session_name", "")
-                host = await asyncio.to_thread(find_session_host, session_name)
-                if not host:
-                    await _mark_queue_item_failed(item["id"], "Session no longer exists")
-                    channel = item.get("channel_id", "")
-                    thread_ts = item.get("thread_id")
-                    if channel:
-                        await post_message(web_client, channel,
-                            f"Retry failed for `{session_name}`: session no longer exists. Removed from queue.",
-                            thread_ts=thread_ts)
-                    continue
-
-                # Capture pre-content
-                pre_content = await asyncio.to_thread(capture_pane_content, host, session_name)
-
-                # Retry sending
-                sent = await asyncio.to_thread(send_to_tmux, host, session_name, item.get("user_message", ""))
-                if not sent:
-                    await _mark_queue_item_failed(item["id"], "Failed to send to session")
-                    channel = item.get("channel_id", "")
-                    thread_ts = item.get("thread_id")
-                    if channel:
-                        await post_message(web_client, channel,
-                            f"Retry failed for `{session_name}`: could not send to session.",
-                            thread_ts=thread_ts)
-                    continue
-
-                # Check if still rate limited
-                await asyncio.sleep(SESSION_QUEUE_DETECT_DELAY)
-                post_content = await asyncio.to_thread(capture_pane_content, host, session_name)
-                error_line = detect_session_limit(pre_content, post_content) if post_content else None
-
-                if error_line:
-                    # Still rate limited
-                    retry_count = item.get("retry_count", 0) + 1
-                    max_retries = item.get("max_retries", SESSION_QUEUE_MAX_RETRIES)
-                    if retry_count >= max_retries:
-                        await _mark_queue_item_failed(item["id"], f"Max retries exceeded: {error_line}")
-                        channel = item.get("channel_id", "")
-                        thread_ts = item.get("thread_id")
-                        if channel:
-                            await post_message(web_client, channel,
-                                f"Retry permanently failed for `{session_name}` after {max_retries} attempts.\n"
-                                f"Last error: `{error_line[:200]}`",
-                                thread_ts=thread_ts)
-                    else:
-                        await _update_queue_retry(item)
-                        print(f"[session-queue] Retry {retry_count}/{max_retries} still rate limited for {session_name}", file=sys.stderr)
-                    break  # Stop draining — still rate limited
-                else:
-                    # Success
-                    await _mark_queue_item_completed(item["id"])
-                    channel = item.get("channel_id", "")
-                    thread_ts = item.get("thread_id")
-                    if channel:
-                        await post_message(web_client, channel,
-                            f"Queued message successfully retried for `{session_name}`.",
-                            thread_ts=thread_ts)
+            await self._client.chat_postMessage(**msg_kwargs)
         except Exception as e:
-            print(f"[session-queue] Retry loop error: {e}", file=sys.stderr)
+            print(f"[slack-bridge] post_message error: {e}", file=sys.stderr)
 
+    async def find_thread(self, thread_name: str) -> str | None:
+        """Find a parent message whose text starts with thread_name.
 
-# --- ! commands ---
-
-
-async def handle_command(
-    client: AsyncWebClient,
-    channel: str,
-    text: str,
-    thread_ts: str = None,
-):
-    """Handle ! commands from Slack."""
-    parts = text.split(None, 3)
-    cmd = parts[0].lower() if parts else ""
-
-    if cmd == "!new":
-        await cmd_new(client, channel, parts, thread_ts)
-    elif cmd == "!kill":
-        await cmd_kill(client, channel, parts, thread_ts)
-    elif cmd in ("!sessions", "!ls"):
-        await cmd_sessions(client, channel, thread_ts)
-    elif cmd == "!queue":
-        await cmd_queue(client, channel, parts, thread_ts)
-    elif cmd in ("!lq", "!limit-queue"):
-        await cmd_limit_queue(client, channel, parts, thread_ts)
-    else:
-        await post_message(
-            client,
-            channel,
-            "Unknown command. Available: `!new <name> [host] [pwd]`, `!kill <name>`, `!sessions`, `!queue`, `!lq`",
-            thread_ts=thread_ts,
-        )
-
-
-async def cmd_new(
-    client: AsyncWebClient,
-    reply_to: str,
-    parts: list[str],
-    thread_ts: str = None,
-):
-    """!new <session_name> [host] [pwd] — create tmux session + Slack thread."""
-    if len(parts) < 2:
-        await post_message(
-            client,
-            reply_to,
-            f"Usage: `!new <session_name> [host] [pwd]`\n"
-            f"Available hosts: `{'`, `'.join(SSH_HOSTS)}`",
-            thread_ts=thread_ts,
-        )
-        return
-
-    session_name = parts[1]
-    host = parts[2] if len(parts) > 2 else DEFAULT_HOST
-    working_dir = parts[3] if len(parts) > 3 else None
-
-    if not is_valid_session_name(session_name):
-        await post_message(
-            client,
-            reply_to,
-            "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).",
-            thread_ts=thread_ts,
-        )
-        return
-
-    if working_dir and not _validate_path(working_dir):
-        await post_message(
-            client,
-            reply_to,
-            "Invalid working directory. Path contains disallowed characters.",
-            thread_ts=thread_ts,
-        )
-        return
-
-    if host not in SSH_HOSTS:
-        await post_message(
-            client,
-            reply_to,
-            f"Unknown host `{host}`. Available: `{'`, `'.join(SSH_HOSTS)}`",
-            thread_ts=thread_ts,
-        )
-        return
-
-    # Check if session already exists
-    existing = await asyncio.to_thread(find_session_host, session_name)
-    if existing:
-        await post_message(
-            client,
-            reply_to,
-            f"Session `{session_name}` already exists on `{existing}`.",
-            thread_ts=thread_ts,
-        )
-        return
-
-    # Create multiplexer session
-    mux = _mux
-    safe_name = shlex.quote(session_name)
-    safe_dir = shlex.quote(working_dir) if working_dir else None
-    create_cmd = mux.new_session_cmd(safe_name, safe_dir)
-    rc, _ = await asyncio.to_thread(run_ssh, host, create_cmd)
-    if rc != 0:
-        await post_message(
-            client,
-            reply_to,
-            f"Failed to create {mux.name} session `{session_name}` on `{host}`.",
-            thread_ts=thread_ts,
-        )
-        return
-
-    # Set marker so thread-sync.sh skips this session (bridge handles the thread)
-    if mux.supports_environment:
-        marker_cmd = mux.set_environment_cmd(safe_name, "AILY_BRIDGE_MANAGED", "1")
-        await asyncio.to_thread(run_ssh, host, marker_cmd)
-
-    # Launch agent in session (if configured)
-    agent_cmd = _build_agent_command(NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL)
-    agent_label = ""
-    if agent_cmd:
-        # Small delay for shell initialization
-        await asyncio.sleep(0.5)
-        launched = await asyncio.to_thread(send_to_tmux, host, session_name, agent_cmd)
-        if launched:
-            agent_label = f" | agent: `{agent_cmd}`"
-        else:
-            agent_label = f" | failed to launch `{agent_cmd}`"
-
-    # Create Slack thread
-    cwd_label = f" in `{working_dir}`" if working_dir else ""
-    thread_name = format_thread_name(session_name, host)
-    new_ts = await ensure_thread(
-        client, thread_name, f"tmux session: *{thread_name}* (`{host}`{cwd_label})"
-    )
-
-    if new_ts:
-        await post_message(
-            client, CHANNEL_ID, f"Session `{session_name}` created on `{host}`{cwd_label}.{agent_label}", thread_ts=new_ts
-        )
-        await post_message(
-            client,
-            reply_to,
-            f"Created `{session_name}` on `{host}`{cwd_label} + thread{agent_label}",
-            thread_ts=thread_ts,
-        )
-    else:
-        await post_message(
-            client,
-            reply_to,
-            f"Created tmux `{session_name}` on `{host}`{cwd_label} but failed to create thread.{agent_label}",
-            thread_ts=thread_ts,
-        )
-
-
-async def cmd_kill(
-    client: AsyncWebClient,
-    reply_to: str,
-    parts: list[str],
-    thread_ts: str = None,
-):
-    """!kill <session_name> — kill tmux session + archive Slack thread."""
-    if len(parts) < 2:
-        await post_message(
-            client,
-            reply_to,
-            "Usage: `!kill <session_name>`",
-            thread_ts=thread_ts,
-        )
-        return
-
-    session_name = parts[1]
-
-    if not is_valid_session_name(session_name):
-        await post_message(
-            client,
-            reply_to,
-            "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).",
-            thread_ts=thread_ts,
-        )
-        return
-
-    # Kill multiplexer session
-    mux = _mux
-    host = await asyncio.to_thread(find_session_host, session_name)
-    session_killed = False
-    if host:
-        safe_name = shlex.quote(session_name)
-        rc, _ = await asyncio.to_thread(
-            run_ssh, host, mux.kill_session_cmd(safe_name)
-        )
-        session_killed = rc == 0
-
-    # Clean up Slack thread
-    thread_name = format_thread_name(session_name, host or DEFAULT_HOST)
-    ts = await find_thread_ts(client, thread_name)
-    thread_cleaned = False
-    cleanup_action = "archived"
-    if ts:
-        if THREAD_CLEANUP == "delete":
-            await delete_thread(client, ts)
-            thread_cleaned = True
-            cleanup_action = "deleted"
-        else:
-            await post_message(
-                client, CHANNEL_ID,
-                f"Session `{session_name}` killed. Archiving thread.", thread_ts=ts,
+        Returns thread_ts (Slack's thread identifier) or None.
+        """
+        try:
+            result = await self._client.conversations_history(
+                channel=self._channel_id, limit=200
             )
-            await archive_thread(client, ts)
-            thread_cleaned = True
-            cleanup_action = "archived"
-        # Clear cache
-        async with _thread_cache_lock:
-            _thread_cache.pop(ts, None)
+            for msg in result.get("messages", []):
+                text = msg.get("text", "")
+                first_line = text.split("\n")[0].strip()
+                if first_line == thread_name or text.startswith(thread_name):
+                    return msg["ts"]
+        except Exception as e:
+            print(f"[slack-bridge] find_thread error: {e}", file=sys.stderr)
+        return None
 
-    # Report
-    status = []
-    if session_killed:
-        status.append(f"Killed `{session_name}` on `{host}`")
-    elif host:
-        status.append(f"Failed to kill `{session_name}` on `{host}`")
-    else:
-        status.append(f"`{session_name}` not found")
-    if thread_cleaned:
-        status.append(f"{cleanup_action} thread")
-    else:
-        status.append("no thread found")
-
-    await post_message(client, reply_to, " / ".join(status), thread_ts=thread_ts)
-
-    # Emit dashboard event for session lifecycle tracking
-    _fire_dashboard_event({
-        "type": "session.killed",
-        "session_name": session_name,
-        "platform": "slack",
-        "host": host or "",
-        "session_killed": session_killed,
-        "thread_cleanup": cleanup_action if thread_cleaned else "none",
-        "timestamp": _now_iso(),
-    })
-
-
-async def cmd_sessions(
-    client: AsyncWebClient,
-    reply_to: str,
-    thread_ts: str = None,
-):
-    """!sessions — list all sessions with thread sync status."""
-    mux = _mux
-    # Gather sessions from all hosts
-    all_sessions: dict[str, str] = {}
-    for host in SSH_HOSTS:
-        rc, out = await asyncio.to_thread(
-            run_ssh,
-            host,
-            f"{mux.list_sessions_cmd()} 2>/dev/null || true",
-        )
-        if rc == 0 and out:
-            for name in out.strip().split("\n"):
-                name = name.strip()
-                if name and name not in _INFRA_SESSIONS:
-                    if name in all_sessions:
-                        all_sessions[name] += f", {host}"
-                    else:
-                        all_sessions[name] = host
-
-    # Gather active Slack threads (search channel messages for [agent] prefix)
-    active_threads: set[str] = set()
-    try:
-        result = await client.conversations_history(channel=CHANNEL_ID, limit=200)
-        for msg in result.get("messages", []):
-            text = msg.get("text", "")
-            first_line = text.split("\n")[0].strip()
-            session = parse_thread_name(first_line)
-            if session:
-                # Skip archived threads (those with :lock: reaction)
-                reactions = msg.get("reactions", [])
-                is_locked = any(r.get("name") == "lock" for r in reactions)
-                if not is_locked:
-                    active_threads.add(session)
-    except Exception as e:
-        print(f"[slack-bridge] sessions thread scan error: {e}", file=sys.stderr)
-
-    if not all_sessions and not active_threads:
-        await post_message(
-            client, reply_to, "No sessions found.", thread_ts=thread_ts
-        )
-        return
-
-    all_names = sorted(set(all_sessions.keys()) | active_threads)
-    lines = ["```"]
-    for name in all_names:
-        host = all_sessions.get(name, "---")
-        has_tmux = name in all_sessions
-        has_thread = name in active_threads
-
-        if has_tmux and has_thread:
-            sync = "synced"
-        elif has_tmux:
-            sync = "no thread"
-        else:
-            sync = "orphan thread"
-
-        lines.append(f"  {name:<20} {host:<24} {sync}")
-    lines.append("```")
-
-    await post_message(client, reply_to, "\n".join(lines), thread_ts=thread_ts)
-
-
-async def cmd_queue(
-    client: AsyncWebClient,
-    reply_to: str,
-    parts: list[str],
-    thread_ts: str = None,
-):
-    """!queue [add <session> <command> | execute] — manage deferred command queue."""
-    subcmd = parts[1].lower() if len(parts) > 1 else ""
-
-    if subcmd == "add":
-        if len(parts) < 4:
-            await post_message(
-                client, reply_to,
-                "Usage: `!queue add <session_name> <command>`",
-                thread_ts=thread_ts,
+    async def create_thread(self, thread_name: str, starter_msg: str) -> str | None:
+        """Create a new thread: post parent message, then welcome reply."""
+        try:
+            result = await self._client.chat_postMessage(
+                channel=self._channel_id, text=starter_msg
             )
-            return
-        session_name = parts[2]
-        if not is_valid_session_name(session_name):
-            await post_message(
-                client, reply_to,
-                "Invalid session name. Use only `a-z A-Z 0-9 _ -` (max 64 chars).",
-                thread_ts=thread_ts,
+            parent_ts = result.get("ts")
+            if not parent_ts:
+                return None
+
+            session_name = parse_thread_name(thread_name) or thread_name
+            welcome = (
+                f"*Welcome to {thread_name}*\n\n"
+                "Type a message here to forward it to the session.\n\n"
+                "*Commands:*\n"
+                "`!sessions` \u2014 list all sessions\n"
+                f"`!kill {session_name}` \u2014 kill this session + close thread\n"
+                "`!c` `!d` `!z` `!q` `!esc` `!enter` \u2014 keyboard shortcuts"
             )
-            return
-        command = " ".join(parts[3:])
-        result = await dashboard_api("POST", "/api/usage/queue", {
-            "session_name": session_name,
-            "command": command,
-        })
-        if result:
-            cmd_id = result.get("command", {}).get("id", "?")
-            await post_message(
-                client, reply_to,
-                f"Queued command #{cmd_id} for `{session_name}`: `{command}`",
-                thread_ts=thread_ts,
+            await self._client.chat_postMessage(
+                channel=self._channel_id, thread_ts=parent_ts, text=welcome
             )
-        else:
-            await post_message(
-                client, reply_to,
-                "Failed to queue command. Is the usage monitor enabled?",
-                thread_ts=thread_ts,
+            return parent_ts
+        except Exception as e:
+            print(f"[slack-bridge] create_thread error: {e}", file=sys.stderr)
+            return None
+
+    async def ensure_thread(self, thread_name: str, starter_msg: str | None = None) -> str | None:
+        """Find or create a thread."""
+        ts = await self.find_thread(thread_name)
+        if ts:
+            return ts
+        if starter_msg is None:
+            starter_msg = f"session: *{thread_name}*"
+        return await self.create_thread(thread_name, starter_msg)
+
+    async def archive_thread(self, thread_id: str) -> None:
+        """Archive a thread (post closing message + :lock: reaction)."""
+        try:
+            await self._client.chat_postMessage(
+                channel=self._channel_id,
+                thread_ts=thread_id,
+                text=":lock: Thread archived. Session closed.",
             )
-
-    elif subcmd == "execute":
-        result = await dashboard_api("POST", "/api/usage/queue/execute")
-        if result:
-            count = result.get("executed", 0)
-            await post_message(
-                client, reply_to,
-                f"Executed {count} pending command(s).",
-                thread_ts=thread_ts,
+            await self._client.reactions_add(
+                channel=self._channel_id, timestamp=thread_id, name="lock"
             )
-        else:
-            await post_message(
-                client, reply_to,
-                "Failed to execute queue. Is the usage monitor enabled?",
-                thread_ts=thread_ts,
+        except Exception as e:
+            print(f"[slack-bridge] archive_thread error: {e}", file=sys.stderr)
+
+    async def delete_thread(self, thread_id: str) -> None:
+        """Delete a thread by deleting the parent message."""
+        try:
+            await self._client.chat_delete(
+                channel=self._channel_id, ts=thread_id
             )
+        except Exception as e:
+            print(f"[slack-bridge] delete_thread error: {e}", file=sys.stderr)
 
-    else:
-        # List pending commands
-        result = await dashboard_api("GET", "/api/usage/queue?status=pending")
-        if not result:
-            await post_message(
-                client, reply_to,
-                "Dashboard unavailable or usage monitor not enabled.",
-                thread_ts=thread_ts,
+    async def get_active_thread_sessions(self) -> set[str]:
+        """Scan channel for active [agent] threads (not archived)."""
+        active: set[str] = set()
+        try:
+            result = await self._client.conversations_history(
+                channel=self._channel_id, limit=200
             )
-            return
+            for msg in result.get("messages", []):
+                text = msg.get("text", "")
+                first_line = text.split("\n")[0].strip()
+                session = parse_thread_name(first_line)
+                if session:
+                    reactions = msg.get("reactions", [])
+                    is_locked = any(r.get("name") == "lock" for r in reactions)
+                    if not is_locked:
+                        active.add(session)
+        except Exception as e:
+            print(f"[slack-bridge] thread scan error: {e}", file=sys.stderr)
+        return active
 
-        commands = result.get("commands", [])
-        total = result.get("total", 0)
-        if total == 0:
-            await post_message(
-                client, reply_to,
-                "No pending commands in queue.",
-                thread_ts=thread_ts,
+    # -- Thread cache (Slack-specific: maps thread_ts -> session_name) -----
+
+    async def _cache_thread(self, thread_ts: str, session_name: str) -> None:
+        """Add entry to thread cache with LRU eviction."""
+        async with self._thread_cache_lock:
+            self._thread_cache[thread_ts] = session_name
+            while len(self._thread_cache) > self._THREAD_CACHE_MAX:
+                self._thread_cache.popitem(last=False)
+
+    async def get_thread_session(self, channel: str, thread_ts: str) -> str | None:
+        """Get session name from a thread's parent message. Uses cache."""
+        async with self._thread_cache_lock:
+            if thread_ts in self._thread_cache:
+                self._thread_cache.move_to_end(thread_ts)
+                return self._thread_cache[thread_ts]
+
+        try:
+            result = await self._client.conversations_replies(
+                channel=channel, ts=thread_ts, limit=1
             )
-            return
+            messages = result.get("messages", [])
+            if not messages:
+                return None
+            parent_text = messages[0].get("text", "")
+        except Exception:
+            return None
 
-        lines = [f"*Command Queue* ({total} pending)", "```"]
-        lines.append(f"  {'ID':<6} {'SESSION':<20} {'HOST':<12} COMMAND")
-        for cmd in commands[:15]:
-            lines.append(
-                f"  {cmd.get('id', '?'):<6} {cmd.get('session_name', '?'):<20} "
-                f"{cmd.get('host', '?'):<12} {cmd.get('command', '?')}"
-            )
-        if total > 15:
-            lines.append(f"  ... and {total - 15} more")
-        lines.append("```")
-        await post_message(
-            client, reply_to, "\n".join(lines), thread_ts=thread_ts
-        )
+        first_line = parent_text.split("\n")[0].strip()
+        session_name = parse_thread_name(first_line)
+        if session_name:
+            await self._cache_thread(thread_ts, session_name)
+            return session_name
+        return None
 
-async def cmd_limit_queue(
-    client: AsyncWebClient,
-    reply_to: str,
-    parts: list[str],
-    thread_ts: str = None,
-):
-    """!lq [clear|retry|status] — manage session limit retry queue."""
-    subcmd = parts[1].lower() if len(parts) > 1 else ""
-
-    if subcmd == "clear":
-        result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=slack")
-        if not result:
-            await post_message(client, reply_to, "Dashboard unavailable.", thread_ts=thread_ts)
-            return
-        items = result.get("items", [])
-        if not items:
-            await post_message(client, reply_to, "No pending items in limit queue.", thread_ts=thread_ts)
-            return
-        cleared = 0
-        for item in items:
-            await dashboard_api("DELETE", f"/api/session-queue/{item['id']}")
-            cleared += 1
-        await post_message(client, reply_to,
-            f"Cleared {cleared} pending item(s) from limit queue.", thread_ts=thread_ts)
-
-    elif subcmd == "retry":
-        result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=slack")
-        if not result:
-            await post_message(client, reply_to, "Dashboard unavailable.", thread_ts=thread_ts)
-            return
-        items = result.get("items", [])
-        if not items:
-            await post_message(client, reply_to, "No pending items to retry.", thread_ts=thread_ts)
-            return
-        now = _now_iso()
-        for item in items:
-            await dashboard_api("PATCH", f"/api/session-queue/{item['id']}", {
-                "next_retry_at": now,
-            })
-        await post_message(client, reply_to,
-            f"Forced immediate retry for {len(items)} item(s). Will process within 60s.",
-            thread_ts=thread_ts)
-
-    elif subcmd == "status":
-        result = await dashboard_api("GET", "/api/session-queue/stats")
-        if not result:
-            await post_message(client, reply_to, "Dashboard unavailable.", thread_ts=thread_ts)
-            return
-        stats = result.get("stats", {})
-        total = result.get("total", 0)
-        lines = [f"*Session Limit Queue* (total: {total})"]
-        for status, count in sorted(stats.items()):
-            lines.append(f"  {status}: {count}")
-
-        pending_result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=slack&limit=5")
-        if pending_result:
-            pending_items = pending_result.get("items", [])
-            if pending_items:
-                lines.append("\n*Pending items:*")
-                for item in pending_items:
-                    lines.append(
-                        f"  #{item.get('id')} `{item.get('session_name')}` "
-                        f"retry {item.get('retry_count')}/{item.get('max_retries')} "
-                        f"next: {item.get('next_retry_at', '?')[:19]}"
-                    )
-        await post_message(client, reply_to, "\n".join(lines), thread_ts=thread_ts)
-
-    else:
-        result = await dashboard_api("GET", "/api/session-queue?status=pending&platform=slack")
-        if not result:
-            await post_message(client, reply_to,
-                "Dashboard unavailable or session queue not enabled.", thread_ts=thread_ts)
-            return
-
-        items = result.get("items", [])
-        total = result.get("total", 0)
-        if total == 0:
-            await post_message(client, reply_to,
-                "No pending items in session limit queue.", thread_ts=thread_ts)
-            return
-
-        lines = [f"*Session Limit Queue* ({total} pending)", "```"]
-        lines.append(f"  {'ID':<6} {'SESSION':<20} {'RETRY':<10} NEXT RETRY")
-        for item in items[:15]:
-            retry = f"{item.get('retry_count', 0)}/{item.get('max_retries', '?')}"
-            next_at = item.get('next_retry_at', '?')[:19]
-            lines.append(
-                f"  {item.get('id', '?'):<6} {item.get('session_name', '?'):<20} "
-                f"{retry:<10} {next_at}"
-            )
-        if total > 15:
-            lines.append(f"  ... and {total - 15} more")
-        lines.append("```")
-        lines.append("Use `!lq clear` to cancel all, `!lq retry` to force immediate retry, `!lq status` for details.")
-        await post_message(client, reply_to, "\n".join(lines), thread_ts=thread_ts)
+    async def invalidate_thread_cache(self, thread_id: str) -> None:
+        """Remove a thread from the cache (called by core on !kill)."""
+        async with self._thread_cache_lock:
+            self._thread_cache.pop(thread_id, None)
 
 
-# --- Shell output capture ---
-
-
-async def _capture_and_post_output(
-    client: AsyncWebClient,
-    channel: str, thread_ts: str,
-    host: str, session: str,
-    pre_content: str,
-):
-    """Background task: capture shell output and post to Slack thread.
-
-    Skips capture if a non-shell process (e.g., Claude Code) is running.
-    pre_content must be captured BEFORE send_to_tmux to avoid missing
-    fast command output.
-    """
-    try:
-        output = await asyncio.to_thread(
-            capture_shell_output, host, session, pre_content
-        )
-
-        if output is None:
-            # Non-shell process (Claude Code etc.) — its own hooks handle output
-            return
-        if not output.strip():
-            return
-
-        output = _redact_secrets(output)
-        output = _sanitize_backticks(output)
-
-        if len(output) > 3600:
-            output = output[:3600] + "\n...(truncated)"
-
-        safe_name = session.replace('`', "'")
-        await post_message(client, channel,
-            f"Shell output from `{safe_name}`:\n```\n{output}\n```", thread_ts=thread_ts)
-
-    except Exception as e:
-        print(f"[slack-bridge] output capture error: {e}", file=sys.stderr)
-
-# --- Socket Mode event handler ---
-
+# ---------------------------------------------------------------------------
+# Socket Mode event handler
+# ---------------------------------------------------------------------------
 
 async def handle_socket_event(
-    client: SocketModeClient, req: SocketModeRequest
-):
+    core: BridgeCore,
+    platform: SlackPlatform,
+    bot_user_id: str,
+    socket_client: SocketModeClient,
+    req: SocketModeRequest,
+) -> None:
     """Handle incoming Socket Mode events."""
     # Acknowledge immediately
     response = SocketModeResponse(envelope_id=req.envelope_id)
-    await client.send_socket_mode_response(response)
+    await socket_client.send_socket_mode_response(response)
 
     if req.type != "events_api":
         return
@@ -1260,15 +231,15 @@ async def handle_socket_event(
     event = req.payload.get("event", {})
     if event.get("type") != "message":
         return
-    if event.get("subtype"):  # Ignore edits, deletes, bot messages, etc.
+    if event.get("subtype"):
         return
-    if event.get("bot_id"):  # Ignore bot messages
+    if event.get("bot_id"):
         return
-    if event.get("user") == BOT_USER_ID:  # Ignore our own messages
+    if event.get("user") == bot_user_id:
         return
 
     channel = event.get("channel", "")
-    thread_ts = event.get("thread_ts")  # None if not in a thread
+    thread_ts = event.get("thread_ts")
     text = event.get("text", "").strip()
 
     if not text:
@@ -1276,91 +247,50 @@ async def handle_socket_event(
 
     # Handle ! commands (in channel or thread)
     if text.startswith("!"):
-        print(f"[slack-bridge] command: {text[:80]}")
-        await handle_command(client.web_client, channel, text, thread_ts)
-        return
+        # Check if it's a shortcut in a thread -- route to relay
+        is_shortcut = text.lower() in core.SHORTCUTS
+        if is_shortcut and thread_ts:
+            # Fall through to thread message handling below
+            pass
+        else:
+            print(f"[slack-bridge] command: {text[:80]}")
+            await core.handle_command(channel, text, thread_ts=thread_ts)
+            return
 
     # Only forward messages that are in threads
     if not thread_ts:
         return
 
     # Check if the parent message matches [agent] pattern
-    session_name = await get_thread_session(client.web_client, channel, thread_ts)
+    session_name = await platform.get_thread_session(channel, thread_ts)
     if not session_name:
         return
 
     user_id = event.get("user", "unknown")
+    source_id = event.get("client_msg_id", event.get("ts", ""))
+
     print(f"[slack-bridge] {user_id} -> [{session_name}]: ({len(text)} chars)")
 
-    host = await asyncio.to_thread(find_session_host, session_name)
-    if not host:
-        await post_message(
-            client.web_client,
-            channel,
-            f"Session `{session_name}` not found on any host.\n"
-            f"Available hosts: {', '.join(SSH_HOSTS)}",
-            thread_ts=thread_ts,
-        )
-        return
-
-    await post_message(
-        client.web_client,
-        channel,
-        f"Forwarding to `{session_name}` on `{host}`...",
+    await core.relay_message(
+        channel_id=channel,
+        session_name=session_name,
+        user_message=text,
+        user_name=user_id,
+        source_id=source_id,
         thread_ts=thread_ts,
     )
 
-    # Emit dashboard event: user message relayed to tmux
-    _fire_dashboard_event({
-        "type": "message.relayed",
-        "session_name": session_name,
-        "platform": "slack",
-        "content": text,
-        "role": "user",
-        "source_id": event.get("client_msg_id", event.get("ts", "")),
-        "source_author": user_id,
-        "timestamp": _now_iso(),
-    })
 
-    # Capture pane BEFORE sending — critical for catching fast command output
-    pre_content = await asyncio.to_thread(capture_pane_content, host, session_name)
-
-    sent = await asyncio.to_thread(send_to_tmux, host, session_name, text)
-    if sent:
-        _track_task(
-            _capture_and_post_output(
-                client.web_client, channel, thread_ts,
-                host, session_name, pre_content
-            )
-        )
-        # Session limit detection (runs in background)
-        if SESSION_QUEUE_ENABLED:
-            _track_task(
-                _detect_session_limit_after_send(
-                    client.web_client, channel, thread_ts,
-                    host, session_name, pre_content, text,
-                    user_name=user_id,
-                    source_msg_id=event.get("client_msg_id", event.get("ts", "")),
-                )
-            )
-    else:
-        await post_message(
-            client.web_client, channel,
-            f"Failed to send to `{session_name}` on `{host}`. The session may have exited.",
-            thread_ts=thread_ts,
-        )
-
-
-# --- Main ---
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 async def main():
-    global CHANNEL_ID, SSH_HOSTS, DEFAULT_HOST, BOT_USER_ID, THREAD_CLEANUP
-    global DASHBOARD_URL, DASHBOARD_AUTH_TOKEN, _dashboard_http
-    global NEW_SESSION_AGENT, CLAUDE_REMOTE_CONTROL, THREAD_NAME_FORMAT, _mux
-    global SESSION_QUEUE_ENABLED, SESSION_QUEUE_RETRY_INTERVAL, SESSION_QUEUE_MAX_RETRIES, SESSION_QUEUE_DETECT_DELAY
+    import os
+    import aiohttp
 
-    _xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+    _xdg_config = os.environ.get("XDG_CONFIG_HOME",
+                                  os.path.expanduser("~/.config"))
     _default_path = os.path.join(_xdg_config, "aily", "env")
     env_path = os.environ.get("AGENT_BRIDGE_ENV", _default_path)
 
@@ -1369,45 +299,11 @@ async def main():
         sys.exit(1)
 
     env = load_env(env_path)
+
+    # Slack-specific tokens
     bot_token = env.get("SLACK_BOT_TOKEN")
     app_token = env.get("SLACK_APP_TOKEN")
-    CHANNEL_ID = env.get("SLACK_CHANNEL_ID", "")
-
-    # Dashboard URL from env var (K8s) or config file
-    if not DASHBOARD_URL:
-        DASHBOARD_URL = env.get("AILY_DASHBOARD_URL", "")
-    if not DASHBOARD_AUTH_TOKEN:
-        DASHBOARD_AUTH_TOKEN = env.get("AILY_AUTH_TOKEN", "")
-
-    # SSH hosts from env (comma-separated) or defaults
-    hosts_str = env.get("SSH_HOSTS", "")
-    if hosts_str:
-        SSH_HOSTS = [h.strip() for h in hosts_str.split(",") if h.strip()]
-    else:
-        SSH_HOSTS = ["localhost"]
-    DEFAULT_HOST = SSH_HOSTS[0] if SSH_HOSTS else ""
-
-    # Thread cleanup mode: "archive" (default) or "delete"
-    THREAD_CLEANUP = env.get("THREAD_CLEANUP", "archive").lower()
-    if THREAD_CLEANUP not in ("archive", "delete"):
-        THREAD_CLEANUP = "archive"
-
-    # Thread name format
-    THREAD_NAME_FORMAT = env.get("THREAD_NAME_FORMAT", "[agent] {session} - {host}")
-
-    # Agent auto-launch on !new
-    NEW_SESSION_AGENT = env.get("NEW_SESSION_AGENT", "").lower().strip()
-    CLAUDE_REMOTE_CONTROL = env.get("CLAUDE_REMOTE_CONTROL", "false").lower() == "true"
-
-    # Initialize multiplexer backend (env var or config file, then auto-detect)
-    mux_type = env.get("AILY_MULTIPLEXER", "") or None
-    _mux = get_backend(mux_type)
-
-    # Session limit queue config
-    SESSION_QUEUE_ENABLED = os.getenv("AILY_SESSION_QUEUE_ENABLED", env.get("AILY_SESSION_QUEUE_ENABLED", "true")).lower() == "true"
-    SESSION_QUEUE_RETRY_INTERVAL = int(os.getenv("AILY_SESSION_QUEUE_RETRY_INTERVAL", env.get("AILY_SESSION_QUEUE_RETRY_INTERVAL", "1800")))
-    SESSION_QUEUE_MAX_RETRIES = int(os.getenv("AILY_SESSION_QUEUE_MAX_RETRIES", env.get("AILY_SESSION_QUEUE_MAX_RETRIES", "12")))
-    SESSION_QUEUE_DETECT_DELAY = int(os.getenv("AILY_SESSION_QUEUE_DETECT_DELAY", env.get("AILY_SESSION_QUEUE_DETECT_DELAY", "15")))
+    channel_id = env.get("SLACK_CHANNEL_ID", "")
 
     if not bot_token:
         print("SLACK_BOT_TOKEN not set", file=sys.stderr)
@@ -1415,76 +311,95 @@ async def main():
     if not app_token:
         print("SLACK_APP_TOKEN not set (required for Socket Mode)", file=sys.stderr)
         sys.exit(1)
-    if not CHANNEL_ID:
+    if not channel_id:
         print("SLACK_CHANNEL_ID not set", file=sys.stderr)
         sys.exit(1)
 
+    # Build shared state from common config
+    state = BridgeCore.load_common_config(env)
+
+    # Create Slack platform + core
     web_client = AsyncWebClient(token=bot_token)
+    platform = SlackPlatform(web_client, channel_id)
+    core = BridgeCore(state, platform)
 
     # Get bot user info
     auth = await web_client.auth_test()
-    BOT_USER_ID = auth.get("user_id", "")
-    print(f"[slack-bridge] Connected as {auth.get('user', '')} ({BOT_USER_ID})")
-    print(f"[slack-bridge] Multiplexer: {_mux.name}")
-    print(f"[slack-bridge] Channel: {CHANNEL_ID}")
-    print(f"[slack-bridge] SSH hosts: {SSH_HOSTS}")
-    print(f"[slack-bridge] Thread format: '{THREAD_NAME_FORMAT}'")
-    print(f"[slack-bridge] Thread cleanup: {THREAD_CLEANUP}")
-    if NEW_SESSION_AGENT:
-        rc_label = " + remote-control" if NEW_SESSION_AGENT == "claude" and CLAUDE_REMOTE_CONTROL else ""
-        print(f"[slack-bridge] Auto-launch agent: {NEW_SESSION_AGENT}{rc_label}")
-    if DASHBOARD_URL:
-        print(f"[slack-bridge] Dashboard: {DASHBOARD_URL}")
+    bot_user_id = auth.get("user_id", "")
+
+    # Print startup info
+    print(f"[slack-bridge] Connected as {auth.get('user', '')} ({bot_user_id})")
+    print(f"[slack-bridge] Multiplexer: {state.mux.name}")
+    print(f"[slack-bridge] Channel: {channel_id}")
+    print(f"[slack-bridge] SSH hosts: {state.ssh_hosts}")
+    print(f"[slack-bridge] Thread format: '{state.thread_name_format}'")
+    print(f"[slack-bridge] Thread cleanup: {state.thread_cleanup}")
+    if state.new_session_agent:
+        rc_label = (" + remote-control"
+                     if state.new_session_agent == "claude"
+                     and state.claude_remote_control else "")
+        print(f"[slack-bridge] Auto-launch agent: {state.new_session_agent}{rc_label}")
+    if state.dashboard_url:
+        print(f"[slack-bridge] Dashboard: {state.dashboard_url}")
     else:
         print("[slack-bridge] Dashboard: not configured (AILY_DASHBOARD_URL not set)")
-    if SESSION_QUEUE_ENABLED:
-        print(f"[slack-bridge] Session limit queue: enabled (interval={SESSION_QUEUE_RETRY_INTERVAL}s, max_retries={SESSION_QUEUE_MAX_RETRIES}, detect_delay={SESSION_QUEUE_DETECT_DELAY}s)")
+    if state.session_queue_enabled:
+        print(f"[slack-bridge] Session limit queue: enabled "
+              f"(interval={state.session_queue_retry_interval}s, "
+              f"max_retries={state.session_queue_max_retries}, "
+              f"detect_delay={state.session_queue_detect_delay}s)")
     else:
         print("[slack-bridge] Session limit queue: disabled")
 
-    # Create a shared aiohttp session for dashboard POSTs
-    _dashboard_http = aiohttp.ClientSession()
+    # Initialize dashboard HTTP session
+    dashboard_http = aiohttp.ClientSession()
+    state.dashboard_http = dashboard_http
 
-    # Announce commands on first connect
-    global _announced
-
+    announced = False
     reconnect_delay = 5
     max_delay = 300  # 5 minutes cap
     consecutive_failures = 0
 
     # Start session limit retry loop if enabled
     retry_task = None
-    if SESSION_QUEUE_ENABLED and DASHBOARD_URL:
-        retry_task = asyncio.create_task(
-            _session_limit_retry_loop(web_client)
-        )
+    if state.session_queue_enabled and state.dashboard_url:
+        retry_task = asyncio.create_task(core.session_limit_retry_loop())
         print("[slack-bridge] Session limit retry loop started")
 
     try:
         while True:
             socket_client = None
             try:
-                socket_client = SocketModeClient(app_token=app_token, web_client=web_client)
-                socket_client.socket_mode_request_listeners.append(handle_socket_event)
+                socket_client = SocketModeClient(
+                    app_token=app_token, web_client=web_client
+                )
+
+                # Bind event handler with closure over core/platform/bot_user_id
+                async def _handler(client, req):
+                    await handle_socket_event(core, platform, bot_user_id, client, req)
+
+                socket_client.socket_mode_request_listeners.append(_handler)
 
                 print("[slack-bridge] Starting Socket Mode connection...")
                 await socket_client.connect()
                 consecutive_failures = 0
                 reconnect_delay = 5
 
-                if not _announced:
-                    _announced = True
+                if not announced:
+                    announced = True
                     lines = [
                         "*aily bridge connected*",
                         "Available commands:",
-                        "- `!new <name> [host] [pwd]` — create tmux session",
-                        "- `!kill <name>` — kill tmux session",
-                        "- `!sessions` — list active sessions",
-                        "- `!queue` — list / add / execute deferred commands",
-                        f"Hosts: `{'`, `'.join(SSH_HOSTS)}`",
+                        "- `!new <name> [host|dir] [dir] [-- cmd]` \u2014 create tmux session",
+                        "- `!kill <name>` \u2014 kill tmux session",
+                        "- `!sessions` \u2014 list active sessions",
+                        "- `!queue` \u2014 list / add / execute deferred commands",
+                        "- `!lq` \u2014 session limit queue",
+                        "`!c` `!d` `!z` `!q` `!esc` `!enter` \u2014 keyboard shortcuts",
+                        f"Hosts: `{'`, `'.join(core.state.ssh_hosts)}`",
                     ]
                     # Append live usage status if dashboard is reachable
-                    usage = await dashboard_api("GET", "/api/usage")
+                    usage = await core.dashboard_api("GET", "/api/usage")
                     if usage and usage.get("usage"):
                         lines.append("")
                         lines.append("*API Usage*")
@@ -1503,7 +418,7 @@ async def main():
                         pending = qs.get("pending", 0)
                         if pending:
                             lines.append(f"Queued commands: *{pending}* pending")
-                    await post_message(web_client, CHANNEL_ID, "\n".join(lines))
+                    await platform.post_message(channel_id, "\n".join(lines))
 
                 # Keep alive
                 while True:
@@ -1512,9 +427,14 @@ async def main():
                 break
             except Exception as e:
                 consecutive_failures += 1
-                print(f"[slack-bridge] Connection error (attempt {consecutive_failures}): {e}, reconnecting in {reconnect_delay}s...", file=sys.stderr)
+                print(
+                    f"[slack-bridge] Connection error (attempt {consecutive_failures}): "
+                    f"{e}, reconnecting in {reconnect_delay}s...",
+                    file=sys.stderr,
+                )
                 if consecutive_failures >= 50:
-                    print("[slack-bridge] Too many consecutive failures, exiting.", file=sys.stderr)
+                    print("[slack-bridge] Too many consecutive failures, exiting.",
+                          file=sys.stderr)
                     break
             finally:
                 if socket_client is not None:
@@ -1531,7 +451,7 @@ async def main():
                 await retry_task
             except asyncio.CancelledError:
                 pass
-        await _dashboard_http.close()
+        await dashboard_http.close()
 
 
 if __name__ == "__main__":
