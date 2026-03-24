@@ -213,11 +213,25 @@ class DiscordPlatform(PlatformBridge):
 
 # --- Message handler ---
 
+_recent_msg_ids: set[str] = set()
+_recent_msg_ids_max = 200
+
 async def handle_message(
     core: BridgeCore, platform: DiscordPlatform,
     bot_user_id: str, message: dict[str, Any],
 ):
     """Handle a Discord MESSAGE_CREATE -- route to core.handle_command() or relay."""
+    # Deduplicate: Discord gateway may deliver the same event twice
+    msg_id = message.get("id", "")
+    if msg_id in _recent_msg_ids:
+        return
+    _recent_msg_ids.add(msg_id)
+    if len(_recent_msg_ids) > _recent_msg_ids_max:
+        # Evict oldest entries (set is unordered, but this keeps size bounded)
+        excess = len(_recent_msg_ids) - _recent_msg_ids_max
+        for _ in range(excess):
+            _recent_msg_ids.pop()
+
     author = message.get("author", {})
     if author.get("id") == bot_user_id or author.get("bot"):
         return
