@@ -1002,7 +1002,13 @@ class BridgeCore:
         # Create multiplexer session
         mux = state.mux
         safe_name = shlex.quote(session_name)
-        safe_dir = shlex.quote(working_dir) if working_dir else None
+        # Expand leading ~ to $HOME before quoting (tilde won't expand inside quotes)
+        if working_dir and working_dir.startswith("~/"):
+            safe_dir = '"$HOME"/' + shlex.quote(working_dir[2:])
+        elif working_dir and working_dir == "~":
+            safe_dir = '"$HOME"'
+        else:
+            safe_dir = shlex.quote(working_dir) if working_dir else None
         create_cmd = mux.new_session_cmd(safe_name, safe_dir)
         rc, _ = await asyncio.to_thread(self.run_ssh, host, create_cmd)
         if rc != 0:

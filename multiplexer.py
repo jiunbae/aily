@@ -248,12 +248,12 @@ class ZellijBackend(Multiplexer):
 
     def new_session_cmd(self, name: str, working_dir: Optional[str] = None) -> str:
         # Zellij doesn't have a clean detached session creation like tmux.
-        # Background the process, then verify it started.
+        # Use nohup to handle missing TTY (e.g. non-interactive SSH).
         # name and working_dir should be pre-quoted by the caller
         if working_dir:
-            launch = f"cd {working_dir} && zellij -s {name} &>/dev/null &"
+            launch = f"cd {working_dir} && nohup zellij -s {name} &>/dev/null &"
         else:
-            launch = f"zellij -s {name} &>/dev/null &"
+            launch = f"nohup zellij -s {name} &>/dev/null &"
         # Verify session actually started (background launch always exits 0)
         verify = f'sleep 1 && _n={name} && zellij list-sessions 2>/dev/null | sed -e \'{self._STRIP_ANSI}\' | grep -qE "^$_n($| )"'
         return f"{launch} {verify}"
