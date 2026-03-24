@@ -399,18 +399,30 @@ class BridgeCore:
         if not last_content:
             return ""
 
-        # Diff: find new lines compared to pre_content
+        # Diff: find lines in post that weren't in pre.
+        # Use suffix matching to handle terminal scroll (lines shift up as
+        # new output appears, so prefix matching fails).
         pre_lines = pre_content.rstrip().split('\n') if pre_content.strip() else []
         post_lines = last_content.rstrip().split('\n') if last_content.strip() else []
 
-        common_len = 0
-        for i, (a, b) in enumerate(zip(pre_lines, post_lines)):
+        # Find longest common suffix between pre and post (the part of the
+        # screen that hasn't changed, anchored at the bottom).
+        # Then everything above that suffix in post but not in pre is new.
+        suffix_len = 0
+        for a, b in zip(reversed(pre_lines), reversed(post_lines)):
             if a == b:
-                common_len = i + 1
+                suffix_len += 1
             else:
                 break
 
-        new_lines = post_lines[common_len:]
+        # New lines = post lines that are above the common suffix,
+        # excluding lines that appeared in pre_lines.
+        if suffix_len > 0:
+            new_lines = post_lines[:len(post_lines) - suffix_len]
+        else:
+            # No common suffix: use set-based diff to find truly new lines
+            pre_set = set(pre_lines)
+            new_lines = [l for l in post_lines if l not in pre_set]
 
         # Strip prompt/decoration lines from both ends
         while new_lines and (
@@ -1002,9 +1014,10 @@ class BridgeCore:
         # Create multiplexer session
         mux = state.mux
         safe_name = shlex.quote(session_name)
-        # Expand leading ~ to $HOME before quoting (tilde won't expand inside quotes)
+        # For paths starting with ~, use "$HOME" prefix with double quotes
+        # so the shell expands it. _validate_path already ensures safety.
         if working_dir and working_dir.startswith("~/"):
-            safe_dir = '"$HOME"/' + shlex.quote(working_dir[2:])
+            safe_dir = '"$HOME/' + working_dir[2:] + '"'
         elif working_dir and working_dir == "~":
             safe_dir = '"$HOME"'
         else:
@@ -1029,7 +1042,8 @@ class BridgeCore:
         # Launch shell command or agent in session
         agent_label = ""
         if shell_cmd:
-            await asyncio.sleep(0.5)
+            delay = 3.0 if state.mux.name == "zellij" else 0.5
+            await asyncio.sleep(delay)
             launched = await asyncio.to_thread(
                 self.send_to_session, host, session_name, shell_cmd
             )
@@ -1042,7 +1056,9 @@ class BridgeCore:
                 state.new_session_agent, state.claude_remote_control
             )
             if agent_cmd:
-                await asyncio.sleep(0.5)
+                # Zellij needs more time for shell to be ready after session creation
+                delay = 3.0 if state.mux.name == "zellij" else 0.5
+                await asyncio.sleep(delay)
                 launched = await asyncio.to_thread(
                     self.send_to_session, host, session_name, agent_cmd
                 )

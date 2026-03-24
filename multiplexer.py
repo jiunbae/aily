@@ -201,7 +201,8 @@ class ZellijBackend(Multiplexer):
 
     @property
     def supports_detached_capture(self) -> bool:
-        return False
+        # zellij 0.40+ supports dump-screen on detached sessions
+        return True
 
     def send_keys_cmd(self, session: str, text: str) -> str:
         # session and text should be pre-quoted by the caller (shlex.quote)
