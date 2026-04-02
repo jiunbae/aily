@@ -12,12 +12,12 @@ shared work to BridgeCore.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import re
 import shlex
 import subprocess
-import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -47,6 +47,11 @@ _SECRET_PATTERNS = re.compile(
 )
 _PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
 
+# Pre-compiled regexes for prompt detection
+_ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*m')
+_PROMPT_INDICATOR_RE = re.compile(r'^\s*[\u276f$%>]\s*$')
+_CMD_ECHO_RE = re.compile(r'^[\u276f$%>]\s+\S')
+
 # Infrastructure sessions that should be hidden from session lists
 _INFRA_SESSIONS = {"aily-bridge", "slack-bridge", "aily-dashboard"}
 
@@ -64,6 +69,13 @@ _SHORTCUTS = {
 }
 
 _MAX_BACKGROUND_TASKS = 20
+
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=20, thread_name_prefix="bridge-ssh")
+
+
+async def run_in_executor(func, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_executor, func, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +202,7 @@ class BridgeCore:
         stripped = line.strip()
         if not stripped:
             return False
-        clean = re.sub(r'\x1b\[[0-9;]*m', '', stripped)
+        clean = _ANSI_ESCAPE_RE.sub('', stripped)
 
         # Lines containing many box-drawing chars -- prompt decorations
         decor_count = sum(1 for c in clean if c in '\u2500\u2550\u2501')
@@ -200,7 +212,7 @@ class BridgeCore:
         if clean.rstrip().endswith(('\u276f', '$ ', '% ', '> ', '$', '%', '>')):
             return True
         # Lines starting with prompt indicators
-        if re.match(r'^\s*[\u276f$%>]\s*$', clean):
+        if _PROMPT_INDICATOR_RE.match(clean):
             return True
         return False
 
@@ -256,28 +268,51 @@ class BridgeCore:
         except Exception as e:
             return 1, str(e)
 
+    def _check_host_for_session(self, host: str, session_name: str, safe_name: str) -> str | None:
+        """Check a single host for the given session. Returns host if found, else None."""
+        mux = self.state.mux
+        rc, out = self.run_ssh(
+            host, f"{mux.has_session_cmd(safe_name)} 2>/dev/null && echo found"
+        )
+        if rc == 0 and "found" in out:
+            # Verify it's not a prefix match against an infra session
+            _, exact = self.run_ssh(
+                host, f"{mux.list_sessions_cmd()} 2>/dev/null"
+            )
+            sessions = exact.splitlines()
+            if session_name in sessions:
+                return host
+            if any(
+                s.startswith(session_name) and s in _INFRA_SESSIONS
+                for s in sessions
+            ):
+                return None
+            return host
+        return None
+
     def find_session_host(self, session_name: str) -> str | None:
         """Find which SSH host has the multiplexer session."""
-        mux = self.state.mux
         safe_name = shlex.quote(session_name)
-        for host in self.state.ssh_hosts:
-            rc, out = self.run_ssh(
-                host, f"{mux.has_session_cmd(safe_name)} 2>/dev/null && echo found"
-            )
-            if rc == 0 and "found" in out:
-                # Verify it's not a prefix match against an infra session
-                _, exact = self.run_ssh(
-                    host, f"{mux.list_sessions_cmd()} 2>/dev/null"
-                )
-                sessions = exact.splitlines()
-                if session_name in sessions:
-                    return host
-                if any(
-                    s.startswith(session_name) and s in _INFRA_SESSIONS
-                    for s in sessions
-                ):
-                    continue
-                return host
+        # Single host: no need for parallelism
+        if len(self.state.ssh_hosts) <= 1:
+            for host in self.state.ssh_hosts:
+                result = self._check_host_for_session(host, session_name, safe_name)
+                if result:
+                    return result
+            return None
+        # Multiple hosts: check in parallel
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(self.state.ssh_hosts), 10),
+            thread_name_prefix="find-host",
+        ) as pool:
+            futures = {
+                pool.submit(self._check_host_for_session, host, session_name, safe_name): host
+                for host in self.state.ssh_hosts
+            }
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result:
+                    return result
         return None
 
     def send_keys_raw(self, host: str, session: str, keys: str) -> bool:
@@ -435,7 +470,7 @@ class BridgeCore:
             new_lines.pop(0)
 
         # Strip the command echo line (first line often repeats the sent command)
-        if new_lines and re.match(r'^[\u276f$%>]\s+\S', new_lines[0].strip()):
+        if new_lines and _CMD_ECHO_RE.match(new_lines[0].strip()):
             new_lines.pop(0)
 
         return '\n'.join(new_lines)
@@ -460,12 +495,9 @@ class BridgeCore:
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    print(
-                        f"[dashboard] POST {resp.status}: {body[:200]}",
-                        file=sys.stderr,
-                    )
+                    logging.warning("[dashboard] POST %s: %s", resp.status, body[:200])
         except Exception as e:
-            print(f"[dashboard] POST failed: {e}", file=sys.stderr)
+            logging.warning("[dashboard] POST failed: %s", e)
 
     def _fire_dashboard_event(self, event: dict[str, Any]) -> None:
         """Schedule a dashboard event from sync or async context without awaiting."""
@@ -473,7 +505,7 @@ class BridgeCore:
             loop = asyncio.get_running_loop()
             loop.create_task(self.emit_dashboard_event(event))
         except RuntimeError:
-            pass  # No running loop -- skip silently
+            logging.debug("Dashboard event dropped (no running event loop): %s", event.get("type", "unknown"))
 
     async def dashboard_api(
         self, method: str, path: str, json_body: dict[str, Any] | None = None
@@ -495,13 +527,10 @@ class BridgeCore:
                 if resp.status < 400:
                     return await resp.json()
                 body = await resp.text()
-                print(
-                    f"[dashboard] {method} {path} {resp.status}: {body[:200]}",
-                    file=sys.stderr,
-                )
+                logging.warning("[dashboard] %s %s %s: %s", method, path, resp.status, body[:200])
                 return None
         except (aiohttp.ClientError, TimeoutError) as e:
-            print(f"[dashboard] {method} {path} failed: {e}", file=sys.stderr)
+            logging.warning("[dashboard] %s %s failed: %s", method, path, e)
             return None
 
     def _track_task(self, coro) -> asyncio.Task[None]:
@@ -518,10 +547,7 @@ class BridgeCore:
         def _on_done(t: asyncio.Task[None]):
             state.background_tasks.discard(t)
             if not t.cancelled() and t.exception():
-                print(
-                    f"[bridge] background task failed: {t.exception()}",
-                    file=sys.stderr,
-                )
+                logging.warning("[bridge] background task failed: %s", t.exception())
 
         task.add_done_callback(_on_done)
         return task
@@ -572,7 +598,7 @@ class BridgeCore:
             )
 
         except Exception as e:
-            print(f"[bridge] output capture error: {e}", file=sys.stderr)
+            logging.warning("[bridge] output capture error: %s", e)
 
     # -- session limit queue ------------------------------------------------
 
@@ -666,10 +692,7 @@ class BridgeCore:
             if not error_line:
                 return
 
-            print(
-                f"[session-queue] Rate limit detected for {session_name}: {error_line}",
-                file=sys.stderr,
-            )
+            logging.warning("[session-queue] Rate limit detected for %s: %s", session_name, error_line)
 
             # thread_id for the enqueue: use reply_kwargs thread_ts for Slack,
             # or channel_id for Discord (which uses channel_id as thread)
@@ -699,7 +722,7 @@ class BridgeCore:
                     **reply_kwargs,
                 )
         except Exception as e:
-            print(f"[session-queue] Detection error: {e}", file=sys.stderr)
+            logging.warning("[session-queue] Detection error: %s", e)
 
     async def session_limit_retry_loop(self) -> None:
         """Background task: periodically check for queued messages and retry."""
@@ -808,10 +831,9 @@ class BridgeCore:
                                 )
                         else:
                             await self._update_queue_retry(item)
-                            print(
-                                f"[session-queue] Retry {retry_count}/{max_retries} "
-                                f"still rate limited for {session_name}",
-                                file=sys.stderr,
+                            logging.warning(
+                                "[session-queue] Retry %d/%d still rate limited for %s",
+                                retry_count, max_retries, session_name,
                             )
                         break  # Stop draining -- still rate limited
                     else:
@@ -825,7 +847,7 @@ class BridgeCore:
                                 **reply_kw,
                             )
             except Exception as e:
-                print(f"[session-queue] Retry loop error: {e}", file=sys.stderr)
+                logging.warning("[session-queue] Retry loop error: %s", e)
 
     # -- message relay (shared forwarding logic) ----------------------------
 
@@ -1548,18 +1570,32 @@ class BridgeCore:
                 env.get("AILY_SESSION_QUEUE_ENABLED", "true"),
             ).lower() == "true"
         )
-        session_queue_retry_interval = int(os.getenv(
-            "AILY_SESSION_QUEUE_RETRY_INTERVAL",
-            env.get("AILY_SESSION_QUEUE_RETRY_INTERVAL", "1800"),
-        ))
-        session_queue_max_retries = int(os.getenv(
-            "AILY_SESSION_QUEUE_MAX_RETRIES",
-            env.get("AILY_SESSION_QUEUE_MAX_RETRIES", "12"),
-        ))
-        session_queue_detect_delay = int(os.getenv(
-            "AILY_SESSION_QUEUE_DETECT_DELAY",
-            env.get("AILY_SESSION_QUEUE_DETECT_DELAY", "15"),
-        ))
+        try:
+            session_queue_retry_interval = int(os.getenv(
+                "AILY_SESSION_QUEUE_RETRY_INTERVAL",
+                env.get("AILY_SESSION_QUEUE_RETRY_INTERVAL", "1800"),
+            ))
+        except (ValueError, TypeError):
+            logging.warning("Invalid AILY_SESSION_QUEUE_RETRY_INTERVAL, using default 1800")
+            session_queue_retry_interval = 1800
+
+        try:
+            session_queue_max_retries = int(os.getenv(
+                "AILY_SESSION_QUEUE_MAX_RETRIES",
+                env.get("AILY_SESSION_QUEUE_MAX_RETRIES", "12"),
+            ))
+        except (ValueError, TypeError):
+            logging.warning("Invalid AILY_SESSION_QUEUE_MAX_RETRIES, using default 12")
+            session_queue_max_retries = 12
+
+        try:
+            session_queue_detect_delay = int(os.getenv(
+                "AILY_SESSION_QUEUE_DETECT_DELAY",
+                env.get("AILY_SESSION_QUEUE_DETECT_DELAY", "15"),
+            ))
+        except (ValueError, TypeError):
+            logging.warning("Invalid AILY_SESSION_QUEUE_DETECT_DELAY, using default 15")
+            session_queue_detect_delay = 15
 
         return BridgeState(
             mux=mux,
@@ -1586,6 +1622,19 @@ SHORTCUTS = _SHORTCUTS
 # Default thread name format (used by standalone parse_thread_name)
 _DEFAULT_THREAD_FORMAT = "[agent] {session} - {host}"
 
+# Cache for compiled parse_thread_name regexes keyed by format string
+_thread_name_re_cache: dict[str, re.Pattern[str]] = {}
+
+
+def _get_thread_name_re(fmt: str) -> re.Pattern[str]:
+    """Return a compiled regex for the given thread name format, with caching."""
+    if fmt not in _thread_name_re_cache:
+        escaped = re.escape(fmt)
+        escaped = escaped.replace(re.escape("{session}"), r"([a-zA-Z0-9_-]+)")
+        escaped = escaped.replace(re.escape("{host}"), r".+")
+        _thread_name_re_cache[fmt] = re.compile(f"^{escaped}$")
+    return _thread_name_re_cache[fmt]
+
 
 def parse_thread_name(thread_name: str, fmt: str = _DEFAULT_THREAD_FORMAT) -> str | None:
     """Standalone thread name parser (for use outside BridgeCore context).
@@ -1593,10 +1642,8 @@ def parse_thread_name(thread_name: str, fmt: str = _DEFAULT_THREAD_FORMAT) -> st
     Extracts session name from thread_name using the given format template.
     Falls back to legacy AGENT_PREFIX stripping.
     """
-    escaped = re.escape(fmt)
-    escaped = escaped.replace(re.escape("{session}"), r"([a-zA-Z0-9_-]+)")
-    escaped = escaped.replace(re.escape("{host}"), r".+")
-    m = re.match(f"^{escaped}$", thread_name)
+    pattern = _get_thread_name_re(fmt)
+    m = pattern.match(thread_name)
     if m:
         return m.group(1)
     if thread_name.startswith(AGENT_PREFIX):

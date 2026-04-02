@@ -21,6 +21,7 @@ Thin platform layer -- all shared logic lives in bridge_core.py.
 """
 
 import asyncio
+import collections
 import json
 import logging
 import sys
@@ -213,7 +214,7 @@ class DiscordPlatform(PlatformBridge):
 
 # --- Message handler ---
 
-_recent_msg_ids: set[str] = set()
+_recent_msg_ids: collections.OrderedDict[str, None] = collections.OrderedDict()
 _recent_msg_ids_max = 200
 
 async def handle_message(
@@ -225,12 +226,9 @@ async def handle_message(
     msg_id = message.get("id", "")
     if msg_id in _recent_msg_ids:
         return
-    _recent_msg_ids.add(msg_id)
-    if len(_recent_msg_ids) > _recent_msg_ids_max:
-        # Evict oldest entries (set is unordered, but this keeps size bounded)
-        excess = len(_recent_msg_ids) - _recent_msg_ids_max
-        for _ in range(excess):
-            _recent_msg_ids.pop()
+    _recent_msg_ids[msg_id] = None
+    while len(_recent_msg_ids) > _recent_msg_ids_max:
+        _recent_msg_ids.popitem(last=False)
 
     author = message.get("author", {})
     if author.get("id") == bot_user_id or author.get("bot"):
