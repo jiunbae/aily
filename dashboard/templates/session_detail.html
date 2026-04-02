@@ -5,7 +5,7 @@
 {% block nav_sessions_active %}is-active{% endblock %}
 
 {% block content %}
-<div x-data="sessionDetail('{{ session_name|e }}')" x-init="init()">
+<div x-data="sessionDetail({{ session_name|tojson }})" x-init="init()">
   <!-- Breadcrumbs -->
   <div class="flex items-center gap-2 text-xs text-[var(--text-muted)] mb-4">
     <a href="/" class="hover:text-[var(--text-secondary)] transition-colors">Dashboard</a>

@@ -280,76 +280,7 @@
     </div>
   </template>
 
-  <!-- New Session Modal (enhanced) -->
-  <template x-if="showNewSessionModal">
-    <div class="fixed inset-0 z-50 flex items-center justify-center" @keydown.escape.window="showNewSessionModal = false">
-      <div class="absolute inset-0 bg-black/60" @click="showNewSessionModal = false"></div>
-      <div class="relative bg-[var(--bg-surface)] border border-[var(--bg-overlay)] rounded-xl shadow-xl w-full max-w-[480px] p-6 modal-enter"
-           @click.stop>
-
-        <h3 class="text-lg font-semibold text-[var(--text-primary)] mb-4">Create New Session</h3>
-
-        <!-- Session Name -->
-        <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Session Name</label>
-        <input type="text" x-model="newSession.name"
-               placeholder="my-session-name"
-               class="input-field w-full mb-1 font-mono"
-               @input="validateSessionName()"
-               maxlength="64"
-               autocomplete="off">
-        <p class="text-[11px] text-[var(--text-muted)] mb-4">Letters, numbers, hyphens, and underscores only</p>
-
-        <!-- Host -->
-        <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Host</label>
-        <template x-if="configuredHosts.length > 0">
-          <select x-model="newSession.host" class="input-field w-full mb-4">
-            <option value="">Select a host...</option>
-            <template x-for="h in configuredHosts" :key="h">
-              <option :value="h" x-text="h"></option>
-            </template>
-          </select>
-        </template>
-        <template x-if="configuredHosts.length === 0">
-          <input type="text" x-model="newSession.host"
-                 placeholder="dev-1"
-                 class="input-field w-full mb-4"
-                 autocomplete="off">
-        </template>
-
-        <!-- Agent Type -->
-        <label class="block mb-1 text-xs font-medium text-[var(--text-secondary)]">Agent Type</label>
-        <div class="flex gap-2 mb-4">
-          <template x-for="at in ['claude', 'codex', 'gemini', 'opencode']" :key="at">
-            <button type="button"
-                    class="flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition-all duration-150"
-                    :class="newSession.agent_type === at
-                      ? 'border-[var(--accent-primary)] bg-[var(--accent-primary-subtle)] text-[var(--text-primary)]'
-                      : 'border-[var(--bg-overlay)] text-[var(--text-secondary)] hover:border-[#484f58]'"
-                    @click="newSession.agent_type = newSession.agent_type === at ? '' : at">
-              <span x-text="agentLabel(at)"></span>
-            </button>
-          </template>
-        </div>
-
-        <!-- Error -->
-        <template x-if="createError">
-          <div class="mb-4 text-xs text-[var(--status-error)]" x-text="createError"></div>
-        </template>
-
-        <!-- Actions -->
-        <div class="flex justify-end gap-2">
-          <button @click="showNewSessionModal = false"
-                  class="btn-secondary px-4 py-2 text-sm font-medium">Cancel</button>
-          <button @click="createSession()"
-                  :disabled="!isValidSessionName || creating"
-                  class="btn-primary px-4 py-2 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed">
-            <span x-show="!creating">Create Session</span>
-            <span x-show="creating" x-cloak>Creating...</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  </template>
+  {% include '_new_session_modal.html' %}
 
   <!-- Delete Confirmation Dialog -->
   <template x-if="deleteTarget">
