@@ -85,6 +85,24 @@ class UsageService:
         self.retention_hours = retention_hours
         self._http: aiohttp.ClientSession | None = None
 
+    async def recover_stuck_commands(self) -> int:
+        """Reset any 'executing' commands back to 'pending' on startup.
+
+        This handles crash recovery: if the process died while commands
+        were in 'executing' state, they would be stuck forever.
+        Returns the number of commands recovered.
+        """
+        now = db.now_iso()
+        cursor = await db.execute(
+            """UPDATE command_queue SET status = 'pending', updated_at = ?
+               WHERE status = 'executing'""",
+            (now,),
+        )
+        count = cursor.rowcount or 0
+        if count:
+            logger.warning("Recovered %d stuck 'executing' commands back to 'pending'", count)
+        return count
+
     @property
     def providers(self) -> list[str]:
         """Return list of configured providers."""

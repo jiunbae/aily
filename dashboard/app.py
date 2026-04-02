@@ -558,8 +558,12 @@ async def _on_startup(app: web.Application) -> None:
             "JSONL ingester started (interval=%ds)", config.jsonl_scan_interval
         )
 
-    # Start usage poller worker
+    # Recover stuck commands from previous crash
     usage_svc_ref = app.get("usage_service")
+    if usage_svc_ref:
+        await usage_svc_ref.recover_stuck_commands()
+
+    # Start usage poller worker
     if config.enable_usage_poller and usage_svc_ref:
         from dashboard.workers.usage_poller import usage_poller as _usage_poller
 

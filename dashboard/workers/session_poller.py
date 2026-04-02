@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 30
 _POLLER_CONCURRENCY = 5
-_cleanup_counter = 0
 
 
 async def session_poller(
@@ -44,10 +43,13 @@ async def session_poller(
     """
     logger.info("Session poller started (interval=%ds)", interval)
     consecutive_errors = 0
+    cleanup_counter = 0
     MAX_BACKOFF = 300  # cap at 5 minutes
     while True:
         try:
-            await _poll_once(session_svc, platform_svc, event_bus)
+            cleanup_counter = await _poll_once(
+                session_svc, platform_svc, event_bus, cleanup_counter
+            )
             consecutive_errors = 0
         except Exception:
             consecutive_errors += 1
@@ -110,7 +112,7 @@ async def _process_new_session(
                         (cwd, name),
                     )
             except Exception:
-                pass
+                logger.debug("Failed to get working directory for session '%s'", name, exc_info=True)
 
             # Fetch the complete session record for the event
             session_row = await db.fetchone(
@@ -131,7 +133,8 @@ async def _poll_once(
     session_svc: SessionService,
     platform_svc: PlatformService,
     event_bus: EventBus,
-) -> None:
+    cleanup_counter: int = 0,
+) -> int:
     """Execute one poll cycle.
 
     Queries all SSH hosts for tmux sessions, then reconciles against the DB.
@@ -235,13 +238,14 @@ async def _poll_once(
                     )
 
     # Periodic cleanup of old events
-    global _cleanup_counter
-    _cleanup_counter += 1
-    if _cleanup_counter >= 100:
-        _cleanup_counter = 0
+    cleanup_counter += 1
+    if cleanup_counter >= 100:
+        cleanup_counter = 0
         try:
             deleted = await db.cleanup_old_events(30)
             if deleted:
                 logger.info("Cleaned up %d old events", deleted)
         except Exception:
             logger.exception("Failed to clean up old events")
+
+    return cleanup_counter

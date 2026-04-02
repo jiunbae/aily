@@ -11,6 +11,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -99,7 +100,7 @@ def _has_interactive_tool(content: list[Any]) -> bool:
     return False
 
 
-def extract_last_assistant_text(
+async def extract_last_assistant_text(
     jsonl_path: str, max_chars: int = 1000
 ) -> str | None:
     """Read a Claude Code transcript JSONL and extract the last assistant text.
@@ -118,9 +119,12 @@ def extract_last_assistant_text(
         logger.warning("Refusing to read non-JSONL file: %s", jsonl_path)
         return None
 
-    try:
+    def _read_tail() -> list[str]:
         with open(jsonl_path) as f:
-            lines = list(deque(f, maxlen=200))
+            return list(deque(f, maxlen=200))
+
+    try:
+        lines = await asyncio.to_thread(_read_tail)
     except (OSError, IOError) as exc:
         logger.warning("Cannot read transcript %s: %s", jsonl_path, exc)
         return None
@@ -204,7 +208,7 @@ async def handle_stop(request: web.Request) -> web.Response:
         )
 
     # Extract last assistant message from the JSONL transcript
-    text = extract_last_assistant_text(transcript_path)
+    text = await extract_last_assistant_text(transcript_path)
     if not text:
         logger.debug("No extractable text from %s", transcript_path)
         return json_ok({"accepted": True, "relayed": False})
