@@ -86,26 +86,39 @@ def verify_hook_secret(request: web.Request, secret: str) -> bool:
 def create_session_cookie(token: str) -> str:
     """Create a signed session cookie value.
 
-    Format: <timestamp>.<signature>
+    Format: <timestamp>.<nonce>.<signature>
+    The random nonce ensures every cookie is unique even when issued at
+    the same second, preventing replay of leaked cookie values.
     """
     ts = str(int(time.time()))
+    nonce = secrets.token_urlsafe(16)
+    payload = f"{ts}.{nonce}"
     sig = hmac.new(
-        token.encode(), ts.encode(), hashlib.sha256
+        token.encode(), payload.encode(), hashlib.sha256
     ).hexdigest()
-    return f"{ts}.{sig}"
+    return f"{payload}.{sig}"
 
 
 def validate_session_cookie(cookie_value: str, token: str) -> bool:
     """Validate a signed session cookie.
 
-    Checks signature and expiry (COOKIE_MAX_AGE seconds).
+    Accepts both legacy format (<timestamp>.<sig>) and new format
+    (<timestamp>.<nonce>.<sig>).  Checks signature and expiry
+    (COOKIE_MAX_AGE seconds).
     """
     if not cookie_value or "." not in cookie_value:
         return False
-    parts = cookie_value.split(".", 1)
-    if len(parts) != 2:
+    parts = cookie_value.split(".")
+    if len(parts) == 2:
+        # Legacy format: <timestamp>.<sig>
+        ts_str, sig = parts
+        payload = ts_str
+    elif len(parts) == 3:
+        # New format: <timestamp>.<nonce>.<sig>
+        ts_str, _nonce, sig = parts
+        payload = f"{ts_str}.{_nonce}"
+    else:
         return False
-    ts_str, sig = parts
     try:
         ts = int(ts_str)
     except ValueError:
@@ -115,7 +128,7 @@ def validate_session_cookie(cookie_value: str, token: str) -> bool:
         return False
     # Check signature
     expected = hmac.new(
-        token.encode(), ts_str.encode(), hashlib.sha256
+        token.encode(), payload.encode(), hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(sig, expected)
 
@@ -203,15 +216,12 @@ async def auth_middleware(
             status=401,
         )
 
-    # WebSocket: check ?token= query param (nonce or real token) or cookie
+    # WebSocket: check ?token= query param (nonce only) or cookie
     if path == "/ws":
         token = request.query.get("token", "")
         if token:
-            # Try short-lived nonce first (single-use, consumed on success)
+            # Only accept short-lived nonces (single-use, consumed on success)
             if validate_ws_nonce(token):
-                return await handler(request)
-            # Fall back to real token comparison (for API clients)
-            if hmac.compare_digest(token, dashboard_token):
                 return await handler(request)
         # Also accept session cookie for WebSocket
         cookie_value = request.cookies.get(COOKIE_NAME, "")

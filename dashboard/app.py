@@ -70,6 +70,32 @@ async def csp_middleware(
     return response
 
 
+@web.middleware
+async def cors_middleware(
+    request: web.Request,
+    handler: web.RequestHandler,
+) -> web.StreamResponse:
+    """Restrict cross-origin requests to same-origin only.
+
+    Blocks requests with an Origin header that does not match the Host header.
+    Preflight (OPTIONS) requests from foreign origins are rejected with 403.
+    """
+    origin = request.headers.get("Origin")
+    if origin:
+        host = request.headers.get("Host", "")
+        # Extract host portion from Origin (scheme://host[:port])
+        from urllib.parse import urlparse
+        parsed = urlparse(origin)
+        origin_host = parsed.netloc  # e.g. "localhost:8080"
+        if origin_host != host:
+            return web.json_response(
+                {"error": {"code": "CORS_REJECTED", "message": "Cross-origin request denied"}},
+                status=403,
+            )
+    response = await handler(request)
+    return response
+
+
 async def create_app() -> web.Application:
     """Create and configure the aiohttp application."""
     config = Config.from_env()
@@ -136,6 +162,7 @@ async def create_app() -> web.Application:
     # Create app with middleware
     app = web.Application(
         middlewares=[
+            cors_middleware,
             csp_middleware,
             access_log_middleware,
             rate_limit_middleware,
@@ -349,6 +376,30 @@ async def _login_page(request: web.Request) -> web.Response:
 _login_attempts: dict[str, list[float]] = {}
 _LOGIN_LIMIT = 5  # max attempts
 _LOGIN_WINDOW = 60  # per 60 seconds
+_LOGIN_CLEANUP_INTERVAL = 60  # seconds between cleanups
+_LOGIN_MAX_AGE = 900  # 15 minutes — prune entries older than this
+_login_last_cleanup: float = 0.0
+
+
+def _cleanup_login_attempts() -> None:
+    """Prune stale login attempt entries to prevent unbounded memory growth.
+
+    Runs at most once per _LOGIN_CLEANUP_INTERVAL seconds.  Removes any IP
+    entry whose most recent attempt is older than _LOGIN_MAX_AGE seconds.
+    """
+    import time as _time
+
+    global _login_last_cleanup
+    now = _time.monotonic()
+    if now - _login_last_cleanup < _LOGIN_CLEANUP_INTERVAL:
+        return
+    _login_last_cleanup = now
+    stale = [
+        ip for ip, attempts in _login_attempts.items()
+        if not attempts or (now - attempts[-1]) > _LOGIN_MAX_AGE
+    ]
+    for ip in stale:
+        del _login_attempts[ip]
 
 
 async def _login_submit(request: web.Request) -> web.Response:
@@ -370,6 +421,7 @@ async def _login_submit(request: web.Request) -> web.Response:
     # Rate-limit login attempts by client IP
     import time as _time
 
+    _cleanup_login_attempts()
     client_ip = request.remote or "unknown"
     now = _time.monotonic()
     attempts = _login_attempts.setdefault(client_ip, [])
