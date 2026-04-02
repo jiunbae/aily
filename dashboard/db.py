@@ -7,6 +7,7 @@ All queries use parameterized ? placeholders — no string interpolation.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 import re
@@ -24,6 +25,9 @@ _db: aiosqlite.Connection | None = None
 
 # Batch commit depth — per-coroutine via ContextVar for concurrency safety
 _batch_depth: contextvars.ContextVar[int] = contextvars.ContextVar("_batch_depth", default=0)
+
+# Lock to serialize batch transactions (SQLite allows only one writer at a time)
+_batch_lock = asyncio.Lock()
 
 # Allowed table names for insert_or_ignore (prevents SQL injection via table name)
 _VALID_TABLES = {"sessions", "messages", "events", "kv", "usage_snapshots", "command_queue", "session_limit_queue"}
@@ -242,19 +246,20 @@ async def batch() -> AsyncIterator[None]:
             await db.insert_or_ignore(...)
         # commit happens here automatically
     """
-    depth = _batch_depth.get()
-    _batch_depth.set(depth + 1)
-    try:
-        yield
-    except BaseException:
-        _batch_depth.set(depth)
-        if depth == 0:
-            await get_db().rollback()
-        raise
-    else:
-        _batch_depth.set(depth)
-        if depth == 0:
-            await get_db().commit()
+    async with _batch_lock:
+        depth = _batch_depth.get()
+        _batch_depth.set(depth + 1)
+        try:
+            yield
+        except BaseException:
+            _batch_depth.set(depth)
+            if depth == 0:
+                await get_db().rollback()
+            raise
+        else:
+            _batch_depth.set(depth)
+            if depth == 0:
+                await get_db().commit()
 
 
 async def execute(sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Cursor:

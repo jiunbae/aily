@@ -15,6 +15,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -107,9 +108,13 @@ async def list_sessions(request: web.Request) -> web.Response:
 
     # Fetch page
     sessions = await db.fetchall(
-        f"""SELECT s.*,
-                   (SELECT COUNT(*) FROM messages WHERE session_name = s.name) as message_count
+        f"""SELECT s.*, COALESCE(mc.message_count, 0) as message_count
             FROM sessions s
+            LEFT JOIN (
+                SELECT session_name, COUNT(*) as message_count
+                FROM messages
+                GROUP BY session_name
+            ) mc ON mc.session_name = s.name
             {where_sql}
             ORDER BY s.{field_name} {order_dir}
             LIMIT ? OFFSET ?""",
@@ -404,37 +409,39 @@ async def bulk_delete_sessions(request: web.Request) -> web.Response:
     platform_svc: PlatformService = request.app["platform_service"]
     event_bus: EventBus = request.app["event_bus"]
 
-    results: list[dict[str, Any]] = []
     now = db.now_iso()
+    sem = asyncio.Semaphore(5)
 
-    for name in names:
-        name = str(name).strip()
+    async def _delete_one(raw_name: Any) -> dict[str, Any]:
+        name = str(raw_name).strip()
         if not name:
-            continue
+            return {"name": raw_name, "deleted": False, "error": "empty name"}
 
-        session = await db.fetchone(
-            "SELECT * FROM sessions WHERE name = ?", (name,)
-        )
-        if not session:
-            results.append({"name": name, "deleted": False, "error": "not found"})
-            continue
+        async with sem:
+            session = await db.fetchone(
+                "SELECT * FROM sessions WHERE name = ?", (name,)
+            )
+            if not session:
+                return {"name": name, "deleted": False, "error": "not found"}
 
-        tmux_killed, _ = await session_svc.kill_session(name)
-        await platform_svc.archive_threads(dict(session))
+            tmux_killed, _ = await session_svc.kill_session(name)
+            await platform_svc.archive_threads(dict(session))
 
-        await db.execute(
-            """UPDATE sessions SET status = 'closed', closed_at = ?, updated_at = ?
-               WHERE name = ?""",
-            (now, now, name),
-        )
+            await db.execute(
+                """UPDATE sessions SET status = 'closed', closed_at = ?, updated_at = ?
+                   WHERE name = ?""",
+                (now, now, name),
+            )
 
-        updated = await db.fetchone("SELECT * FROM sessions WHERE name = ?", (name,))
-        if updated:
-            await event_bus.publish(Event.session_closed(dict(updated)))
+            updated = await db.fetchone("SELECT * FROM sessions WHERE name = ?", (name,))
+            if updated:
+                await event_bus.publish(Event.session_closed(dict(updated)))
 
-        results.append({"name": name, "deleted": True, "tmux_killed": tmux_killed})
+            return {"name": name, "deleted": True, "tmux_killed": tmux_killed}
 
-    return json_ok({"results": results})
+    results = await asyncio.gather(*[_delete_one(n) for n in names])
+
+    return json_ok({"results": list(results)})
 
 
 async def send_message(request: web.Request) -> web.Response:

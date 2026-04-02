@@ -9,6 +9,7 @@ from typing import Any
 from aiohttp import web
 
 from dashboard import db
+from dashboard.api import error_response
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 def _sanitize_fts_query(q: str) -> str:
     """Sanitize user input for FTS5 phrase search."""
     # Remove FTS5 special characters and operators
-    q = re.sub(r'["\*\^\(\)\{\}:]', '', q)
+    q = re.sub(r'["\*\^\(\)\{\}:\+\-]', '', q)
     # Remove FTS5 boolean operators
     q = re.sub(r'\b(AND|OR|NOT|NEAR)\b', '', q, flags=re.IGNORECASE)
     q = q.strip()
@@ -31,15 +32,7 @@ async def search_messages(request: web.Request) -> web.Response:
     """GET /api/messages/search?q=text&session=name&role=assistant&limit=50&offset=0"""
     q = request.query.get("q", "").strip()
     if not q or len(q) < 2:
-        return web.json_response(
-            {
-                "error": {
-                    "code": "BAD_REQUEST",
-                    "message": "Query must be at least 2 characters",
-                }
-            },
-            status=400,
-        )
+        return error_response(400, "BAD_REQUEST", "Query must be at least 2 characters")
 
     session_filter = request.query.get("session", "").strip()
     role_filter = request.query.get("role", "").strip()
