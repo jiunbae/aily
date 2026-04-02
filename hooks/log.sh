@@ -9,13 +9,20 @@ _aily_log() {
   local log="$_AILY_LOG_FILE"
   mkdir -p "$(dirname "$log")"
 
-  # Auto-rotate: truncate to last 500 lines when > 1000
+  # Auto-rotate: truncate to last 500 lines when > 1000 (flock to avoid races)
   if [[ -f "$log" ]]; then
     local lines
     lines=$(wc -l < "$log" 2>/dev/null || echo 0)
     if (( lines > 1000 )); then
-      local tmp="${log}.tmp"
-      tail -500 "$log" > "$tmp" 2>/dev/null && mv "$tmp" "$log" 2>/dev/null || rm -f "$tmp"
+      (
+        flock -n 9 || exit 0
+        # Re-check under lock in case another process already rotated
+        lines=$(wc -l < "$log" 2>/dev/null || echo 0)
+        if (( lines > 1000 )); then
+          local tmp="${log}.tmp"
+          tail -500 "$log" > "$tmp" 2>/dev/null && mv "$tmp" "$log" 2>/dev/null || rm -f "$tmp"
+        fi
+      ) 9>"${log}.lock"
     fi
   fi
 
