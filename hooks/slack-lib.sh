@@ -5,12 +5,16 @@
 # Expects log.sh to be sourced by the caller (slack-post.sh)
 
 _SLACK_API="https://slack.com/api"
-_SLACK_AUTH="Authorization: Bearer ${SLACK_BOT_TOKEN}"
+
+# Wrapper: hides auth token from ps output by passing it via --config <(...)
+_slack_curl() {
+  curl --config <(printf 'header = "Authorization: Bearer %s"\n' "$SLACK_BOT_TOKEN") "$@"
+}
 
 slack_find_thread() {
   local thread_name="$1"
   local resp result
-  resp=$(curl -sf -H "$_SLACK_AUTH" \
+  resp=$(_slack_curl -sf \
     "${_SLACK_API}/conversations.history?channel=${SLACK_CHANNEL_ID}&limit=200" 2>/dev/null || echo "")
   if [[ -z "$resp" || "$resp" != "{"* ]]; then
     echo ""
@@ -46,7 +50,7 @@ slack_create_thread() {
   fi
 
   local create_resp
-  create_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
+  create_resp=$(_slack_curl -sf -X POST -H "Content-Type: application/json" \
     -d "$payload" \
     "${_SLACK_API}/chat.postMessage" 2>&1) || {
     _aily_log "ERR" "slack: create thread failed: $create_resp"; create_resp=""
@@ -98,7 +102,7 @@ slack_archive_thread() {
     _aily_log "ERR" "slack_archive_thread: failed to build JSON payload"
     return 1
   fi
-  react_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
+  react_resp=$(_slack_curl -sf -X POST -H "Content-Type: application/json" \
     -d "$react_payload" \
     "${_SLACK_API}/reactions.add" 2>&1) || _aily_log "ERR" "slack: add reaction failed: $react_resp"
 }
@@ -111,7 +115,7 @@ slack_delete_thread() {
     _aily_log "ERR" "slack_delete_thread: failed to build JSON payload"
     return 1
   fi
-  curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
+  _slack_curl -sf -X POST -H "Content-Type: application/json" \
     -d "$delete_payload" \
     "${_SLACK_API}/chat.delete" > /dev/null 2>&1 || true
 }
@@ -136,7 +140,7 @@ print(json.dumps({
     return 1
   fi
   local post_resp
-  post_resp=$(curl -sf -X POST -H "$_SLACK_AUTH" -H "Content-Type: application/json" \
+  post_resp=$(_slack_curl -sf -X POST -H "Content-Type: application/json" \
     -d "$payload" \
     "${_SLACK_API}/chat.postMessage" 2>&1) || _aily_log "ERR" "slack: post to thread failed: $post_resp"
 }

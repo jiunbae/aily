@@ -16,6 +16,32 @@ case "${BRIDGE_MODE:-dashboard}" in
     ;;
   all)
     echo "Starting dashboard + bridges..."
+
+    BRIDGE_PIDS=()
+    _restart_backoff() {
+      local name="$1" cmd="$2" delay=1
+      while true; do
+        echo "Starting ${name}..."
+        $cmd &
+        local pid=$!
+        BRIDGE_PIDS+=("$pid")
+        wait "$pid" || true
+        echo "${name} (pid $pid) exited, restarting in ${delay}s..."
+        sleep "$delay"
+        delay=$((delay < 30 ? delay * 2 : 30))
+      done
+    }
+
+    _cleanup() {
+      echo "Caught signal, shutting down..."
+      for pid in "${BRIDGE_PIDS[@]}" "$DASHBOARD_PID"; do
+        kill "$pid" 2>/dev/null || true
+      done
+      wait
+      exit 0
+    }
+    trap _cleanup SIGTERM SIGINT
+
     python3 -m dashboard &
     DASHBOARD_PID=$!
     # Wait for dashboard to be healthy before starting bridges
@@ -25,12 +51,12 @@ case "${BRIDGE_MODE:-dashboard}" in
       fi
       sleep 1
     done
-    # Start configured bridges
+    # Start configured bridges with restart + backoff
     if [ -n "$DISCORD_BOT_TOKEN" ]; then
-      python3 /app/agent-bridge.py &
+      _restart_backoff "discord-bridge" "python3 /app/agent-bridge.py" &
     fi
     if [ -n "$SLACK_BOT_TOKEN" ]; then
-      python3 /app/slack-bridge.py &
+      _restart_backoff "slack-bridge" "python3 /app/slack-bridge.py" &
     fi
     wait $DASHBOARD_PID
     ;;

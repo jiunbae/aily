@@ -14,13 +14,24 @@ else
   MESSAGE_TEXT="${2:-}"
 fi
 
+safe_load_env() {
+    local env_file="$1"
+    [ -f "$env_file" ] || return 0
+    while IFS='=' read -r key value; do
+        key=$(echo "$key" | tr -d '[:space:]')
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        value="${value%\"}" ; value="${value#\"}"
+        value="${value%\'}" ; value="${value#\'}"
+        export "$key=$value"
+    done < "$env_file"
+}
+
 ENV_FILE="${AILY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/aily/env}"
 if [[ ! -f "$ENV_FILE" ]]; then
   exit 0
 fi
 
-# shellcheck source=/dev/null
-source "$ENV_FILE"
+safe_load_env "$ENV_FILE"
 
 # Source multiplexer detection helper
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
