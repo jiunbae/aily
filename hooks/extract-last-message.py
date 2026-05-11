@@ -64,12 +64,41 @@ def has_interactive_tool(content):
     return False
 
 
-def extract_last_assistant_text(jsonl_path, max_chars=1000):
-    """Read backwards to find last assistant text. Never falls back to older messages."""
-    with open(jsonl_path) as f:
-        lines = f.readlines()
+def _tail_lines(path, max_lines=30, chunk_size=262144):
+    """Read up to max_lines lines from the end of a file without loading the entire file.
 
-    for line in reversed(lines[-200:]):
+    Reads fixed-size chunks from the tail until enough newlines are gathered. Avoids
+    f.readlines() which loads multi-megabyte JSONL transcripts entirely into memory.
+    Uses a chunk list (joined once) instead of repeated bytes-prepend to keep memory O(n).
+
+    Note: Claude Code transcript lines can be very large (one full turn each, often
+    20–40KB), so max_lines=30 is enough headroom to find the last assistant text turn
+    without dragging in megabytes of older history."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    if size == 0:
+        return []
+    chunks = []
+    seen_newlines = 0
+    with open(path, "rb") as f:
+        pos = size
+        while pos > 0 and seen_newlines <= max_lines:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            chunk = f.read(read_size)
+            seen_newlines += chunk.count(b"\n")
+            chunks.append(chunk)
+    # chunks were appended tail-first; reverse for correct order before join
+    chunks.reverse()
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    return text.splitlines()[-max_lines:]
+
+
+def _scan_for_assistant_text(lines, max_chars):
+    for line in reversed(lines):
         try:
             obj = json.loads(line.strip())
             if obj.get("type") != "assistant":
@@ -79,7 +108,7 @@ def extract_last_assistant_text(jsonl_path, max_chars=1000):
             # If this turn has an interactive prompt, suppress notification
             # (the PreToolUse hook handles these separately)
             if has_interactive_tool(content):
-                return None
+                return ("suppress", None)
 
             texts = []
             for block in content:
@@ -88,19 +117,32 @@ def extract_last_assistant_text(jsonl_path, max_chars=1000):
                     if t:
                         texts.append(t)
             if not texts:
-                # Tool-only turn (no text) — skip to find the text turn
                 continue
             full_text = "\n".join(texts)
             full_text = strip_english_coach(full_text)
             full_text = tables_to_codeblocks(full_text)
             if not full_text:
-                # Text was entirely English Coach block — return nothing
-                return None
+                return ("suppress", None)
             if len(full_text) > max_chars:
                 full_text = full_text[:max_chars] + "..."
-            return full_text
+            return ("found", full_text)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue
+    return ("not_found", None)
+
+
+def extract_last_assistant_text(jsonl_path, max_chars=1000):
+    """Read backwards to find last assistant text. Never falls back to older messages.
+
+    Two-pass strategy: try a small tail first (covers ~99% of cases cheaply); only on
+    miss do we widen to the larger window."""
+    for max_lines in (30, 200):
+        lines = _tail_lines(jsonl_path, max_lines=max_lines)
+        status, text = _scan_for_assistant_text(lines, max_chars)
+        if status == "found":
+            return text
+        if status == "suppress":
+            return None
     return None
 
 

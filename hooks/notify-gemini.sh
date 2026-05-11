@@ -59,11 +59,16 @@ path = sys.argv[1]
 
 def tables_to_codeblocks(text: str) -> str:
     code_fence = chr(96) * 3
+    newline = chr(10)
+    # Note: heredoc is single-quoted, so backslashes pass through literally.
+    # Use a character class to match leading whitespace + pipe without backslashes.
+    pipe = chr(124)
     lines = text.splitlines()
     out = []
     in_table = False
     for line in lines:
-        is_table_line = bool(re.match(r"^\\s*\\|", line))
+        stripped = line.lstrip()
+        is_table_line = stripped.startswith(pipe)
         if is_table_line and not in_table:
             in_table = True
             out.append(code_fence)
@@ -78,7 +83,7 @@ def tables_to_codeblocks(text: str) -> str:
             out.append(line)
     if in_table:
         out.append(code_fence)
-    return "\\n".join(out)
+    return newline.join(out)
 
 def is_assistant(obj: dict) -> bool:
     if obj.get("type") == "assistant":
@@ -129,16 +134,35 @@ def extract_text(obj: dict) -> str:
                 elif "content" in part and isinstance(part.get("content"), str):
                     add_text(part.get("content"))
 
-    return "\\n".join(texts).strip()
+    return chr(10).join(texts).strip()
 
-def extract_last(path: str, max_chars: int = 1000, min_chars: int = 20) -> str:
+def tail_lines(path: str, max_lines: int = 30, chunk_size: int = 262144):
+    import os as _os
+    NL = bytes([10])
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except Exception:
-        return ""
+        size = _os.path.getsize(path)
+    except OSError:
+        return []
+    if size == 0:
+        return []
+    chunks = []
+    seen_newlines = 0
+    with open(path, "rb") as f:
+        pos = size
+        while pos > 0 and seen_newlines <= max_lines:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            chunk = f.read(read_size)
+            seen_newlines += chunk.count(NL)
+            chunks.append(chunk)
+    chunks.reverse()
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    return text.splitlines()[-max_lines:]
 
-    for line in reversed(lines[-200:]):
+
+def _scan(lines, max_chars, min_chars):
+    for line in reversed(lines):
         line = line.strip()
         if not line:
             continue
@@ -157,6 +181,18 @@ def extract_last(path: str, max_chars: int = 1000, min_chars: int = 20) -> str:
         if len(text) > max_chars:
             text = text[:max_chars] + "..."
         return text
+    return ""
+
+def extract_last(path: str, max_chars: int = 1000, min_chars: int = 20) -> str:
+    # Two-pass: small tail first, widen on miss
+    for ml in (30, 200):
+        try:
+            lines = tail_lines(path, max_lines=ml)
+        except Exception:
+            return ""
+        result = _scan(lines, max_chars, min_chars)
+        if result:
+            return result
     return ""
 
 sys.stdout.write(extract_last(path))
