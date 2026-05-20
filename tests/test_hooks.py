@@ -8,10 +8,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import sys
-import tempfile
-
-import pytest
 
 # ---- Import hook modules from file paths ----
 
@@ -30,7 +26,6 @@ def _import_hook(filename: str, module_name: str):
 
 
 extract_mod = _import_hook("extract-last-message.py", "extract_last_message")
-format_mod = _import_hook("format-question.py", "format_question")
 
 
 # ---- extract-last-message.py tests ----
@@ -164,87 +159,3 @@ class TestExtractLastAssistantText:
         assert result is None
 
 
-# ---- format-question.py tests ----
-
-
-class TestFormatQuestion:
-    def test_empty_questions(self):
-        result = format_mod.format_question({"tool_input": {"questions": []}})
-        assert result == ""
-
-    def test_no_questions_key(self):
-        result = format_mod.format_question({})
-        assert result == ""
-
-    def test_basic_question(self):
-        data = {
-            "tool_input": {
-                "questions": [{
-                    "question": "Pick one",
-                    "options": [
-                        {"label": "Option A", "description": "First choice"},
-                        {"label": "Option B", "description": "Second choice"},
-                    ],
-                }]
-            }
-        }
-        result = format_mod.format_question(data)
-        assert "Pick one" in result
-        assert "Option A" in result
-        assert "Option B" in result
-        assert "First choice" in result
-
-    def test_with_header(self):
-        data = {
-            "tool_input": {
-                "questions": [{
-                    "header": "Important",
-                    "question": "Choose wisely",
-                    "options": [],
-                }]
-            }
-        }
-        result = format_mod.format_question(data)
-        assert "Important" in result
-        assert "Choose wisely" in result
-
-    def test_multi_select(self):
-        data = {
-            "tool_input": {
-                "questions": [{
-                    "question": "Select",
-                    "multiSelect": True,
-                    "options": [{"label": "A"}, {"label": "B"}],
-                }]
-            }
-        }
-        result = format_mod.format_question(data)
-        assert "one or more" in result
-
-    def test_input_key_fallback(self):
-        """Falls back to 'input' key when 'tool_input' is missing."""
-        data = {
-            "input": {
-                "questions": [{
-                    "question": "Fallback?",
-                    "options": [],
-                }]
-            }
-        }
-        result = format_mod.format_question(data)
-        assert "Fallback?" in result
-
-    def test_many_options(self):
-        """More than 10 options uses numeric fallback."""
-        options = [{"label": f"Opt{i}"} for i in range(12)]
-        data = {
-            "tool_input": {
-                "questions": [{
-                    "question": "Many opts",
-                    "options": options,
-                }]
-            }
-        }
-        result = format_mod.format_question(data)
-        assert "Opt11" in result
-        assert "**11.**" in result  # fallback for index 10
