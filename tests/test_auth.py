@@ -98,7 +98,17 @@ async def test_ws_requires_token_query_param(auth_client):
 
 
 @pytest.mark.asyncio
-async def test_ws_accepts_correct_token_param(auth_client):
-    """WebSocket endpoint with correct ?token= should not return 401."""
-    resp = await auth_client.get("/ws?token=test-secret-token")
+async def test_ws_accepts_valid_nonce(auth_client):
+    """WebSocket endpoint with a valid short-lived nonce should not return 401."""
+    from dashboard.auth import create_ws_nonce
+
+    nonce = create_ws_nonce()
+    resp = await auth_client.get(f"/ws?token={nonce}")
     assert resp.status != 401
+
+
+@pytest.mark.asyncio
+async def test_ws_rejects_dashboard_token(auth_client):
+    """WebSocket should reject the dashboard token directly (nonces only)."""
+    resp = await auth_client.get("/ws?token=test-secret-token")
+    assert resp.status == 401
