@@ -39,7 +39,7 @@ else
   ENV_FILE="$_AILY_CONFIG_DIR/env"
 fi
 HOOKS_DIR="$HOME/.claude/hooks"
-AILY_VERSION="2026.3.12"
+AILY_VERSION="2026.7.11"
 AILY_JSON=false
 # Populated from SSH_HOSTS by load_env(); declared here so array references are
 # always bound under `set -u`, even before load_env runs or when SSH_HOSTS is empty.
