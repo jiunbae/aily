@@ -39,8 +39,11 @@ else
   ENV_FILE="$_AILY_CONFIG_DIR/env"
 fi
 HOOKS_DIR="$HOME/.claude/hooks"
-AILY_VERSION="2026.2.18"
+AILY_VERSION="2026.3.12"
 AILY_JSON=false
+# Populated from SSH_HOSTS by load_env(); declared here so array references are
+# always bound under `set -u`, even before load_env runs or when SSH_HOSTS is empty.
+SSH_HOSTS_ARR=()
 
 # ---------------------------------------------------------------------------
 # Colors & formatting
@@ -361,7 +364,7 @@ path = sys.argv[1]
 key, val = sys.argv[2], sys.argv[3]
 with open(path) as f:
     text = f.read()
-text = re.sub(rf'^' + re.escape(key) + r'=.*$', f'{key}=\"{val}\"', text, flags=re.MULTILINE)
+text = re.sub(rf'^' + re.escape(key) + r'=.*$', lambda _m: f'{key}=\"{val}\"', text, flags=re.MULTILINE)
 with open(path, 'w') as f:
     f.write(text)
 " "$ENV_FILE" "$key" "$value"
@@ -385,6 +388,23 @@ load_env() {
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     export "$key=$value"
   done < "$ENV_FILE"
+
+  # Parse SSH_HOSTS (comma-separated) into an array for host iteration.
+  SSH_HOSTS_ARR=()
+  local _hosts_raw="${SSH_HOSTS:-}"
+  if [[ -n "$_hosts_raw" ]]; then
+    local _oldifs="$IFS"
+    IFS=',' read -ra SSH_HOSTS_ARR <<< "$_hosts_raw"
+    IFS="$_oldifs"
+    # Trim surrounding whitespace from each host
+    local _i
+    for _i in "${!SSH_HOSTS_ARR[@]}"; do
+      local _h="${SSH_HOSTS_ARR[$_i]}"
+      _h="${_h#"${_h%%[![:space:]]*}"}"
+      _h="${_h%"${_h##*[![:space:]]}"}"
+      SSH_HOSTS_ARR[$_i]="$_h"
+    done
+  fi
 }
 
 redact() {
@@ -479,13 +499,13 @@ detect_mux_type() {
   # Return "zellij", "tmux", or empty
   local explicit="${AILY_MULTIPLEXER:-}"
   if [[ -n "$explicit" ]]; then
-    echo "${explicit,,}"
+    printf '%s\n' "$explicit" | tr '[:upper:]' '[:lower:]'
     return
   fi
   if [[ -n "${ZELLIJ:-}" ]]; then echo "zellij"; return; fi
   if [[ -n "${TMUX:-}" ]]; then echo "tmux"; return; fi
   # Check remote host
-  if [[ ${#SSH_HOSTS_ARR[@]:-0} -gt 0 ]]; then
+  if [[ ${#SSH_HOSTS_ARR[@]} -gt 0 ]]; then
     local host="${SSH_HOSTS_ARR[0]}"
     if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" \
         'zellij list-sessions >/dev/null 2>&1' 2>/dev/null; then
@@ -1565,9 +1585,9 @@ cmd_status() {
     else
       _sessions_raw=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
     fi
-    session_count=$(echo "$_sessions_raw" | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
+    session_count=$(printf '%s' "$_sessions_raw" | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || true); session_count=${session_count:-0}
   else
-    session_count=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$_host" "$list_cmd" 2>/dev/null | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
+    session_count=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$_host" "$list_cmd" 2>/dev/null | sed -e "s/$(printf '\x1b')\[[0-9;]*m//g" | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || true); session_count=${session_count:-0}
   fi
   local sync_status
   sync_status=$(env_get "TMUX_THREAD_SYNC" "true")
@@ -1935,7 +1955,7 @@ cmd_export() {
   local output_stem="$session_name"
   output_stem="${output_stem##*/}"
   output_stem="${output_stem##*\\}"
-  output_stem="$(printf '%s' "$output_stem" | tr -c 'A-Za-z0-9._-:' '_')"
+  output_stem="$(printf '%s' "$output_stem" | tr -c 'A-Za-z0-9._:-' '_')"
   if [[ -z "$output_stem" || "$output_stem" == "." || "$output_stem" == ".." ]]; then
     output_stem="session"
   fi
