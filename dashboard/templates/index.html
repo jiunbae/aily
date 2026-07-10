@@ -101,7 +101,7 @@
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <template x-for="s in attentionSessions" :key="s.name">
-          <a :href="'/sessions/' + s.name"
+          <a :href="'/sessions/' + encodeURIComponent(s.name)"
              class="block rounded-lg border border-[var(--bg-overlay)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] hover:border-[#30363D] transition-all duration-200 p-4 no-underline">
             <div class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full"
@@ -195,7 +195,7 @@
 
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           <template x-for="session in activeSessions" :key="session.name">
-            <a :href="'/sessions/' + session.name"
+            <a :href="'/sessions/' + encodeURIComponent(session.name)"
                class="session-card group block rounded-lg p-4 bg-[var(--bg-surface)] border border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] hover:border-[#30363D] hover:shadow-[var(--shadow-md)] transition-all duration-200 cursor-pointer no-underline"
                :style="'border-left: 3px solid ' + statusColor(session.status)">
 
@@ -274,7 +274,7 @@
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
                   <a class="font-mono text-xs text-[var(--text-primary)] hover:underline truncate"
-                     :href="item.sessionName ? ('/sessions/' + item.sessionName) : '#'"
+                     :href="item.sessionName ? ('/sessions/' + encodeURIComponent(item.sessionName)) : '#'"
                      x-text="item.sessionName || 'system'"></a>
                   <span class="ml-auto text-[11px] text-[var(--text-muted)]"
                         x-text="timeAgo(item.timestamp)"
