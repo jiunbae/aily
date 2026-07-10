@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shlex
 from pathlib import Path
 
@@ -20,6 +21,10 @@ from multiplexer import get_backend, Multiplexer
 logger = logging.getLogger(__name__)
 
 SEND_KEYS_DELAY = 0.3
+
+# A valid ssh destination: optional user@, then host chars. Crucially must NOT
+# start with "-", or ssh would parse it as an option (e.g. "-oProxyCommand=...").
+_SAFE_HOST_RE = re.compile(r"^(?![-])[A-Za-z0-9._@-]+$")
 
 # SSH ControlMaster: reuse connections to the same host.
 # Socket path uses %r@%h:%p to uniquely identify each host connection.
@@ -54,9 +59,16 @@ def set_backend(mux_type: str) -> None:
     logger.info("Multiplexer backend set to: %s", _mux.name)
 
 
+_control_dir_ready = False
+
+
 def _ensure_control_dir() -> None:
-    """Create the SSH control socket directory if it doesn't exist."""
+    """Create the SSH control socket directory once (cached after first call)."""
+    global _control_dir_ready
+    if _control_dir_ready:
+        return
     os.makedirs(_CONTROL_DIR, mode=0o700, exist_ok=True)
+    _control_dir_ready = True
 
 
 async def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
@@ -74,7 +86,11 @@ async def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
     Returns:
         Tuple of (return_code, stdout_output).
     """
+    if not _SAFE_HOST_RE.match(host):
+        logger.error("Refusing SSH to unsafe host value: %r", host)
+        return 1, ""
     _ensure_control_dir()
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "ssh", *_SSH_CONTROL_OPTS, host, cmd,
@@ -86,14 +102,22 @@ async def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
         )
         return proc.returncode or 0, stdout.decode().strip()
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-            await proc.wait()
-        except ProcessLookupError:
-            pass
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
         logger.warning("SSH timeout: %s: %s", host, cmd[:80])
         return 1, ""
     except Exception as e:
+        # Reap the child if it spawned before the error, so it isn't left behind.
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
         logger.error("SSH error: %s: %s: %s", host, cmd[:80], e)
         return 1, str(e)
 
