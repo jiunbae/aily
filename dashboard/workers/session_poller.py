@@ -74,59 +74,67 @@ async def _process_new_session(
 ) -> None:
     """Process a single newly discovered session (called concurrently)."""
     async with sem:
+        # Insert new session (short, standalone write).
+        await db.execute(
+            """INSERT OR IGNORE INTO sessions
+               (name, host, status, created_at, updated_at)
+               VALUES (?, ?, 'active', ?, ?)""",
+            (name, host, now, now),
+        )
+
+        logger.info("Discovered new session: %s on %s", name, host)
+
+        # Slow I/O (Discord/Slack HTTP, SSH up to 15s) is done OUTSIDE any DB
+        # transaction. A db.batch() holds the write lock for its whole body, so
+        # doing network/SSH inside one stalls every dashboard write for its
+        # duration.
+        discord_thread_id = None
+        slack_thread_ts = None
+        try:
+            thread_ids = await platform_svc.sync_thread_ids(name)
+            discord_thread_id = thread_ids.get("discord_thread_id")
+            slack_thread_ts = thread_ids.get("slack_thread_ts")
+        except Exception:
+            logger.exception("Failed to sync thread IDs for session '%s'", name)
+
+        cwd = None
+        try:
+            cwd = await session_svc.get_session_cwd(host, name)
+        except Exception:
+            logger.debug("Failed to get working directory for session '%s'", name, exc_info=True)
+
+        # Apply the fetched values and record the event in one short transaction.
+        session_row = None
         async with db.batch():
-            # Insert new session
-            await db.execute(
-                """INSERT OR IGNORE INTO sessions
-                   (name, host, status, created_at, updated_at)
-                   VALUES (?, ?, 'active', ?, ?)""",
-                (name, host, now, now),
-            )
-
-            logger.info("Discovered new session: %s on %s", name, host)
-
-            # Sync platform thread IDs for new sessions
-            try:
-                thread_ids = await platform_svc.sync_thread_ids(name)
-                if thread_ids.get("discord_thread_id"):
-                    await db.execute(
-                        "UPDATE sessions SET discord_thread_id = ? WHERE name = ?",
-                        (thread_ids["discord_thread_id"], name),
-                    )
-                if thread_ids.get("slack_thread_ts"):
-                    await db.execute(
-                        "UPDATE sessions SET slack_thread_ts = ? WHERE name = ?",
-                        (thread_ids["slack_thread_ts"], name),
-                    )
-            except Exception:
-                logger.exception(
-                    "Failed to sync thread IDs for session '%s'", name
+            if discord_thread_id:
+                await db.execute(
+                    "UPDATE sessions SET discord_thread_id = ? WHERE name = ?",
+                    (discord_thread_id, name),
+                )
+            if slack_thread_ts:
+                await db.execute(
+                    "UPDATE sessions SET slack_thread_ts = ? WHERE name = ?",
+                    (slack_thread_ts, name),
+                )
+            if cwd:
+                await db.execute(
+                    "UPDATE sessions SET working_dir = ? WHERE name = ?",
+                    (cwd, name),
                 )
 
-            # Get working directory
-            try:
-                cwd = await session_svc.get_session_cwd(host, name)
-                if cwd:
-                    await db.execute(
-                        "UPDATE sessions SET working_dir = ? WHERE name = ?",
-                        (cwd, name),
-                    )
-            except Exception:
-                logger.debug("Failed to get working directory for session '%s'", name, exc_info=True)
-
-            # Fetch the complete session record for the event
             session_row = await db.fetchone(
                 "SELECT * FROM sessions WHERE name = ?", (name,)
             )
             if session_row:
-                await event_bus.publish(Event.session_created(dict(session_row)))
-
-                # Also record in events table
                 await db.execute(
                     """INSERT INTO events (event_type, session_name, payload, created_at)
                        VALUES (?, ?, ?, ?)""",
                     ("session.created", name, json.dumps({"host": host}), now),
                 )
+
+        # Publish after the transaction commits.
+        if session_row:
+            await event_bus.publish(Event.session_created(dict(session_row)))
 
 
 async def _poll_once(
