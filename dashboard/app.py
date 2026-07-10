@@ -322,7 +322,10 @@ async def _healthz(request: web.Request) -> web.Response:
         await db_conn.execute("SELECT 1")
         checks["database"] = "ok"
     except Exception as e:
-        checks["database"] = f"error: {e}"
+        # /healthz is unauthenticated — don't leak exception text (paths, schema,
+        # sqlite internals). Log the detail server-side, return a generic status.
+        logging.warning("[healthz] database check failed: %s", e)
+        checks["database"] = "error"
         checks["status"] = "degraded"
 
     status_code = 200 if checks["status"] == "ok" else 503
@@ -422,7 +425,11 @@ async def _login_submit(request: web.Request) -> web.Response:
     import time as _time
 
     _cleanup_login_attempts()
-    client_ip = request.remote or "unknown"
+    # Use the shared IP resolver so proxied deployments key on the real client
+    # IP (X-Forwarded-For when TRUST_PROXY is set). Otherwise every request
+    # appears as the proxy's IP and 5 failed logins lock out all users at once.
+    from dashboard.rate_limit import _client_ip
+    client_ip = _client_ip(request)
     now = _time.monotonic()
     attempts = _login_attempts.setdefault(client_ip, [])
     # Prune attempts outside the window

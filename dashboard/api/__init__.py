@@ -7,9 +7,37 @@ Error responses follow the format:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from aiohttp import web
+
+
+async def read_json_object(request: web.Request) -> dict[str, Any]:
+    """Parse and validate a JSON *object* request body.
+
+    Returns the parsed dict, or raises ``web.HTTPBadRequest`` (with the standard
+    JSON error envelope) when the body is not valid JSON or is a non-object
+    (array/scalar). Handlers that do ``body.get(...)`` / ``body.items()`` would
+    otherwise raise on a non-dict body and surface as a 500 instead of a 400.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        raise web.HTTPBadRequest(
+            text=json.dumps(
+                {"error": {"code": "INVALID_JSON", "message": "Request body must be JSON"}}
+            ),
+            content_type="application/json",
+        )
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(
+            text=json.dumps(
+                {"error": {"code": "INVALID_JSON", "message": "Request body must be a JSON object"}}
+            ),
+            content_type="application/json",
+        )
+    return body
 
 
 def error_response(
