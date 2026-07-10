@@ -432,6 +432,7 @@
     statusMeta,
     agentLabel,
     agentColor,
+    safeUrl,
   };
 
   // -----------------------------

@@ -162,7 +162,7 @@
         <div>
           <div class="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Active</div>
           <template x-for="s in activeSessions" :key="s.name">
-            <a :href="'/sessions/' + s.name"
+            <a :href="'/sessions/' + encodeURIComponent(s.name)"
                class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150 cursor-pointer no-underline">
               <span class="status-dot w-1.5 h-1.5 rounded-full flex-shrink-0"
                     :class="[
@@ -178,7 +178,7 @@
         <div>
           <div class="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Idle</div>
           <template x-for="s in idleSessions" :key="s.name">
-            <a :href="'/sessions/' + s.name"
+            <a :href="'/sessions/' + encodeURIComponent(s.name)"
                class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover-surface transition-colors duration-150 cursor-pointer no-underline">
               <span class="status-dot w-1.5 h-1.5 rounded-full flex-shrink-0"
                     :class="ailyUtils.statusMeta(s.status).dotClass"></span>

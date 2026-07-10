@@ -79,14 +79,18 @@
       this._clearReconnectTimer();
       this._stopPing();
 
+      let ws;
       try {
-        this._ws = new WebSocket(this.url);
+        ws = new WebSocket(this.url);
       } catch (e) {
         this._scheduleReconnect("ws_ctor_failed");
         return;
       }
+      this._ws = ws;
 
-      this._ws.addEventListener("open", () => {
+      ws.addEventListener("open", () => {
+        // Ignore events from a socket we've already replaced/abandoned.
+        if (this._ws !== ws) return;
         this._backoffMs = 1000;
         this._setStatus("connected");
         this._startPing();
@@ -95,11 +99,15 @@
         }
       });
 
-      this._ws.addEventListener("message", (evt) => {
+      ws.addEventListener("message", (evt) => {
+        if (this._ws !== ws) return;
         this._handleMessage(evt.data);
       });
 
-      this._ws.addEventListener("close", () => {
+      ws.addEventListener("close", () => {
+        // A stale socket (already superseded by reconnect) must not clobber
+        // the current connection reference or trigger a spurious reconnect.
+        if (this._ws !== ws) return;
         this._ws = null;
         this._stopPing();
         if (this._intentionalClose) {
@@ -109,9 +117,10 @@
         this._scheduleReconnect("ws_closed");
       });
 
-      this._ws.addEventListener("error", () => {
+      ws.addEventListener("error", () => {
         // Most browsers also fire "close" after "error". We still schedule here
         // in case a close doesn't happen.
+        if (this._ws !== ws) return;
         this._scheduleReconnect("ws_error");
       });
     }
