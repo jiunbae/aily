@@ -128,6 +128,33 @@ class TestDetectSessionLimit:
         result = detect_session_limit(pre, post)
         assert result == "Rate limit exceeded"
 
+    def test_echoed_user_message_ignored(self):
+        """A user message that mentions a limit keyword must NOT self-trigger.
+
+        The pane echoes the message we just sent; without excluding it, the
+        detector would enqueue a retry that re-sends the same text and
+        re-triggers on its own echo forever.
+        """
+        user_message = "why do I keep getting a rate limit error here?"
+        pre = "prompt>"
+        post = f"prompt>\n{user_message}"
+        assert detect_session_limit(pre, post, user_message) is None
+
+    def test_real_limit_still_detected_with_user_message(self):
+        """The agent's actual error is still caught even when a user_message is given."""
+        user_message = "run the deploy script"
+        pre = "prompt>"
+        post = f"prompt>\n{user_message}\nError: Rate limit exceeded. Try again later."
+        result = detect_session_limit(pre, post, user_message)
+        assert result is not None
+        assert "Rate limit" in result
+
+    def test_multiline_echoed_message_ignored(self):
+        user_message = "line one is long enough\nusage limit reached is my question"
+        pre = "prompt>"
+        post = "prompt>\nline one is long enough\nusage limit reached is my question"
+        assert detect_session_limit(pre, post, user_message) is None
+
 
 class TestPatternCount:
     """Ensure all expected patterns are registered."""
