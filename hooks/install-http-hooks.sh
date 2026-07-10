@@ -51,8 +51,12 @@ _hook_obj() {
     env_vars+=("$HOOK_SECRET_VAR")
   fi
 
-  local env_arr
-  env_arr=$(printf '%s\n' "${env_vars[@]}" | jq -R . | jq -s .)
+  local env_arr='[]'
+  # Guard the array expansion: `"${arr[@]}"` on an empty array is fatal under
+  # `set -u` on bash < 4.4 (macOS ships 3.2).
+  if [[ ${#env_vars[@]} -gt 0 ]]; then
+    env_arr=$(printf '%s\n' "${env_vars[@]}" | jq -R . | jq -s .)
+  fi
 
   if [[ -n "$HOOK_SECRET_VAR" ]]; then
     jq -n --arg url "$url" --argjson timeout "$timeout" \
@@ -104,7 +108,18 @@ if [[ "$confirm" != [yY]* ]]; then
   exit 0
 fi
 
-echo "$MERGED" | jq . > "$SETTINGS"
+# Atomic write: render to a temp file, back up the current settings, then move
+# into place. A jq failure or full disk must not truncate the user's settings.
+_tmp="${SETTINGS}.aily.tmp.$$"
+if ! echo "$MERGED" | jq . > "$_tmp"; then
+  rm -f "$_tmp"
+  echo "Error: failed to render settings; original left untouched." >&2
+  exit 1
+fi
+if [[ -f "$SETTINGS" ]]; then
+  cp -p "$SETTINGS" "${SETTINGS}.bak"
+fi
+mv "$_tmp" "$SETTINGS"
 echo "Done. HTTP hooks installed to $SETTINGS"
 echo ""
 echo "Events configured:"
