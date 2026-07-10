@@ -127,6 +127,7 @@ class UsageService:
     async def close(self) -> None:
         if self._http and not self._http.closed:
             await self._http.close()
+        self._http = None
 
     # --- Polling ---
 
