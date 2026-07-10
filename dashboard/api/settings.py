@@ -13,14 +13,15 @@ Distinct from user preferences (pref: prefix).
 from __future__ import annotations
 
 import asyncio
-import json
+import ipaddress
 import logging
 import time
+from urllib.parse import urlparse
 
 from aiohttp import web
 
 from dashboard import db
-from dashboard.api import error_response, json_ok
+from dashboard.api import error_response, json_ok, read_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,33 @@ READONLY_KEYS = frozenset({
 })
 
 SETTING_PREFIX = "setting:"
+
+
+def _validate_dashboard_url(value: str) -> str | None:
+    """Validate a user-supplied dashboard_url. Returns an error string or None.
+
+    The URL is later fetched server-side by the connectivity test, so an
+    unchecked value is an SSRF vector. We require an http(s) scheme and reject
+    cloud-metadata / link-local targets. localhost / private hosts remain valid
+    because the dashboard legitimately runs on them.
+    """
+    value = value.strip()
+    if not value:
+        return None  # empty means "unset / derive from request" — allowed
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        return "dashboard_url must use http:// or https://"
+    if not parsed.hostname:
+        return "dashboard_url must include a host"
+    # Block the cloud metadata endpoint and other link-local addresses.
+    try:
+        ip = ipaddress.ip_address(parsed.hostname)
+        if ip.is_link_local:
+            return "dashboard_url must not point at a link-local address"
+    except ValueError:
+        # Not a bare IP (a hostname); nothing further to check here.
+        pass
+    return None
 
 
 async def _resolve_dashboard_url(request: web.Request) -> str:
@@ -158,10 +186,7 @@ async def put_settings(request: web.Request) -> web.Response:
     Merge provided settings. Only writable keys are accepted.
     Request body: {"dashboard_url": "https://...", "poll_interval": "60"}
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     now = db.now_iso()
     updated_keys: list[str] = []
@@ -170,6 +195,11 @@ async def put_settings(request: web.Request) -> web.Response:
         if key not in WRITABLE_KEYS:
             continue
         value_str = str(value)
+
+        if key == "dashboard_url":
+            err = _validate_dashboard_url(value_str)
+            if err:
+                return error_response(400, "INVALID_SETTING", err)
 
         await db.execute(
             """INSERT INTO kv (key, value, updated)
@@ -230,10 +260,7 @@ async def test_connection(request: web.Request) -> web.Response:
     Test connectivity to various services.
     Body: {"type": "dashboard"|"discord"|"slack"|"ssh", "host": "..."}
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     test_type = str(body.get("type", "")).lower()
     host = str(body.get("host", "")).strip()

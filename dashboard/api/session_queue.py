@@ -10,14 +10,13 @@ Endpoints:
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone, timedelta
 
 from aiohttp import web
 
 from dashboard import db
-from dashboard.api import error_response, json_ok
+from dashboard.api import error_response, json_ok, read_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +110,7 @@ async def enqueue(request: web.Request) -> web.Response:
         max_retries   (optional, default 12)
         retry_interval (optional, default 1800)
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     # Validate required fields
     required = ("session_name", "host", "platform", "channel_id", "user_message")
@@ -176,10 +172,7 @@ async def update_queue_item(request: web.Request) -> web.Response:
     if not existing:
         return error_response(404, "NOT_FOUND", f"Queue item {item_id} not found")
 
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     updates: list[str] = []
     params: list[str | int | None] = []
