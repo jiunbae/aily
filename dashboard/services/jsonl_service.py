@@ -77,9 +77,12 @@ class JSONLService:
 
         project_dir = f"$HOME/.claude/projects/{shlex.quote(sanitized_cwd)}"
 
+        # `ls -t` sorts by mtime (newest first) and is portable across GNU and
+        # BSD/macOS. `find -printf` is GNU-only and silently fails on BSD hosts.
+        # sanitized_cwd is regex-whitelisted above, so the glob is safe.
         rc, out = await ssh.run_ssh(
             host,
-            f"find {project_dir} -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-",
+            f"ls -t {project_dir}/*.jsonl 2>/dev/null | head -1",
             timeout=10,
         )
         if rc != 0 or not out.strip():

@@ -86,8 +86,11 @@ async def list_sessions(request: web.Request) -> web.Response:
         where_clauses.append("s.host = ?")
         query_params.append(host_filter)
     if q:
-        where_clauses.append("s.name LIKE ?")
-        query_params.append(f"%{q}%")
+        # Escape LIKE wildcards so user-supplied % / _ are treated literally
+        # (e.g. "a_b" should not match "axb").
+        escaped_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where_clauses.append("s.name LIKE ? ESCAPE '\\'")
+        query_params.append(f"%{escaped_q}%")
 
     where_sql = ""
     if where_clauses:
@@ -229,7 +232,7 @@ async def create_session(request: web.Request) -> web.Response:
         return error_response(
             400,
             "INVALID_HOST",
-            f"Unknown host '{host}'. Available: {session_svc.ssh_hosts}",
+            f"Unknown host '{host}'",
         )
 
     # Check if session already exists in DB
