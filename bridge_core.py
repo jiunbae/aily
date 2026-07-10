@@ -275,19 +275,18 @@ class BridgeCore:
             host, f"{mux.has_session_cmd(safe_name)} 2>/dev/null && echo found"
         )
         if rc == 0 and "found" in out:
-            # Verify it's not a prefix match against an infra session
+            # `has_session_cmd` can succeed on a prefix/fnmatch (e.g. tmux
+            # `has-session -t web` matches an existing `webserver`), so confirm
+            # the session exists by *exact* name in the session list. This also
+            # guards against a failed list command (empty output → no match)
+            # being treated as a hit.
             _, exact = self.run_ssh(
                 host, f"{mux.list_sessions_cmd()} 2>/dev/null"
             )
             sessions = exact.splitlines()
             if session_name in sessions:
                 return host
-            if any(
-                s.startswith(session_name) and s in _INFRA_SESSIONS
-                for s in sessions
-            ):
-                return None
-            return host
+            return None
         return None
 
     def find_session_host(self, session_name: str) -> str | None:
@@ -502,10 +501,14 @@ class BridgeCore:
     def _fire_dashboard_event(self, event: dict[str, Any]) -> None:
         """Schedule a dashboard event from sync or async context without awaiting."""
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.emit_dashboard_event(event))
+            asyncio.get_running_loop()
         except RuntimeError:
             logging.debug("Dashboard event dropped (no running event loop): %s", event.get("type", "unknown"))
+            return
+        # Route through _track_task so a reference is retained (a bare
+        # loop.create_task can be garbage-collected mid-flight, silently
+        # dropping the event) and exceptions are logged.
+        self._track_task(self.emit_dashboard_event(event))
 
     async def dashboard_api(
         self, method: str, path: str, json_body: dict[str, Any] | None = None
@@ -688,7 +691,7 @@ class BridgeCore:
             )
             if not post_content:
                 return
-            error_line = detect_session_limit(pre_content, post_content)
+            error_line = detect_session_limit(pre_content, post_content, user_message)
             if not error_line:
                 return
 
@@ -798,7 +801,10 @@ class BridgeCore:
                         self.capture_pane_content, host, session_name
                     )
                     error_line = (
-                        detect_session_limit(pre_content, post_content)
+                        detect_session_limit(
+                            pre_content, post_content,
+                            item.get("user_message", ""),
+                        )
                         if post_content else None
                     )
 
@@ -1169,6 +1175,13 @@ class BridgeCore:
                 await platform.archive_thread(thread_id)
                 thread_cleaned = True
                 cleanup_action = "archived"
+
+            # Drop any cached thread_ts -> session mapping so a later session of
+            # the same name doesn't relay into this killed thread. (Slack-only;
+            # Discord has no such cache.)
+            invalidate = getattr(platform, "invalidate_thread_cache", None)
+            if invalidate is not None:
+                await invalidate(thread_id)
 
         # Report
         status: list[str] = []

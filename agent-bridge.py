@@ -93,11 +93,15 @@ class DiscordPlatform(PlatformBridge):
     max_message_len = 1900
 
     def __init__(self, http: aiohttp.ClientSession, token: str,
-                 channel_id: str, guild_id: str = ""):
+                 channel_id: str, guild_id: str = "",
+                 thread_name_format: str = "[agent] {session} - {host}"):
         self.http = http
         self.token = token
         self.channel_id = channel_id
         self.guild_id = guild_id
+        # Used to parse session names back out of thread names; must match the
+        # format cmd_new used to build them, or routing silently breaks.
+        self.thread_name_format = thread_name_format
 
     async def post_message(self, channel_id: str, content: str, **kwargs) -> Any:
         """Post a message to a channel or thread."""
@@ -156,7 +160,7 @@ class DiscordPlatform(PlatformBridge):
             {"name": thread_name})
         thread_id = thread.get("id") if isinstance(thread, dict) else None
         if thread_id:
-            session_name = parse_thread_name(thread_name) or thread_name
+            session_name = parse_thread_name(thread_name, self.thread_name_format) or thread_name
             welcome = (
                 f"**Welcome to {thread_name}** \U0001f44b\n\n"
                 "Type a message here to forward it to the tmux session.\n\n"
@@ -206,7 +210,7 @@ class DiscordPlatform(PlatformBridge):
                 for t in data.get("threads", []):
                     name = t.get("name", "")
                     if t.get("parent_id") == self.channel_id:
-                        parsed = parse_thread_name(name)
+                        parsed = parse_thread_name(name, self.thread_name_format)
                         if parsed:
                             active.add(parsed)
         return active
@@ -240,10 +244,23 @@ async def handle_message(
     # Check if we're in an [agent] thread
     ch = await discord_request(
         platform.http, platform.token, "GET", f"/channels/{channel_id}")
+
+    # Authorization gate: only act on the configured channel and threads that
+    # hang off it. Without this, any member of any guild/channel the bot can
+    # read could run `!new ... -- <shell>` and execute commands on the SSH
+    # hosts. `parent_id` links a thread to its parent channel.
+    parent_id = ch.get("parent_id", "") if isinstance(ch, dict) else ""
+    is_authorized_channel = (
+        channel_id == platform.channel_id
+        or parent_id == platform.channel_id
+    )
+    if not is_authorized_channel:
+        return
+
     is_agent_thread = (
         isinstance(ch, dict)
         and ch.get("type") in (11, 12)
-        and parse_thread_name(ch.get("name", ""))
+        and parse_thread_name(ch.get("name", ""), core.state.thread_name_format)
     )
 
     # In agent threads: handle shortcuts before global commands
@@ -259,7 +276,7 @@ async def handle_message(
         return
 
     thread_name = ch.get("name", "") if isinstance(ch, dict) else ""
-    session_name = parse_thread_name(thread_name)
+    session_name = parse_thread_name(thread_name, core.state.thread_name_format)
     if not session_name:
         return
     user_name = author.get("username", "unknown")
@@ -301,7 +318,14 @@ async def gateway_connect(
     announced: dict[str, bool],
 ):
     """Connect to Discord gateway via WebSocket and listen for messages."""
-    async with aiohttp.ClientSession() as http:
+    # REST calls use the persistent session owned by main (platform.http); only
+    # the WebSocket gets a short-lived per-cycle session. Previously REST also
+    # used the per-cycle session, so when a gateway cycle ended it closed the
+    # session out from under in-flight background tasks (output capture,
+    # session-limit detection, retry loop) → "Session is closed" and dropped
+    # output during reconnect windows.
+    http = platform.http
+    async with aiohttp.ClientSession() as ws_session:
         # Get gateway URL
         gw = await discord_request(http, token, "GET", "/gateway/bot")
         ws_url = (gw.get("url", "wss://gateway.discord.gg") if isinstance(gw, dict) else "wss://gateway.discord.gg") + "?v=10&encoding=json"
@@ -355,14 +379,11 @@ async def gateway_connect(
                     lines.append(f"Queued commands: **{pending}** pending")
             await platform.post_message(platform.channel_id, "\n".join(lines))
 
-        # Update the platform's http session for this gateway cycle
-        platform.http = http
-
         intents = INTENT_GUILDS | INTENT_GUILD_MESSAGES | INTENT_MESSAGE_CONTENT
         sequence = None
         hb_task = None
 
-        async with http.ws_connect(ws_url) as ws:
+        async with ws_session.ws_connect(ws_url) as ws:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
@@ -513,11 +534,16 @@ async def main():
     dashboard_http = aiohttp.ClientSession()
     state.dashboard_http = dashboard_http
 
+    # Persistent REST session for Discord API calls. Kept alive across gateway
+    # reconnects so background tasks can keep posting between cycles.
+    discord_http = aiohttp.ClientSession()
+
     # Create platform and core
     platform = DiscordPlatform(
-        http=dashboard_http,  # temporary; replaced per gateway_connect cycle
+        http=discord_http,
         token=token,
         channel_id=channel_id,
+        thread_name_format=state.thread_name_format,
     )
     core = BridgeCore(state, platform)
 
@@ -556,6 +582,7 @@ async def main():
             except asyncio.CancelledError:
                 pass
         await dashboard_http.close()
+        await discord_http.close()
 
 
 if __name__ == "__main__":
