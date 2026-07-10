@@ -11,11 +11,15 @@ on:
     paths:
       - 'agent-bridge.py'
       - 'slack-bridge.py'
+      - 'bridge_core.py'
+      - 'multiplexer.py'
+      - 'session_limit.py'
       - 'dashboard/**'
       - 'tests/**'
       - 'requirements.txt'
       - 'requirements-dev.txt'
       - 'Dockerfile'
+      - 'docker-entrypoint.sh'
       - '.gitea/workflows/**'
   workflow_dispatch:
 
@@ -74,9 +78,28 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-      - name: Clone IaC repo from GitHub
+      - name: Configure git credentials for IaC repo
+        env:
+          IAC_TOKEN: ${{ secrets.IAC_GITHUB_TOKEN }}
         run: |
-          git clone -b ${{ env.IAC_BRANCH }} https://x-access-token:${{ secrets.IAC_GITHUB_TOKEN }}@github.com/${{ env.IAC_REPO }}.git iac
+          # Provide the token via GIT_ASKPASS instead of embedding it in the
+          # clone URL. Embedding it there leaks the secret into the runner's
+          # process args and persists it in iac/.git/config for the later push.
+          cat > "${RUNNER_TEMP:-/tmp}/git-askpass.sh" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            Username*) printf 'x-access-token' ;;
+            Password*) printf '%s' "$IAC_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "${RUNNER_TEMP:-/tmp}/git-askpass.sh"
+
+      - name: Clone IaC repo from GitHub
+        env:
+          IAC_TOKEN: ${{ secrets.IAC_GITHUB_TOKEN }}
+          GIT_ASKPASS: ${{ runner.temp }}/git-askpass.sh
+        run: |
+          git clone -b "${IAC_BRANCH}" "https://github.com/${IAC_REPO}.git" iac
 
       - name: Update image tag in IaC repo
         run: |
@@ -85,6 +108,9 @@ jobs:
           cat kustomization.yaml
 
       - name: Commit and push to IaC repo
+        env:
+          IAC_TOKEN: ${{ secrets.IAC_GITHUB_TOKEN }}
+          GIT_ASKPASS: ${{ runner.temp }}/git-askpass.sh
         run: |
           cd iac
           git config user.name "Gitea Actions"
