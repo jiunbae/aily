@@ -35,6 +35,7 @@ import logging
 import aiohttp
 from aiohttp import web
 
+from dashboard.auth import WS_NONCE_PROTO_PREFIX
 from dashboard.services.event_bus import Event, EventBus
 
 logger = logging.getLogger(__name__)
@@ -54,9 +55,18 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
        - receive_messages: reads client messages (subscribe, ping)
     4. Heartbeat every 30s to keep the connection alive.
     """
+    # If the client carried its auth nonce as a subprotocol, echo it back so
+    # the browser handshake commits to a negotiated subprotocol. (Auth already
+    # validated it in the middleware; this is just protocol negotiation.)
+    requested_proto = request.headers.get("Sec-WebSocket-Protocol", "")
+    nonce_protos = [
+        p.strip() for p in requested_proto.split(",")
+        if p.strip().startswith(WS_NONCE_PROTO_PREFIX)
+    ]
     ws = web.WebSocketResponse(
         heartbeat=HEARTBEAT_INTERVAL,
         compress=15,  # permessage-deflate with 15-bit window
+        protocols=nonce_protos,
     )
     await ws.prepare(request)
     ws_clients: set[web.WebSocketResponse] = request.app.setdefault(
