@@ -9,20 +9,24 @@ _aily_log() {
   local log="$_AILY_LOG_FILE"
   mkdir -p "$(dirname "$log")"
 
-  # Auto-rotate: truncate to last 500 lines when > 1000 (flock to avoid races)
+  # Auto-rotate: truncate to last 500 lines when > 1000. Use a mkdir-based lock
+  # (atomic on all POSIX systems) to avoid races — flock is unavailable on macOS,
+  # where the old `flock -n 9 || exit 0` silently skipped rotation forever and
+  # the log grew unbounded.
   if [[ -f "$log" ]]; then
     local lines
     lines=$(wc -l < "$log" 2>/dev/null || echo 0)
     if (( lines > 1000 )); then
-      (
-        flock -n 9 || exit 0
+      local lockdir="${log}.lock.d"
+      if mkdir "$lockdir" 2>/dev/null; then
         # Re-check under lock in case another process already rotated
         lines=$(wc -l < "$log" 2>/dev/null || echo 0)
         if (( lines > 1000 )); then
-          local tmp="${log}.tmp"
+          local tmp="${log}.tmp.$$"
           tail -500 "$log" > "$tmp" 2>/dev/null && mv "$tmp" "$log" 2>/dev/null || rm -f "$tmp"
         fi
-      ) 9>"${log}.lock"
+        rmdir "$lockdir" 2>/dev/null || true
+      fi
     fi
   fi
 

@@ -11,6 +11,7 @@ unique index handles all dedup.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -42,7 +43,13 @@ def compute_dedup_hash(
     if source_id:
         key = f"{source}:{source_id}"
     else:
-        key = f"{session_name}:{source}:{content[:200]}"
+        # Hash the FULL content, not content[:200]: two distinct messages that
+        # share the same first 200 chars (common for short replies or long
+        # shared prefixes) would otherwise collide on the unique dedup index and
+        # the second would be silently dropped. Full content stays deterministic,
+        # so genuine re-ingests of the same message still dedup correctly.
+        content_digest = hashlib.sha256(content.encode()).hexdigest()
+        key = f"{session_name}:{source}:{content_digest}"
     return hashlib.sha256(key.encode()).hexdigest()
 
 
@@ -174,7 +181,10 @@ class MessageService:
             {
                 "event_type": event_data.get("type", "bridge.event"),
                 "session_name": session_name,
-                "payload": str(event_data),
+                # json.dumps (not str()) so the payload is valid JSON, matching
+                # every other events-table writer; str() emits a Python repr
+                # (single-quoted) that json.loads can't parse.
+                "payload": json.dumps(event_data, default=str),
                 "created_at": db.now_iso(),
             },
         )

@@ -184,6 +184,30 @@ class TestParseThreadName:
 
 
 # ===================================================================
+# parse_thread_name (module-level, used by the Discord/Slack bridges)
+# ===================================================================
+
+class TestParseThreadNameModule:
+    def test_default_format(self):
+        from bridge_core import parse_thread_name
+        assert parse_thread_name("[agent] my-sess - myhost") == "my-sess"
+
+    def test_custom_format_honored(self):
+        """The bridges pass the configured format; a non-default format must parse.
+
+        Regression: the bridges used to call this with the hardcoded default, so
+        any custom THREAD_NAME_FORMAT silently broke message routing.
+        """
+        from bridge_core import parse_thread_name
+        assert parse_thread_name("session=work@host1", "session={session}@{host}") == "work"
+
+    def test_custom_format_mismatch_returns_none(self):
+        from bridge_core import parse_thread_name
+        # Matches neither the custom format nor the legacy [agent] prefix fallback.
+        assert parse_thread_name("random chatter", "session={session}@{host}") is None
+
+
+# ===================================================================
 # _is_prompt_line
 # ===================================================================
 

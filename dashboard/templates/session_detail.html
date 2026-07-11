@@ -335,7 +335,7 @@
           <div class="space-y-2">
             <template x-if="session?.discord_url">
               <a class="flex items-center gap-3 px-3 py-3 rounded-lg border border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] transition-colors"
-                 :href="session.discord_url" target="_blank" rel="noopener noreferrer">
+                 :href="ailyUtils.safeUrl(session.discord_url) || '#'" target="_blank" rel="noopener noreferrer">
                 <span class="w-2.5 h-2.5 rounded-full bg-[var(--platform-discord)]"></span>
                 <span class="text-sm text-[var(--text-primary)]">Open in Discord</span>
                 <span class="ml-auto text-xs text-[var(--text-muted)]">-&gt;</span>
@@ -350,7 +350,7 @@
 
             <template x-if="session?.slack_url">
               <a class="flex items-center gap-3 px-3 py-3 rounded-lg border border-[var(--bg-overlay)] hover:bg-[var(--bg-elevated)] transition-colors"
-                 :href="session.slack_url" target="_blank" rel="noopener noreferrer">
+                 :href="ailyUtils.safeUrl(session.slack_url) || '#'" target="_blank" rel="noopener noreferrer">
                 <span class="w-2.5 h-2.5 rounded-full bg-[var(--platform-slack)]"></span>
                 <span class="text-sm text-[var(--text-primary)]">Open in Slack</span>
                 <span class="ml-auto text-xs text-[var(--text-muted)]">-&gt;</span>

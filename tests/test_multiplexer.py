@@ -50,8 +50,11 @@ class TestTmuxBackend:
         assert "-c /home/user" in cmd
 
     def test_send_keys_cmd(self, tmux):
+        # -l types the text literally (so a message like "Enter" or "C-c" is not
+        # interpreted as a key) and -- stops flag parsing (so a "-"-prefixed
+        # message is not read as an option).
         cmd = tmux.send_keys_cmd("sess", "'hello'")
-        assert cmd == "tmux send-keys -t sess 'hello'"
+        assert cmd == "tmux send-keys -t sess -l -- 'hello'"
 
     def test_send_enter_cmd(self, tmux):
         cmd = tmux.send_enter_cmd("sess")

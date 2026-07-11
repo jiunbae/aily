@@ -17,9 +17,11 @@ fi
 safe_load_env() {
     local env_file="$1"
     [ -f "$env_file" ] || return 0
-    while IFS='=' read -r key value; do
+    # `|| [[ -n "$key" ]]` so a final line without a trailing newline is not dropped.
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
         key=$(echo "$key" | tr -d '[:space:]')
         [[ -z "$key" || "$key" == \#* ]] && continue
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         value="${value%\"}" ; value="${value#\"}"
         value="${value%\'}" ; value="${value#\'}"
         export "$key=$value"

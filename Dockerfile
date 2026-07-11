@@ -19,8 +19,11 @@ WORKDIR /app
 # Copy only installed packages from builder
 COPY --from=builder /install /usr/local
 
-# Copy application code
-COPY agent-bridge.py slack-bridge.py ./
+# Copy application code. bridge_core/multiplexer/session_limit are imported by
+# the bridges (from bridge_core import ...) AND by the dashboard
+# (dashboard/ssh.py: from multiplexer import ...), so they must be in the image
+# for every BRIDGE_MODE — including the default "dashboard" mode.
+COPY agent-bridge.py slack-bridge.py bridge_core.py multiplexer.py session_limit.py ./
 COPY dashboard/ ./dashboard/
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh

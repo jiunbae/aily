@@ -84,6 +84,10 @@ class UsageService:
         self.enable_command_queue = enable_command_queue
         self.retention_hours = retention_hours
         self._http: aiohttp.ClientSession | None = None
+        # Serializes execute_pending_commands so a manual HTTP trigger and the
+        # usage-poller loop (or a slow run overlapping the next tick) can't both
+        # claim + re-select the same 'executing' rows and double-send commands.
+        self._exec_lock = asyncio.Lock()
 
     async def recover_stuck_commands(self) -> int:
         """Reset any 'executing' commands back to 'pending' on startup.
@@ -123,6 +127,7 @@ class UsageService:
     async def close(self) -> None:
         if self._http and not self._http.closed:
             await self._http.close()
+        self._http = None
 
     # --- Polling ---
 
@@ -321,19 +326,36 @@ class UsageService:
             logger.warning("Cannot execute commands: no SessionService")
             return []
 
-        # Atomically claim pending commands by marking them 'executing'
+        # Claim a batch under the lock so concurrent callers (poller loop +
+        # manual HTTP trigger, or a slow run overlapping the next tick) can't
+        # both select the same rows. We claim by explicit id and then re-select
+        # ONLY those ids, so a plain "WHERE status='executing'" can't pull in
+        # another still-running invocation's in-flight rows (which caused the
+        # same command to be sent to the tmux session twice). The lock is
+        # released before the slow send loop below.
         now = db.now_iso()
-        await db.execute(
-            """UPDATE command_queue SET status = 'executing', updated_at = ?
-               WHERE status = 'pending'""",
-            (now,),
-        )
-        commands = await db.fetchall(
-            """SELECT * FROM command_queue
-               WHERE status = 'executing'
-               ORDER BY priority DESC, created_at ASC
-               LIMIT 50"""
-        )
+        async with self._exec_lock:
+            pending = await db.fetchall(
+                """SELECT id FROM command_queue
+                   WHERE status = 'pending'
+                   ORDER BY priority DESC, created_at ASC
+                   LIMIT 50"""
+            )
+            ids = [row["id"] for row in pending]
+            if not ids:
+                return []
+            placeholders = ",".join("?" for _ in ids)
+            await db.execute(
+                f"""UPDATE command_queue SET status = 'executing', updated_at = ?
+                    WHERE id IN ({placeholders})""",
+                (now, *ids),
+            )
+            commands = await db.fetchall(
+                f"""SELECT * FROM command_queue
+                    WHERE id IN ({placeholders})
+                    ORDER BY priority DESC, created_at ASC""",
+                tuple(ids),
+            )
         if not commands:
             return []
 

@@ -49,9 +49,13 @@ class SlackPlatform(PlatformBridge):
     platform_name = "slack"
     max_message_len = 3800
 
-    def __init__(self, web_client: AsyncWebClient, channel_id: str):
+    def __init__(self, web_client: AsyncWebClient, channel_id: str,
+                 thread_name_format: str = "[agent] {session} - {host}"):
         self._client = web_client
         self._channel_id = channel_id
+        # Must match the format cmd_new uses to build thread names, or parsing
+        # session names back out of parent messages silently fails.
+        self._thread_name_format = thread_name_format
         # Cache: thread_ts -> session_name (LRU via OrderedDict)
         self._THREAD_CACHE_MAX = 256
         self._thread_cache: OrderedDict[str, str] = OrderedDict()
@@ -93,14 +97,24 @@ class SlackPlatform(PlatformBridge):
     async def create_thread(self, thread_name: str, starter_msg: str) -> str | None:
         """Create a new thread: post parent message, then welcome reply."""
         try:
+            # Slack has no native thread names — the parent message's FIRST LINE
+            # is the thread identity that find_thread() and get_thread_session()
+            # parse back into a session name. It must therefore be exactly
+            # thread_name; otherwise replies are never forwarded, !kill can't
+            # find the thread, and each !new creates a duplicate parent. Prepend
+            # thread_name when the caller's starter text doesn't already lead
+            # with it.
+            parent_text = starter_msg
+            if parent_text.split("\n")[0].strip() != thread_name:
+                parent_text = f"{thread_name}\n{starter_msg}"
             result = await self._client.chat_postMessage(
-                channel=self._channel_id, text=starter_msg
+                channel=self._channel_id, text=parent_text
             )
             parent_ts = result.get("ts")
             if not parent_ts:
                 return None
 
-            session_name = parse_thread_name(thread_name) or thread_name
+            session_name = parse_thread_name(thread_name, self._thread_name_format) or thread_name
             welcome = (
                 f"*Welcome to {thread_name}*\n\n"
                 "Type a message here to forward it to the session.\n\n"
@@ -159,7 +173,7 @@ class SlackPlatform(PlatformBridge):
             for msg in result.get("messages", []):
                 text = msg.get("text", "")
                 first_line = text.split("\n")[0].strip()
-                session = parse_thread_name(first_line)
+                session = parse_thread_name(first_line, self._thread_name_format)
                 if session:
                     reactions = msg.get("reactions", [])
                     is_locked = any(r.get("name") == "lock" for r in reactions)
@@ -197,7 +211,7 @@ class SlackPlatform(PlatformBridge):
             return None
 
         first_line = parent_text.split("\n")[0].strip()
-        session_name = parse_thread_name(first_line)
+        session_name = parse_thread_name(first_line, self._thread_name_format)
         if session_name:
             await self._cache_thread(thread_ts, session_name)
             return session_name
@@ -245,40 +259,51 @@ async def handle_socket_event(
     if not text:
         return
 
-    # Handle ! commands (in channel or thread)
-    if text.startswith("!"):
-        # Check if it's a shortcut in a thread -- route to relay
-        is_shortcut = text.lower() in core.SHORTCUTS
-        if is_shortcut and thread_ts:
-            # Fall through to thread message handling below
-            pass
-        else:
-            print(f"[slack-bridge] command: {text[:80]}")
-            await core.handle_command(channel, text, thread_ts=thread_ts)
+    # Authorization gate: only act on the configured channel. Without this, any
+    # member of any channel the bot is in could run `!new ... -- <shell>` and
+    # execute commands on the SSH hosts. (Slack threads live in the same
+    # channel as their parent, so a single channel check covers threads too.)
+    if channel != platform._channel_id:
+        return
+
+    # Everything below can be slow (Slack API round-trips, SSH host scans). The
+    # SDK dispatches Socket Mode listeners serially, so awaiting the work here
+    # would head-of-line block every subsequent Slack event. Run it as a tracked
+    # background task (the envelope was already ack'd above).
+    async def _process() -> None:
+        # Handle ! commands (in channel or thread)
+        if text.startswith("!"):
+            # Check if it's a shortcut in a thread -- route to relay
+            is_shortcut = text.lower() in core.SHORTCUTS
+            if not (is_shortcut and thread_ts):
+                print(f"[slack-bridge] command: {text[:80]}")
+                await core.handle_command(channel, text, thread_ts=thread_ts)
+                return
+
+        # Only forward messages that are in threads
+        if not thread_ts:
             return
 
-    # Only forward messages that are in threads
-    if not thread_ts:
-        return
+        # Check if the parent message matches [agent] pattern
+        session_name = await platform.get_thread_session(channel, thread_ts)
+        if not session_name:
+            return
 
-    # Check if the parent message matches [agent] pattern
-    session_name = await platform.get_thread_session(channel, thread_ts)
-    if not session_name:
-        return
+        user_id = event.get("user", "unknown")
+        source_id = event.get("client_msg_id", event.get("ts", ""))
 
-    user_id = event.get("user", "unknown")
-    source_id = event.get("client_msg_id", event.get("ts", ""))
+        print(f"[slack-bridge] {user_id} -> [{session_name}]: ({len(text)} chars)")
 
-    print(f"[slack-bridge] {user_id} -> [{session_name}]: ({len(text)} chars)")
+        await core.relay_message(
+            channel_id=channel,
+            session_name=session_name,
+            user_message=text,
+            user_name=user_id,
+            source_id=source_id,
+            thread_ts=thread_ts,
+        )
 
-    await core.relay_message(
-        channel_id=channel,
-        session_name=session_name,
-        user_message=text,
-        user_name=user_id,
-        source_id=source_id,
-        thread_ts=thread_ts,
-    )
+    core.track_task(_process())
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +345,8 @@ async def main():
 
     # Create Slack platform + core
     web_client = AsyncWebClient(token=bot_token)
-    platform = SlackPlatform(web_client, channel_id)
+    platform = SlackPlatform(web_client, channel_id,
+                             thread_name_format=state.thread_name_format)
     core = BridgeCore(state, platform)
 
     # Get bot user info
@@ -420,9 +446,17 @@ async def main():
                             lines.append(f"Queued commands: *{pending}* pending")
                     await platform.post_message(channel_id, "\n".join(lines))
 
-                # Keep alive
+                # Keep alive. If the SDK's own auto-reconnect gives up (e.g. a
+                # revoked app token), is_connected() goes False — break out so
+                # the outer loop closes the client and reconnects, instead of
+                # idling forever while appearing healthy.
+                _is_connected = getattr(socket_client, "is_connected", None)
                 while True:
                     await asyncio.sleep(1)
+                    if _is_connected is not None and not _is_connected():
+                        print("[slack-bridge] Socket disconnected; reconnecting...",
+                              file=sys.stderr)
+                        break
             except KeyboardInterrupt:
                 break
             except Exception as e:

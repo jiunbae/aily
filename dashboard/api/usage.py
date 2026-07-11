@@ -11,14 +11,13 @@ POST   /api/usage/queue/execute    - Manually trigger pending command execution
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from aiohttp import web
 
 from dashboard import db
-from dashboard.api import error_response, json_ok
+from dashboard.api import error_response, json_ok, read_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -214,10 +213,7 @@ async def enqueue_command(request: web.Request) -> web.Response:
     if not usage_svc:
         return error_response(503, "DISABLED", "Usage monitoring is not enabled")
 
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     session_name = body.get("session_name", "").strip()
     command = body.get("command", "").strip()
