@@ -4,6 +4,7 @@
   class AilyWS {
     constructor(opts = {}) {
       this.url = opts.url || AilyWS.defaultUrl();
+      this._protocols = opts.protocols || AilyWS.authProtocols();
 
       this._ws = null;
       this._status = "disconnected"; // connected | reconnecting | disconnected | connecting
@@ -30,12 +31,16 @@
 
     static defaultUrl() {
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      let url = `${proto}://${window.location.host}/ws`;
-      // Cookie-based auth is sent automatically on WS upgrade.
-      // Fallback: pass short-lived nonce via query param if meta tag is present.
+      return `${proto}://${window.location.host}/ws`;
+    }
+
+    // Auth nonce (if present) is carried in the Sec-WebSocket-Protocol header
+    // via the WebSocket subprotocol argument, NOT the URL — query params can
+    // leak into access logs. Cookie auth is still sent automatically on the
+    // upgrade and covers the case where no nonce meta tag is present.
+    static authProtocols() {
       const nonce = document.querySelector('meta[name="ws-nonce"]')?.content;
-      if (nonce) url += `?token=${encodeURIComponent(nonce)}`;
-      return url;
+      return nonce ? [`aily-nonce.${nonce}`] : undefined;
     }
 
     get status() {
@@ -81,7 +86,9 @@
 
       let ws;
       try {
-        ws = new WebSocket(this.url);
+        ws = this._protocols
+          ? new WebSocket(this.url, this._protocols)
+          : new WebSocket(this.url);
       } catch (e) {
         this._scheduleReconnect("ws_ctor_failed");
         return;

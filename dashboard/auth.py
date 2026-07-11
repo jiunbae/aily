@@ -32,6 +32,21 @@ COOKIE_MAX_AGE = 86400  # 24 hours
 _WS_NONCE_TTL = 60  # seconds
 _ws_nonces: dict[str, float] = {}  # nonce -> expiry timestamp
 
+# Nonce carried in the Sec-WebSocket-Protocol handshake header as
+# "aily-nonce.<value>" — keeps it out of the request URL (and access logs),
+# unlike the legacy ?token= query param.
+WS_NONCE_PROTO_PREFIX = "aily-nonce."
+
+
+def nonce_from_subprotocol(request: web.Request) -> str:
+    """Extract a WS nonce offered via Sec-WebSocket-Protocol, or ''."""
+    header = request.headers.get("Sec-WebSocket-Protocol", "")
+    for proto in header.split(","):
+        proto = proto.strip()
+        if proto.startswith(WS_NONCE_PROTO_PREFIX):
+            return proto[len(WS_NONCE_PROTO_PREFIX):]
+    return ""
+
 
 def create_ws_nonce() -> str:
     """Create a single-use WebSocket nonce valid for _WS_NONCE_TTL seconds."""
@@ -216,13 +231,12 @@ async def auth_middleware(
             status=401,
         )
 
-    # WebSocket: check ?token= query param (nonce only) or cookie
+    # WebSocket: accept a single-use nonce (preferred: Sec-WebSocket-Protocol
+    # header, kept out of the URL; legacy: ?token= query param) or the cookie.
     if path == "/ws":
-        token = request.query.get("token", "")
-        if token:
-            # Only accept short-lived nonces (single-use, consumed on success)
-            if validate_ws_nonce(token):
-                return await handler(request)
+        nonce = nonce_from_subprotocol(request) or request.query.get("token", "")
+        if nonce and validate_ws_nonce(nonce):
+            return await handler(request)
         # Also accept session cookie for WebSocket
         cookie_value = request.cookies.get(COOKIE_NAME, "")
         if validate_session_cookie(cookie_value, dashboard_token):
