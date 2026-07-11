@@ -18,7 +18,6 @@ import json
 import logging
 import re
 import shlex
-from datetime import datetime, timezone
 from typing import Any
 
 from dashboard import db, ssh
@@ -78,9 +77,12 @@ class JSONLService:
 
         project_dir = f"$HOME/.claude/projects/{shlex.quote(sanitized_cwd)}"
 
+        # `ls -t` sorts by mtime (newest first) and is portable across GNU and
+        # BSD/macOS. `find -printf` is GNU-only and silently fails on BSD hosts.
+        # sanitized_cwd is regex-whitelisted above, so the glob is safe.
         rc, out = await ssh.run_ssh(
             host,
-            f"find {project_dir} -maxdepth 1 -name '*.jsonl' -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-",
+            f"ls -t {project_dir}/*.jsonl 2>/dev/null | head -1",
             timeout=10,
         )
         if rc != 0 or not out.strip():
@@ -88,26 +90,38 @@ class JSONLService:
 
         return out.strip()
 
-    async def read_jsonl_tail(
-        self, host: str, jsonl_path: str
-    ) -> list[str]:
-        """Read the last N lines of a JSONL file via SSH.
+    async def _count_lines(self, host: str, jsonl_path: str) -> int:
+        """Return the total line count of a remote file (0 on error)."""
+        rc, out = await ssh.run_ssh(
+            host, f"wc -l < {shlex.quote(jsonl_path)}", timeout=30
+        )
+        if rc != 0 or not out.strip():
+            return 0
+        try:
+            return int(out.strip().split()[0])
+        except (ValueError, IndexError):
+            return 0
 
-        Args:
-            host: SSH host.
-            jsonl_path: Full path to the JSONL file.
+    async def read_jsonl_from(
+        self, host: str, jsonl_path: str, start_line: int
+    ) -> list[str]:
+        """Read a JSONL file from ``start_line`` (1-based) to EOF via SSH.
+
+        Reading from a persisted line offset (rather than a fixed-size tail)
+        means no lines are skipped when a session emits more than ``max_lines``
+        between scans.
 
         Returns:
             List of non-empty line strings.
         """
+        start_line = max(1, start_line)
         rc, out = await ssh.run_ssh(
             host,
-            f"tail -{self.max_lines} {shlex.quote(jsonl_path)}",
+            f"tail -n +{start_line} {shlex.quote(jsonl_path)}",
             timeout=30,
         )
         if rc != 0 or not out:
             return []
-
         return [line for line in out.split("\n") if line.strip()]
 
     def parse_jsonl_lines(
@@ -154,19 +168,10 @@ class JSONLService:
             if len(content) > self.max_content_length:
                 content = content[: self.max_content_length] + "...(truncated)"
 
-            # Extract timestamp
+            # Extract timestamp. Do NOT fall back to costInMillis — that is a
+            # cost/duration, not an epoch, so fromtimestamp() would yield bogus
+            # ~1970 timestamps and corrupt message ordering. Use "now" instead.
             timestamp = obj.get("timestamp", "")
-            if not timestamp:
-                # Try costInMillis or other timestamp sources
-                cost_ms = obj.get("costInMillis")
-                if cost_ms:
-                    try:
-                        timestamp = datetime.fromtimestamp(
-                            cost_ms / 1000, tz=timezone.utc
-                        ).isoformat()
-                    except (ValueError, TypeError, OSError):
-                        timestamp = ""
-
             if not timestamp:
                 timestamp = db.now_iso()
 
@@ -274,34 +279,40 @@ class JSONLService:
         if not jsonl_path:
             return 0
 
-        # Step 2: Read tail
-        lines = await self.read_jsonl_tail(host, jsonl_path)
-        if not lines:
-            return 0
-
-        # Step 3: Check last processed position (via kv)
-        kv_key = f"jsonl_offset:{session_name}"
+        # Step 2 & 3: Read only unprocessed lines using a persisted line offset.
+        # A fixed "last max_lines" tail lost data whenever a session emitted more
+        # than max_lines between scans — the stored marker scrolled out of the
+        # window and everything before the new tail was skipped forever. Tracking
+        # a line offset and reading from it forward closes that gap.
+        kv_key = f"jsonl_line_offset:{session_name}"
         offset_row = await db.fetchone(
             "SELECT value FROM kv WHERE key = ?", (kv_key,)
         )
-        last_line_hash = ""
-        if offset_row:
-            last_line_hash = offset_row["value"]
+        processed_lines: int | None = None
+        if offset_row and offset_row["value"]:
+            try:
+                processed_lines = int(offset_row["value"])
+            except (TypeError, ValueError):
+                processed_lines = None
 
-        # Find new lines (after the last processed line)
-        new_lines = lines
-        if last_line_hash:
-            found_idx = -1
-            for i, line in enumerate(lines):
-                h = hashlib.sha256(line.encode()).hexdigest()[:32]
-                if h == last_line_hash:
-                    found_idx = i
-                    break
-            if found_idx >= 0:
-                new_lines = lines[found_idx + 1 :]
+        if processed_lines is None:
+            # First scan for this session: bound the initial read to the last
+            # max_lines lines (older history is not backfilled), then track from
+            # the current end of file.
+            total = await self._count_lines(host, jsonl_path)
+            start_line = max(1, total - self.max_lines + 1)
+        else:
+            start_line = processed_lines + 1
 
+        new_lines = await self.read_jsonl_from(host, jsonl_path, start_line)
         if not new_lines:
             return 0
+
+        # Advance conservatively by the number of lines actually read. If the
+        # file grew mid-read we re-read the overlap next scan; dedup
+        # (insert_or_ignore on a per-line hash) makes that idempotent, so a line
+        # is never skipped.
+        new_offset = start_line - 1 + len(new_lines)
 
         # Step 4: Parse and insert (batched — single commit for all writes)
         messages = self.parse_jsonl_lines(new_lines, session_name)
@@ -323,17 +334,14 @@ class JSONLService:
                         }
                     )
 
-            # Step 5: Update offset tracker (inside the same batch)
-            if lines:
-                latest_hash = hashlib.sha256(
-                    lines[-1].encode()
-                ).hexdigest()[:32]
-                await db.execute(
-                    """INSERT INTO kv (key, value, updated)
-                       VALUES (?, ?, ?)
-                       ON CONFLICT(key) DO UPDATE SET value = ?, updated = ?""",
-                    (kv_key, latest_hash, db.now_iso(), latest_hash, db.now_iso()),
-                )
+            # Step 5: Persist the new line offset (inside the same batch).
+            offset_str = str(new_offset)
+            await db.execute(
+                """INSERT INTO kv (key, value, updated)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = ?, updated = ?""",
+                (kv_key, offset_str, db.now_iso(), offset_str, db.now_iso()),
+            )
 
         # Publish events after commit so subscribers see committed data
         for event_data in new_events:

@@ -128,8 +128,12 @@ class TmuxBackend(Multiplexer):
         return "tmux"
 
     def send_keys_cmd(self, session: str, text: str) -> str:
-        # session and text should be pre-quoted by the caller (shlex.quote)
-        return f"tmux send-keys -t {session} {text}"
+        # session and text should be pre-quoted by the caller (shlex.quote).
+        # `-l` types the text literally (so a message of "Enter", "C-c", "F5",
+        # etc. is not interpreted as a key press) and `--` stops option parsing
+        # (so a message starting with "-" is not read as a flag). Enter is sent
+        # separately via send_enter_cmd.
+        return f"tmux send-keys -t {session} -l -- {text}"
 
     def send_enter_cmd(self, session: str) -> str:
         return f"tmux send-keys -t {session} Enter"

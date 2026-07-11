@@ -37,6 +37,12 @@ def main():
         last_message = str(last_message)
     if len(last_message.strip()) < 20:
         return
+    # Cap the size before passing it as a process argument. A very large message
+    # can exceed ARG_MAX, making Popen raise (then silently swallowed below) and
+    # dropping the notification entirely. post.sh re-truncates for the platform.
+    _MAX_ARG_CHARS = 16000
+    if len(last_message) > _MAX_ARG_CHARS:
+        last_message = last_message[:_MAX_ARG_CHARS] + "\n...(truncated)"
 
     hook_dir = os.path.dirname(os.path.abspath(__file__))
 

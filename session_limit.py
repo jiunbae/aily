@@ -27,16 +27,37 @@ SESSION_LIMIT_PATTERNS = [
 ]
 
 
-def detect_session_limit(pre_content: str, post_content: str) -> Optional[str]:
+def detect_session_limit(
+    pre_content: str,
+    post_content: str,
+    user_message: Optional[str] = None,
+) -> Optional[str]:
     """Compare pane content before and after sending a message.
 
     Returns the matched error line if session limit detected, None otherwise.
+
+    ``user_message`` is the text we just sent. The pane echoes it back as new
+    output, so a message that itself mentions "rate limit", "429", etc. would
+    otherwise be misdetected as an error — and, once queued, the retry loop
+    would re-send it and re-trigger on its own echo indefinitely. Lines that
+    contain the (non-trivial) echoed message are therefore ignored.
     """
     pre_lines = set(pre_content.splitlines())
     new_lines = [line for line in post_content.splitlines() if line not in pre_lines]
 
+    echo_fragments: list[str] = []
+    if user_message:
+        for frag in user_message.splitlines():
+            frag = frag.strip()
+            # Ignore very short fragments to avoid over-filtering genuine errors.
+            if len(frag) >= 8:
+                echo_fragments.append(frag)
+
     for line in new_lines:
+        stripped = line.strip()
+        if any(frag in stripped for frag in echo_fragments):
+            continue
         for pattern in SESSION_LIMIT_PATTERNS:
             if pattern.search(line):
-                return line.strip()
+                return stripped
     return None

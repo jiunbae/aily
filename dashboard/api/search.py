@@ -38,7 +38,8 @@ async def search_messages(request: web.Request) -> web.Response:
     role_filter = request.query.get("role", "").strip()
 
     try:
-        limit = min(int(request.query.get("limit", "50")), 200)
+        # max(1, ...) — a negative LIMIT is "no limit" in SQLite.
+        limit = max(1, min(int(request.query.get("limit", "50")), 200))
     except ValueError:
         limit = 50
     try:

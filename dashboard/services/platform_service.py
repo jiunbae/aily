@@ -248,8 +248,12 @@ class PlatformService:
                     "Content-Type": "application/json",
                 }
                 http = await self._get_http()
-                # Post closing message
-                await http.post(
+                # Post closing message. Use `async with` so the response is
+                # released back to the pool, and check Slack's {"ok": ...} — a
+                # bare await left the response unread (pool leak) and reported
+                # success even on {"ok": false} (e.g. not_in_channel).
+                posted_ok = False
+                async with http.post(
                     "https://slack.com/api/chat.postMessage",
                     headers=headers,
                     json={
@@ -257,9 +261,11 @@ class PlatformService:
                         "thread_ts": slack_thread_ts,
                         "text": ":lock: Thread archived. Session closed.",
                     },
-                )
-                # Add lock reaction
-                await http.post(
+                ) as resp:
+                    data = await resp.json()
+                    posted_ok = resp.status == 200 and data.get("ok", False)
+                # Add lock reaction (best-effort; don't gate success on it)
+                async with http.post(
                     "https://slack.com/api/reactions.add",
                     headers=headers,
                     json={
@@ -267,9 +273,16 @@ class PlatformService:
                         "timestamp": slack_thread_ts,
                         "name": "lock",
                     },
-                )
-                archived.append("slack")
-                logger.info("Archived Slack thread %s", slack_thread_ts)
+                ) as resp:
+                    await resp.read()
+                if posted_ok:
+                    archived.append("slack")
+                    logger.info("Archived Slack thread %s", slack_thread_ts)
+                else:
+                    logger.warning(
+                        "Slack archive did not confirm ok for thread %s",
+                        slack_thread_ts,
+                    )
             except Exception:
                 logger.exception("Failed to archive Slack thread")
 

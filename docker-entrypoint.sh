@@ -17,14 +17,12 @@ case "${BRIDGE_MODE:-dashboard}" in
   all)
     echo "Starting dashboard + bridges..."
 
-    BRIDGE_PIDS=()
     _restart_backoff() {
       local name="$1" cmd="$2" delay=1
       while true; do
         echo "Starting ${name}..."
         $cmd &
         local pid=$!
-        BRIDGE_PIDS+=("$pid")
         wait "$pid" || true
         echo "${name} (pid $pid) exited, restarting in ${delay}s..."
         sleep "$delay"
@@ -34,10 +32,16 @@ case "${BRIDGE_MODE:-dashboard}" in
 
     _cleanup() {
       echo "Caught signal, shutting down..."
-      for pid in "${BRIDGE_PIDS[@]}" "$DASHBOARD_PID"; do
-        kill "$pid" 2>/dev/null || true
-      done
-      wait
+      # Reset traps first so signalling our own process group below doesn't
+      # re-enter this handler.
+      trap - SIGTERM SIGINT
+      # The restart loops run in backgrounded subshells, so their PIDs (and
+      # their python children) are NOT visible to a parent-side array — the
+      # previous BRIDGE_PIDS approach left them running on shutdown, and they
+      # would even auto-restart. Signal the whole process group instead: the
+      # loops don't trap SIGTERM, so they stop respawning and everything exits.
+      kill -TERM 0 2>/dev/null || true
+      wait 2>/dev/null || true
       exit 0
     }
     trap _cleanup SIGTERM SIGINT

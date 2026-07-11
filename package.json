@@ -1,10 +1,13 @@
 {
   "name": "aily-cli",
-  "version": "2026.2.18",
+  "version": "2026.7.11",
   "description": "CLI for aily — AI agent session bridge for Discord and Slack",
   "bin": {
     "aily": "aily",
     "aily-cli": "aily"
+  },
+  "scripts": {
+    "prepack": "find hooks completions -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true"
   },
   "files": [
     "aily",

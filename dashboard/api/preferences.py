@@ -11,13 +11,12 @@ Since this is a single-user system, no user differentiation is needed.
 
 from __future__ import annotations
 
-import json
 import logging
 
 from aiohttp import web
 
 from dashboard import db
-from dashboard.api import error_response, json_ok
+from dashboard.api import error_response, json_ok, read_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +61,7 @@ async def set_preferences(request: web.Request) -> web.Response:
     Merge provided preferences. Only known keys are accepted.
     Request body: {"theme": "light", "compact_mode": "true"}
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     now = db.now_iso()
     updated_keys: list[str] = []
@@ -111,10 +107,7 @@ async def set_preference(request: web.Request) -> web.Response:
     if key not in ALLOWED_KEYS:
         return error_response(404, "UNKNOWN_KEY", f"Unknown preference: {key}")
 
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     value = str(body.get("value", ""))
     now = db.now_iso()

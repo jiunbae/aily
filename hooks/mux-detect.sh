@@ -15,7 +15,8 @@
 #   4. Default: tmux
 
 if [[ -n "${AILY_MULTIPLEXER:-}" ]]; then
-  MUX_TYPE="${AILY_MULTIPLEXER,,}"  # lowercase
+  # lowercase — `tr`, not ${var,,} which is bash 4+ only (macOS ships bash 3.2)
+  MUX_TYPE="$(printf '%s' "$AILY_MULTIPLEXER" | tr '[:upper:]' '[:lower:]')"
 elif [[ -n "${ZELLIJ:-}" ]]; then
   MUX_TYPE="zellij"
 elif [[ -n "${TMUX:-}" ]]; then
@@ -74,7 +75,9 @@ mux_show_env() {
       echo ""
       ;;
     *)
-      tmux show-environment -t "$session" "$var" 2>/dev/null | grep -v '^-' | cut -d= -f2-
+      # `show-environment` exits 1 when the var is unset; guard so the caller's
+      # `set -e` / command substitution doesn't abort on a normal "not set" result.
+      tmux show-environment -t "$session" "$var" 2>/dev/null | grep -v '^-' | cut -d= -f2- || true
       ;;
   esac
 }

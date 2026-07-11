@@ -88,6 +88,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         await event_bus.unsubscribe(subscriber_id)
         return ws
 
+    send_task: asyncio.Task[None] | None = None
     try:
 
         async def send_events() -> None:
@@ -201,13 +202,16 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             ):
                 break
 
-        send_task.cancel()
-        try:
-            await send_task
-        except asyncio.CancelledError:
-            pass
-
     finally:
+        # Always cancel the sender — the receive loop can exit by exception or
+        # task cancellation, not just normally, and a surviving send_task leaks
+        # (it holds the queue and keeps writing to a closing socket).
+        if send_task is not None:
+            send_task.cancel()
+            try:
+                await send_task
+            except asyncio.CancelledError:
+                pass
         ws_clients.discard(ws)
         await event_bus.unsubscribe(subscriber_id)
         logger.info(

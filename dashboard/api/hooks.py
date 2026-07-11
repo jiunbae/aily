@@ -22,7 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from dashboard import db
-from dashboard.api import error_response, json_ok
+from dashboard.api import error_response, json_ok, read_json_object
 from dashboard.services.event_bus import Event, EventBus
 from dashboard.services.message_service import MessageService
 from dashboard.services.platform_service import PlatformService
@@ -183,10 +183,7 @@ async def handle_stop(request: web.Request) -> web.Response:
     Handle Claude Code Stop hook event. Extracts the last assistant message
     from the transcript JSONL and relays it to Discord/Slack.
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     session_id = body.get("session_id", "")
     transcript_path = body.get("transcript_path", "")
@@ -270,10 +267,7 @@ async def handle_session(request: web.Request) -> web.Response:
     Handle Claude Code SessionStart and SessionEnd hook events.
     Tracks session lifecycle in the database.
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     hook_event = body.get("hook_event_name", "")
     session_id = body.get("session_id", "")
@@ -391,10 +385,7 @@ async def handle_tool_activity(request: web.Request) -> web.Response:
     Handle Claude Code PostToolUse hook events.
     Stores tool usage in the events table and publishes to WebSocket.
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     session_id = body.get("session_id", "")
     cwd = body.get("cwd", "")

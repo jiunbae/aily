@@ -16,20 +16,20 @@ STDIN_DATA="$(cat || true)"
 # Extract transcript_path and cwd from stdin JSON (single parse).
 TRANSCRIPT_PATH=""
 GEMINI_CWD=""
-PARSED=$(
-  python3 - <<'PY' 2>/dev/null <<<"$STDIN_DATA" || true
+# Feed the stdin JSON to python on ITS stdin; the program comes from `-c`.
+# (A `<<'PY'` heredoc plus a `<<<` here-string would collide — the here-string
+#  wins and python would try to execute the JSON as source. Keep them separate.)
+PARSED=$(printf '%s' "$STDIN_DATA" | python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
 except Exception:
     data = {}
-tp = data.get("transcript_path") or ""
-cwd = data.get("cwd") or ""
-print(tp)
-print(cwd)
-PY
-)
-IFS=$'\n' read -r TRANSCRIPT_PATH GEMINI_CWD <<< "$PARSED"
+print(data.get("transcript_path") or "")
+print(data.get("cwd") or "")
+' 2>/dev/null || true)
+TRANSCRIPT_PATH=$(printf '%s\n' "$PARSED" | sed -n '1p')
+GEMINI_CWD=$(printf '%s\n' "$PARSED" | sed -n '2p')
 
 # Output valid JSON to stdout (Gemini CLI expects this). Do this before any slow work.
 printf '%s\n' '{}'

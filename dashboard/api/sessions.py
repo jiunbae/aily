@@ -10,13 +10,12 @@ Endpoints:
   POST   /api/sessions/bulk-delete  - Bulk kill sessions
   POST   /api/sessions/{name}/send  - Send message to tmux
   POST   /api/sessions/{name}/sync  - Sync messages from platforms
-  POST   /api/hooks/event           - Bridge webhook receiver (internal, no auth)
+  POST   /api/hooks/event           - Bridge webhook receiver (auth via HOOK_SECRET/Bearer)
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 from urllib.parse import quote
@@ -24,7 +23,7 @@ from urllib.parse import quote
 from aiohttp import web
 
 from dashboard import db
-from dashboard.api import error_response, json_ok
+from dashboard.api import error_response, json_ok, read_json_object
 from dashboard.services.event_bus import Event, EventBus
 from dashboard.services.message_service import MessageService
 from dashboard.services.platform_service import PlatformService
@@ -60,7 +59,9 @@ async def list_sessions(request: web.Request) -> web.Response:
     sort_field = params.get("sort", "-updated_at")
 
     try:
-        limit = min(int(params.get("limit", "50")), 200)
+        # max(1, ...) — SQLite treats a negative LIMIT as "no limit", so a
+        # `?limit=-1` would otherwise return the entire table.
+        limit = max(1, min(int(params.get("limit", "50")), 200))
     except ValueError:
         limit = 50
     try:
@@ -85,8 +86,11 @@ async def list_sessions(request: web.Request) -> web.Response:
         where_clauses.append("s.host = ?")
         query_params.append(host_filter)
     if q:
-        where_clauses.append("s.name LIKE ?")
-        query_params.append(f"%{q}%")
+        # Escape LIKE wildcards so user-supplied % / _ are treated literally
+        # (e.g. "a_b" should not match "axb").
+        escaped_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where_clauses.append("s.name LIKE ? ESCAPE '\\'")
+        query_params.append(f"%{escaped_q}%")
 
     where_sql = ""
     if where_clauses:
@@ -204,10 +208,7 @@ async def create_session(request: web.Request) -> web.Response:
     Request body: {"name": "my-session", "host": "dev-box"}
     Creates a tmux session and records it in the database.
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     name = body.get("name", "").strip()
     host = body.get("host", "").strip()
@@ -231,7 +232,7 @@ async def create_session(request: web.Request) -> web.Response:
         return error_response(
             400,
             "INVALID_HOST",
-            f"Unknown host '{host}'. Available: {session_svc.ssh_hosts}",
+            f"Unknown host '{host}'",
         )
 
     # Check if session already exists in DB
@@ -346,10 +347,7 @@ async def update_session(request: web.Request) -> web.Response:
     if not session:
         return error_response(404, "NOT_FOUND", f"Session '{name}' not found")
 
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     updates: list[str] = []
     params: list[Any] = []
@@ -393,10 +391,7 @@ async def bulk_delete_sessions(request: web.Request) -> web.Response:
     Kill multiple sessions at once.
     Request body: {"names": ["session-1", "session-2"]}
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     names = body.get("names", [])
     if not isinstance(names, list) or not names:
@@ -452,10 +447,7 @@ async def send_message(request: web.Request) -> web.Response:
     """
     name = request.match_info["name"]
 
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     message = body.get("message", "").strip()
     if not message:
@@ -502,7 +494,8 @@ async def get_session_messages(request: web.Request) -> web.Response:
 
     params = request.query
     try:
-        limit = min(int(params.get("limit", "200")), 500)
+        # max(1, ...) — a negative LIMIT is "no limit" in SQLite.
+        limit = max(1, min(int(params.get("limit", "200")), 500))
     except ValueError:
         limit = 200
     try:
@@ -642,13 +635,12 @@ async def ingest_jsonl(request: web.Request) -> web.Response:
 async def receive_bridge_event(request: web.Request) -> web.Response:
     """POST /api/hooks/event
 
-    Webhook receiver for bridge processes. Internal endpoint, no auth.
-    Accepts fire-and-forget event pushes from Discord/Slack bridges.
+    Webhook receiver for bridge processes. Authenticated by the auth
+    middleware like all /api/hooks/* routes (shared HOOK_SECRET or Bearer
+    token) — despite the "fire-and-forget" nature, it is NOT unauthenticated.
+    Accepts event pushes from Discord/Slack bridges.
     """
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return error_response(400, "INVALID_JSON", "Request body must be JSON")
+    body = await read_json_object(request)
 
     message_svc: MessageService = request.app["message_service"]
 

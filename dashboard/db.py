@@ -265,10 +265,16 @@ async def batch() -> AsyncIterator[None]:
 async def execute(sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Cursor:
     """Execute a SQL statement with parameters."""
     db = get_db()
-    cursor = await db.execute(sql, params)
-    if _batch_depth.get() == 0:
+    # Inside a batch, this task already holds _batch_lock; the commit happens
+    # when the batch exits. Outside a batch, take the lock around execute+commit
+    # so a stray commit can't flush another task's still-open batch on the shared
+    # connection (which would defeat that batch's rollback).
+    if _batch_depth.get() > 0:
+        return await db.execute(sql, params)
+    async with _batch_lock:
+        cursor = await db.execute(sql, params)
         await db.commit()
-    return cursor
+        return cursor
 
 
 async def fetchone(sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
@@ -315,13 +321,14 @@ async def insert_or_ignore(
     values = tuple(data.values())
 
     db = get_db()
-    cursor = await db.execute(
-        f"INSERT OR IGNORE INTO {table} ({columns}) VALUES ({placeholders})",
-        values,
-    )
-    if _batch_depth.get() == 0:
+    sql = f"INSERT OR IGNORE INTO {table} ({columns}) VALUES ({placeholders})"
+    # See execute(): serialize commits outside a batch on the shared connection.
+    if _batch_depth.get() > 0:
+        return await db.execute(sql, values)
+    async with _batch_lock:
+        cursor = await db.execute(sql, values)
         await db.commit()
-    return cursor
+        return cursor
 
 
 async def cleanup_old_events(days: int = 30) -> int:

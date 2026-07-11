@@ -39,9 +39,13 @@ load_config() {
         # Skip comments and empty lines
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ -z "$key" ]] && continue
+        # Trim whitespace from key (parameter expansion, not xargs which mangles quotes)
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
         # Remove surrounding quotes from value
-        key=$(echo "$key" | xargs)
         value=$(echo "$value" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+        # Only export syntactically valid, safe variable names (matches aily/load_env)
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         export "$key=$value"
     done < "$config_file"
 }
@@ -302,7 +306,7 @@ SYNC_SCRIPT="$HOOKS_DIR/thread-sync.sh"
 if [[ -x "$SYNC_SCRIPT" ]]; then
   if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
     # Exclude infrastructure sessions (aily-bridge, slack-bridge)
-    session_count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || echo "0")
+    session_count=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -cv '^aily-bridge$\|^slack-bridge$\|^aily-dashboard$' || true); session_count=${session_count:-0}
 
     # Ask before enabling auto-sync (default yes in non-interactive)
     _reply="y"
