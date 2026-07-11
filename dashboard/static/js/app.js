@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  // Cap on how many messages a session-detail view keeps in memory/DOM.
+  const MAX_RENDERED_MESSAGES = 500;
+
   // -----------------------------
   // Utilities
   // -----------------------------
@@ -1478,12 +1481,36 @@
         if (ext && this.messages.some((x) => (x.external_id || x.source_id) === ext)) return;
         if (m.id != null && this.messages.some((x) => x.id === m.id)) return;
 
+        // Reconcile optimistic echo. A locally-echoed user message (id
+        // "local_…") has no external_id, so it won't dedup against the real
+        // message that later arrives via WS/sync (different id). Match them by
+        // role+content, handling either arrival order:
+        const isLocalEcho = (x) =>
+          typeof x.id === "string" && x.id.indexOf("local_") === 0;
+        const sameMsg = (x) => x.role === m.role && x.content === m.content;
+        if (isLocalEcho(m)) {
+          // Skip the echo if the real message already arrived.
+          if (this.messages.some((x) => !isLocalEcho(x) && sameMsg(x))) return;
+        } else {
+          // Drop a superseded optimistic echo.
+          const idx = this.messages.findIndex((x) => isLocalEcho(x) && sameMsg(x));
+          if (idx !== -1) this.messages.splice(idx, 1);
+        }
+
         // Mark first unread message
         if (!this.isAtBottom) {
           m._isNewIndicator = this.unread === 0;
         }
 
         this.messages.push(m);
+
+        // Cap the in-memory/DOM message list so a long-lived session doesn't
+        // grow unbounded. Only trim while the user is at the live tail (not
+        // reading scrollback), and only the oldest overflow; older messages
+        // remain fetchable via the "load older" path.
+        if (this.isAtBottom && this.messages.length > MAX_RENDERED_MESSAGES) {
+          this.messages.splice(0, this.messages.length - MAX_RENDERED_MESSAGES);
+        }
 
         // Auto-scroll only if user is at bottom.
         this.$nextTick(() => {
