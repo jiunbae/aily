@@ -92,7 +92,6 @@ class SessionService:
                 ]
             except Exception:
                 logger.exception("Failed to query tmux on %s", host)
-                results[host] = []
 
         await asyncio.gather(*(query_host(h) for h in self.ssh_hosts))
         return results

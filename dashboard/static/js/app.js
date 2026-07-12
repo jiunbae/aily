@@ -504,7 +504,7 @@
       });
       window.ailyWS.on("session.created", () => refreshSidebarSessionsDebounced());
       window.ailyWS.on("session.updated", () => refreshSidebarSessionsDebounced());
-      window.ailyWS.on("session.deleted", () => refreshSidebarSessionsDebounced());
+      window.ailyWS.on("session.closed", () => refreshSidebarSessionsDebounced());
       window.ailyWS.on("message.new", () => refreshSidebarSessionsDebounced());
 
       // Typing indicators
@@ -725,7 +725,7 @@
         const type = String(item?.type || "");
         if (type === "message.new") return "var(--accent-primary)";
         if (type === "session.created") return "var(--status-active)";
-        if (type === "session.deleted") return "var(--status-archived)";
+        if (type === "session.closed") return "var(--status-archived)";
         if (type === "session.updated") {
           const st = item?.payload?.status;
           return statusMeta(st).color;
@@ -742,7 +742,7 @@
           return `${who}: ${content.slice(0, 90) || "..."}`;
         }
         if (type === "session.created") return "Session started";
-        if (type === "session.deleted") return "Session closed";
+        if (type === "session.closed") return "Session closed";
         if (type === "session.updated") {
           const st = statusMeta(item?.payload?.status).label;
           return `Session updated: ${st}`;
@@ -851,11 +851,11 @@
           this._refreshStatsSoon();
         });
 
-        window.ailyWS.on("session.deleted", (evt) => {
+        window.ailyWS.on("session.closed", (evt) => {
           const s = evt?.payload;
           const name = s?.name || s?.session_name;
           if (name) this.sessions = this.sessions.filter((x) => x.name !== name);
-          addEvent("session.deleted", s, evt?.timestamp);
+          addEvent("session.closed", s, evt?.timestamp);
           this._refreshStatsSoon();
         });
 
@@ -1170,7 +1170,7 @@
           const s = evt?.payload;
           if (s?.name) this._upsertSession(s);
         });
-        window.ailyWS.on("session.deleted", (evt) => {
+        window.ailyWS.on("session.closed", (evt) => {
           const s = evt?.payload;
           const name = s?.name || s?.session_name;
           if (!name) return;

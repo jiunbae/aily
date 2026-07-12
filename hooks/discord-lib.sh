@@ -9,7 +9,9 @@ _DISCORD_GUILD_ID=""
 
 # Wrapper: hides auth token from ps output by passing it via --config <(...)
 _discord_curl() {
-  curl --config <(printf 'header = "Authorization: Bot %s"\n' "$DISCORD_BOT_TOKEN") "$@"
+  curl --connect-timeout "${AILY_HTTP_CONNECT_TIMEOUT:-5}" \
+    --max-time "${AILY_HTTP_MAX_TIME:-20}" \
+    --config <(printf 'header = "Authorization: Bot %s"\n' "$DISCORD_BOT_TOKEN") "$@"
 }
 
 discord_get_guild_id() {

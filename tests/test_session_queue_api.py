@@ -84,6 +84,19 @@ async def test_list_queue_invalid_status(client):
     assert resp.status == 400
 
 
+@pytest.mark.asyncio
+async def test_list_queue_negative_limit_is_clamped(client):
+    await _create_queue_item(client, session_name="first")
+    await _create_queue_item(client, session_name="second")
+
+    resp = await client.get("/api/session-queue?limit=-1")
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["total"] == 2
+    assert len(data["items"]) == 1
+
+
 # ---- POST /api/session-queue ----
 
 @pytest.mark.asyncio

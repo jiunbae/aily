@@ -21,6 +21,7 @@ Thin platform layer -- all shared logic lives in bridge_core.py.
 """
 
 import asyncio
+import inspect
 import sys
 from collections import OrderedDict
 
@@ -37,6 +38,14 @@ from bridge_core import (
     parse_thread_name,
     AGENT_PREFIX,
 )
+
+
+async def _socket_mode_is_connected(socket_client: SocketModeClient) -> bool:
+    """Support Slack SDK releases with sync or async connection checks."""
+    result = socket_client.is_connected()
+    if inspect.isawaitable(result):
+        result = await result
+    return bool(result)
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +286,12 @@ async def handle_socket_event(
             is_shortcut = text.lower() in core.SHORTCUTS
             if not (is_shortcut and thread_ts):
                 print(f"[slack-bridge] command: {text[:80]}")
-                await core.handle_command(channel, text, thread_ts=thread_ts)
+                await core.handle_command(
+                    channel,
+                    text,
+                    user_id=event.get("user", ""),
+                    thread_ts=thread_ts,
+                )
                 return
 
         # Only forward messages that are in threads
@@ -299,11 +313,18 @@ async def handle_socket_event(
             session_name=session_name,
             user_message=text,
             user_name=user_id,
+            user_id=user_id,
             source_id=source_id,
             thread_ts=thread_ts,
         )
 
-    core.track_task(_process())
+    task = core.track_task(_process())
+    if task is None:
+        await platform.post_message(
+            channel,
+            "Bridge is overloaded; this message was not processed.",
+            thread_ts=thread_ts,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +338,10 @@ async def main():
     _xdg_config = os.environ.get("XDG_CONFIG_HOME",
                                   os.path.expanduser("~/.config"))
     _default_path = os.path.join(_xdg_config, "aily", "env")
-    env_path = os.environ.get("AGENT_BRIDGE_ENV", _default_path)
+    explicit_env_path = os.environ.get("AGENT_BRIDGE_ENV", "")
+    env_path = explicit_env_path or _default_path
 
-    if not os.path.exists(env_path):
+    if explicit_env_path and not os.path.exists(env_path):
         print(f"Config not found: {env_path}", file=sys.stderr)
         sys.exit(1)
 
@@ -343,14 +365,17 @@ async def main():
     # Build shared state from common config
     state = BridgeCore.load_common_config(env)
 
+    # Authenticate once, then use a persistent session for pooled Web API calls.
+    bootstrap_client = AsyncWebClient(token=bot_token)
+    auth = await bootstrap_client.auth_test()
+    slack_http = aiohttp.ClientSession()
+    web_client = AsyncWebClient(token=bot_token, session=slack_http)
+
     # Create Slack platform + core
-    web_client = AsyncWebClient(token=bot_token)
     platform = SlackPlatform(web_client, channel_id,
                              thread_name_format=state.thread_name_format)
     core = BridgeCore(state, platform)
 
-    # Get bot user info
-    auth = await web_client.auth_test()
     bot_user_id = auth.get("user_id", "")
 
     # Print startup info
@@ -450,10 +475,9 @@ async def main():
                 # revoked app token), is_connected() goes False — break out so
                 # the outer loop closes the client and reconnects, instead of
                 # idling forever while appearing healthy.
-                _is_connected = getattr(socket_client, "is_connected", None)
                 while True:
                     await asyncio.sleep(1)
-                    if _is_connected is not None and not _is_connected():
+                    if not await _socket_mode_is_connected(socket_client):
                         print("[slack-bridge] Socket disconnected; reconnecting...",
                               file=sys.stderr)
                         break
@@ -485,7 +509,9 @@ async def main():
                 await retry_task
             except asyncio.CancelledError:
                 pass
+        await core.shutdown()
         await dashboard_http.close()
+        await slack_http.close()
 
 
 if __name__ == "__main__":

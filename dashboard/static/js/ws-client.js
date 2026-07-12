@@ -178,7 +178,7 @@
       if (!sessionName) return false;
       return this.send({
         type: "fetch_history",
-        session_name: sessionName,
+        session: sessionName,
         limit: limit,
         offset: offset,
       });
@@ -191,7 +191,7 @@
       if (!sessionName) return false;
       return this.send({
         type: "typing",
-        session_name: sessionName,
+        session: sessionName,
       });
     }
 
@@ -350,4 +350,3 @@
     window.ailyWS.connect();
   }
 })();
-

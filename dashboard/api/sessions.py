@@ -112,16 +112,18 @@ async def list_sessions(request: web.Request) -> web.Response:
 
     # Fetch page
     sessions = await db.fetchall(
-        f"""SELECT s.*, COALESCE(mc.message_count, 0) as message_count
-            FROM sessions s
-            LEFT JOIN (
-                SELECT session_name, COUNT(*) as message_count
-                FROM messages
-                GROUP BY session_name
-            ) mc ON mc.session_name = s.name
-            {where_sql}
-            ORDER BY s.{field_name} {order_dir}
-            LIMIT ? OFFSET ?""",
+        f"""WITH page AS (
+                SELECT s.*
+                FROM sessions s
+                {where_sql}
+                ORDER BY s.{field_name} {order_dir}
+                LIMIT ? OFFSET ?
+            )
+            SELECT page.*,
+                   (SELECT COUNT(*) FROM messages m
+                    WHERE m.session_name = page.name) AS message_count
+            FROM page
+            ORDER BY page.{field_name} {order_dir}""",
         tuple(query_params) + (limit, offset),
     )
 
@@ -302,7 +304,13 @@ async def delete_session(request: web.Request) -> web.Response:
     platform_svc: PlatformService = request.app["platform_service"]
 
     # Kill tmux session
-    tmux_killed, kill_host = await session_svc.kill_session(name)
+    tmux_killed, _ = await session_svc.kill_session(name)
+    if not tmux_killed:
+        return error_response(
+            502,
+            "KILL_FAILED",
+            f"Session '{name}' could not be terminated; database state was not changed",
+        )
 
     # Archive platform threads
     archived_platforms = await platform_svc.archive_threads(dict(session))
@@ -420,6 +428,13 @@ async def bulk_delete_sessions(request: web.Request) -> web.Response:
                 return {"name": name, "deleted": False, "error": "not found"}
 
             tmux_killed, _ = await session_svc.kill_session(name)
+            if not tmux_killed:
+                return {
+                    "name": name,
+                    "deleted": False,
+                    "tmux_killed": False,
+                    "error": "kill failed",
+                }
             await platform_svc.archive_threads(dict(session))
 
             await db.execute(
@@ -432,7 +447,7 @@ async def bulk_delete_sessions(request: web.Request) -> web.Response:
             if updated:
                 await event_bus.publish(Event.session_closed(dict(updated)))
 
-            return {"name": name, "deleted": True, "tmux_killed": tmux_killed}
+            return {"name": name, "deleted": True, "tmux_killed": True}
 
     results = await asyncio.gather(*[_delete_one(n) for n in names])
 
@@ -650,5 +665,10 @@ async def receive_bridge_event(request: web.Request) -> web.Response:
         evt_type = body.get("type", "unknown") if isinstance(body, dict) else "unknown"
         session = body.get("session_name", "unknown") if isinstance(body, dict) else "unknown"
         logger.warning("Failed to ingest bridge event (type=%s, session=%s)", evt_type, session, exc_info=True)
+        return error_response(
+            503,
+            "INGEST_FAILED",
+            "Bridge event could not be persisted; retry the request",
+        )
 
     return json_ok({"accepted": True}, status=202)
