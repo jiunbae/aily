@@ -53,6 +53,17 @@ def compute_dedup_hash(
     return hashlib.sha256(key.encode()).hexdigest()
 
 
+async def _insert_message_batch(rows: list[dict[str, Any]]) -> int:
+    """Insert normalized messages in one transaction and count new rows."""
+    ingested = 0
+    async with db.batch():
+        for row in rows:
+            cursor = await db.insert_or_ignore("messages", row)
+            if cursor.rowcount and cursor.rowcount > 0:
+                ingested += 1
+    return ingested
+
+
 class MessageService:
     """Handles message ingestion and deduplication."""
 
@@ -209,7 +220,7 @@ class MessageService:
         Returns:
             Number of new messages ingested.
         """
-        ingested = 0
+        rows: list[dict[str, Any]] = []
         for msg in slack_messages:
             content = msg.get("text", "").strip()
             if not content:
@@ -244,22 +255,19 @@ class MessageService:
                 session_name, "slack", msg_ts, content
             )
 
-            cursor = await db.insert_or_ignore(
-                "messages",
-                {
-                    "session_name": session_name,
-                    "role": role,
-                    "content": content,
-                    "source": "slack",
-                    "source_id": msg_ts,
-                    "source_author": author_name,
-                    "timestamp": timestamp,
-                    "ingested_at": db.now_iso(),
-                    "dedup_hash": dedup_hash,
-                },
-            )
-            if cursor.rowcount and cursor.rowcount > 0:
-                ingested += 1
+            rows.append({
+                "session_name": session_name,
+                "role": role,
+                "content": content,
+                "source": "slack",
+                "source_id": msg_ts,
+                "source_author": author_name,
+                "timestamp": timestamp,
+                "ingested_at": db.now_iso(),
+                "dedup_hash": dedup_hash,
+            })
+
+        ingested = await _insert_message_batch(rows)
 
         if ingested > 0:
             logger.info(
@@ -289,7 +297,7 @@ class MessageService:
         Returns:
             Number of new messages ingested.
         """
-        ingested = 0
+        rows: list[dict[str, Any]] = []
         for msg in discord_messages:
             content = msg.get("content", "").strip()
             if not content:
@@ -316,22 +324,19 @@ class MessageService:
                 session_name, "discord", msg_id, content
             )
 
-            cursor = await db.insert_or_ignore(
-                "messages",
-                {
-                    "session_name": session_name,
-                    "role": role,
-                    "content": content,
-                    "source": "discord",
-                    "source_id": msg_id,
-                    "source_author": author_name,
-                    "timestamp": timestamp,
-                    "ingested_at": db.now_iso(),
-                    "dedup_hash": dedup_hash,
-                },
-            )
-            if cursor.rowcount and cursor.rowcount > 0:
-                ingested += 1
+            rows.append({
+                "session_name": session_name,
+                "role": role,
+                "content": content,
+                "source": "discord",
+                "source_id": msg_id,
+                "source_author": author_name,
+                "timestamp": timestamp,
+                "ingested_at": db.now_iso(),
+                "dedup_hash": dedup_hash,
+            })
+
+        ingested = await _insert_message_batch(rows)
 
         if ingested > 0:
             logger.info(

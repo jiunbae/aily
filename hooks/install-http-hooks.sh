@@ -94,7 +94,10 @@ fi
 
 # Merge: add aily hooks without clobbering existing hooks
 MERGED=$(echo "$EXISTING" | jq --argjson new "$HOOKS" '
-  .hooks = ((.hooks // {}) * $new)
+  .hooks = reduce ($new | to_entries[]) as $item
+    (.hooks // {};
+      .[$item.key] = (((.[$item.key] // []) + $item.value) | unique_by(.hooks | tostring))
+    )
 ')
 
 # Show diff

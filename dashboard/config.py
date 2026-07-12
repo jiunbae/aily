@@ -27,6 +27,8 @@ class Config:
 
     # SSH hosts (comma-separated in env)
     ssh_hosts: list[str] = field(default_factory=lambda: ["localhost"])
+    multiplexer: str = "tmux"
+    thread_name_format: str = "[agent] {session} - {host}"
 
     # Discord
     discord_bot_token: str = ""
@@ -99,6 +101,10 @@ class Config:
         hosts_str = os.environ.get("SSH_HOSTS", "")
         if hosts_str:
             config.ssh_hosts = [h.strip() for h in hosts_str.split(",") if h.strip()]
+        config.multiplexer = os.environ.get("AILY_MULTIPLEXER", config.multiplexer)
+        config.thread_name_format = os.environ.get(
+            "THREAD_NAME_FORMAT", config.thread_name_format
+        )
 
         # Platform tokens from env
         config.discord_bot_token = os.environ.get("DISCORD_BOT_TOKEN", "")
@@ -225,14 +231,50 @@ class Config:
         if not config.dashboard_token:
             import secrets
 
-            config.dashboard_token = secrets.token_urlsafe(32)
-            config._token_auto_generated = True
-            logger.warning(
-                "DASHBOARD_TOKEN not set — auto-generated a random token. "
-                "Set DASHBOARD_TOKEN env var or in config file for persistent auth."
+            token_path = Path(
+                os.environ.get(
+                    "DASHBOARD_TOKEN_FILE",
+                    str(Path(config.db_path).parent / "dashboard-token"),
+                )
             )
+            config._token_file = ""
+            try:
+                if token_path.exists():
+                    config.dashboard_token = token_path.read_text().strip()
+                    if not config.dashboard_token:
+                        raise ValueError("dashboard token file is empty")
+                    config._token_auto_generated = False
+                else:
+                    token_path.parent.mkdir(parents=True, exist_ok=True)
+                    config.dashboard_token = secrets.token_urlsafe(32)
+                    fd = os.open(
+                        token_path,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                    )
+                    with os.fdopen(fd, "w") as token_file:
+                        token_file.write(config.dashboard_token + "\n")
+                    config._token_auto_generated = True
+                os.chmod(token_path, 0o600)
+                config._token_file = str(token_path)
+                logger.warning(
+                    "DASHBOARD_TOKEN not set; using token file %s", token_path
+                )
+            except FileExistsError:
+                config.dashboard_token = token_path.read_text().strip()
+                config._token_auto_generated = False
+                config._token_file = str(token_path)
+            except (OSError, ValueError) as exc:
+                config.dashboard_token = secrets.token_urlsafe(32)
+                config._token_auto_generated = True
+                logger.warning(
+                    "Could not persist generated dashboard token (%s); "
+                    "the full one-time token will be printed at startup",
+                    exc,
+                )
         else:
             config._token_auto_generated = False
+            config._token_file = ""
 
         return config
 
@@ -278,6 +320,12 @@ def _load_notify_env(config: Config, path: str) -> None:
         hosts = env.get("SSH_HOSTS", "")
         if hosts:
             config.ssh_hosts = [h.strip() for h in hosts.split(",") if h.strip()]
+    if "AILY_MULTIPLEXER" not in os.environ:
+        config.multiplexer = env.get("AILY_MULTIPLEXER", config.multiplexer)
+    if "THREAD_NAME_FORMAT" not in os.environ:
+        config.thread_name_format = env.get(
+            "THREAD_NAME_FORMAT", config.thread_name_format
+        )
 
     # API keys for usage monitoring
     if not config.anthropic_api_key:

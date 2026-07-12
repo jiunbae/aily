@@ -289,17 +289,32 @@ class JSONLService:
             "SELECT value FROM kv WHERE key = ?", (kv_key,)
         )
         processed_lines: int | None = None
+        stored_path: str | None = None
         if offset_row and offset_row["value"]:
             try:
-                processed_lines = int(offset_row["value"])
-            except (TypeError, ValueError):
-                processed_lines = None
+                checkpoint = json.loads(offset_row["value"])
+                if isinstance(checkpoint, dict):
+                    stored_path = checkpoint.get("path")
+                    processed_lines = int(checkpoint.get("offset", 0))
+                else:
+                    processed_lines = int(offset_row["value"])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                try:
+                    processed_lines = int(offset_row["value"])
+                except (TypeError, ValueError):
+                    processed_lines = None
+
+        if stored_path and stored_path != jsonl_path:
+            processed_lines = None
+
+        total = await self._count_lines(host, jsonl_path)
+        if processed_lines is not None and processed_lines > total:
+            processed_lines = None
 
         if processed_lines is None:
             # First scan for this session: bound the initial read to the last
             # max_lines lines (older history is not backfilled), then track from
             # the current end of file.
-            total = await self._count_lines(host, jsonl_path)
             start_line = max(1, total - self.max_lines + 1)
         else:
             start_line = processed_lines + 1
@@ -335,7 +350,7 @@ class JSONLService:
                     )
 
             # Step 5: Persist the new line offset (inside the same batch).
-            offset_str = str(new_offset)
+            offset_str = json.dumps({"path": jsonl_path, "offset": new_offset})
             await db.execute(
                 """INSERT INTO kv (key, value, updated)
                    VALUES (?, ?, ?)

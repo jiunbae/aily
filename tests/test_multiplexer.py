@@ -15,7 +15,18 @@ from multiplexer import (
     detect_multiplexer,
     get_backend,
     MultiplexerType,
+    serialized_send_cmd,
 )
+
+
+def test_serialized_send_command_locks_text_and_enter_together():
+    cmd = serialized_send_cmd(TmuxBackend(), "work", "hello; world")
+
+    assert "aily-send-locks" in cmd
+    assert "while ! mkdir" in cmd
+    assert "tmux send-keys -t work -l -- 'hello; world'" in cmd
+    assert cmd.index("-l -- 'hello; world'") < cmd.index("sleep 0.3")
+    assert cmd.index("sleep 0.3") < cmd.index("tmux send-keys -t work Enter")
 
 
 # ===================================================================

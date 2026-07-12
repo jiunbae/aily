@@ -16,7 +16,7 @@ import re
 import shlex
 from pathlib import Path
 
-from multiplexer import get_backend, Multiplexer
+from multiplexer import get_backend, Multiplexer, serialized_send_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,12 @@ def _ensure_control_dir() -> None:
     if _control_dir_ready:
         return
     os.makedirs(_CONTROL_DIR, mode=0o700, exist_ok=True)
+    os.chmod(_CONTROL_DIR, 0o700)
     _control_dir_ready = True
+
+
+class SSHCommandError(RuntimeError):
+    """Raised when a host could not be queried authoritatively."""
 
 
 async def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
@@ -86,14 +91,19 @@ async def run_ssh(host: str, cmd: str, timeout: int = 15) -> tuple[int, str]:
     Returns:
         Tuple of (return_code, stdout_output).
     """
-    if not _SAFE_HOST_RE.match(host):
+    is_local = host in ("localhost", "127.0.0.1", "::1")
+    if not is_local and not _SAFE_HOST_RE.match(host):
         logger.error("Refusing SSH to unsafe host value: %r", host)
         return 1, ""
-    _ensure_control_dir()
+    if not is_local:
+        _ensure_control_dir()
     proc = None
     try:
+        args = ["bash", "-c", cmd] if is_local else [
+            "ssh", *_SSH_CONTROL_OPTS, host, cmd
+        ]
         proc = await asyncio.create_subprocess_exec(
-            "ssh", *_SSH_CONTROL_OPTS, host, cmd,
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -134,6 +144,8 @@ async def list_sessions(host: str) -> list[str]:
     mux = _get_mux()
     cmd = mux.list_sessions_cmd() + " 2>/dev/null || true"
     rc, out = await run_ssh(host, cmd)
+    if rc != 0:
+        raise SSHCommandError(f"Failed to list sessions on {host} (exit {rc})")
     sessions: list[str] = []
     if rc == 0 and out:
         for name in out.strip().split("\n"):
@@ -167,17 +179,8 @@ async def send_to_session(host: str, session: str, message: str) -> bool:
         True if both steps succeeded.
     """
     mux = _get_mux()
-    safe_session = shlex.quote(session)
-    safe_message = shlex.quote(message)
-
-    # Step 1: Type the text
-    rc, _ = await run_ssh(host, mux.send_keys_cmd(safe_session, safe_message))
-    if rc != 0:
-        return False
-
-    # Step 2: Press Enter (separate command -- critical for Claude Code)
-    await asyncio.sleep(SEND_KEYS_DELAY)
-    rc, _ = await run_ssh(host, mux.send_enter_cmd(safe_session))
+    command = serialized_send_cmd(mux, session, message, SEND_KEYS_DELAY)
+    rc, _ = await run_ssh(host, command)
     return rc == 0
 
 

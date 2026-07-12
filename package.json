@@ -7,11 +7,20 @@
     "aily-cli": "aily"
   },
   "scripts": {
-    "prepack": "find hooks completions -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true"
+    "prepack": "find hooks completions dashboard -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true"
   },
   "files": [
     "aily",
     "install.sh",
+    "agent-bridge.py",
+    "slack-bridge.py",
+    "bridge_core.py",
+    "multiplexer.py",
+    "session_limit.py",
+    "requirements.txt",
+    "dashboard/",
+    "Dockerfile",
+    "docker-entrypoint.sh",
     "hooks/",
     "completions/",
     ".env.example",

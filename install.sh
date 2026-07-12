@@ -95,11 +95,13 @@ try:
     settings = json.loads(raw) if raw.strip() else {}
 except FileNotFoundError:
     settings = {}
-except Exception:
-    settings = {}
+except Exception as exc:
+    print(f"Cannot parse {settings_path}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 
 if not isinstance(settings, dict):
-    settings = {}
+    print(f"Cannot update {settings_path}: root must be an object", file=sys.stderr)
+    raise SystemExit(1)
 
 hooks = settings.get("hooks")
 if not isinstance(hooks, dict):
@@ -166,9 +168,9 @@ try:
     text = config_path.read_text(encoding="utf-8")
 except FileNotFoundError:
     text = ""
-except Exception:
-    # Fall back to empty rather than failing install.
-    text = ""
+except Exception as exc:
+    print(f"Cannot read {config_path}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 
 lines = text.splitlines(True)
 out = []
@@ -184,11 +186,14 @@ for line in lines:
     out.append(line)
 
 if not replaced:
-    if out and not out[-1].endswith("\n"):
-        out[-1] += "\n"
-    if out and out[-1].strip() != "":
-        out.append("\n")
-    out.append(desired)
+    table_index = next(
+        (i for i, line in enumerate(out) if re.match(r"^\s*\[", line)),
+        len(out),
+    )
+    prefix = []
+    if table_index > 0 and out[table_index - 1].strip():
+        prefix.append("\n")
+    out[table_index:table_index] = [desired, *prefix]
 
 config_path.parent.mkdir(parents=True, exist_ok=True)
 config_path.write_text("".join(out), encoding="utf-8")
@@ -227,11 +232,13 @@ try:
     settings = json.loads(raw) if raw.strip() else {}
 except FileNotFoundError:
     settings = {}
-except Exception:
-    settings = {}
+except Exception as exc:
+    print(f"Cannot parse {settings_path}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 
 if not isinstance(settings, dict):
-    settings = {}
+    print(f"Cannot update {settings_path}: root must be an object", file=sys.stderr)
+    raise SystemExit(1)
 
 hooks = settings.get("hooks")
 if not isinstance(hooks, dict):

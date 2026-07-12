@@ -156,10 +156,8 @@ async def _poll_once(
         for name in names:
             live[name] = host
 
-    # Get current DB sessions (non-closed)
-    db_sessions_rows = await db.fetchall(
-        "SELECT * FROM sessions WHERE status != 'closed'"
-    )
+    # Include closed rows so a rediscovered session can be reactivated.
+    db_sessions_rows = await db.fetchall("SELECT * FROM sessions")
     db_sessions: dict[str, dict[str, Any]] = {
         row["name"]: row for row in db_sessions_rows
     }
@@ -186,6 +184,8 @@ async def _poll_once(
             # Session is alive — ensure it's marked active
             if session["status"] in ("closed", "idle", "orphan", "unreachable"):
                 updates.append("status = 'active'")
+                if session["status"] == "closed":
+                    updates.append("closed_at = NULL")
 
             # Update host if it moved
             if session["host"] != host:
@@ -213,6 +213,24 @@ async def _poll_once(
                             Event.session_updated(dict(updated_row))
                         )
         else:
+            if session["status"] == "closed":
+                continue
+            if session["host"] not in host_sessions:
+                if session["status"] != "unreachable":
+                    await db.execute(
+                        "UPDATE sessions SET status = 'unreachable', updated_at = ? WHERE name = ?",
+                        (now, name),
+                    )
+                    updated_row = await db.fetchone(
+                        "SELECT * FROM sessions WHERE name = ?", (name,)
+                    )
+                    if updated_row:
+                        await event_bus.publish(
+                            Event.session_status_changed(
+                                dict(updated_row), session["status"], "unreachable"
+                            )
+                        )
+                continue
             # Session gone from tmux — mark as closed
             if session["status"] != "closed":
                 await db.execute(
