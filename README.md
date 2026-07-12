@@ -222,6 +222,8 @@ aily bridge restart   # restart after config changes
 
 Any other message typed in a thread is sent directly to the session via `tmux send-keys`.
 
+**Access control.** The bridge only acts on the configured channel (`DISCORD_CHANNEL_ID` / `SLACK_CHANNEL_ID`) and its threads — messages in any other channel the bot can see are ignored. Within that channel, creating/killing sessions and sending input require the sender to be listed in `AUTHORIZED_USERS` (set `ALLOW_ALL_USERS="true"` to allow everyone in the channel instead).
+
 ## How It Works
 
 ```mermaid
@@ -252,7 +254,7 @@ aily dashboard logs    # tail recent output
 aily dashboard stop    # stop the process
 ```
 
-**Authentication:** Set `DASHBOARD_TOKEN` in your config to enable login. If not set, a random token is auto-generated on each start (printed to console). All API endpoints require a Bearer token — there is no unauthenticated mode.
+**Authentication:** Set `DASHBOARD_TOKEN` in your config to enable login. If unset, a random token is stored in a mode-0600 `dashboard-token` file beside the database. All API endpoints require a Bearer token; there is no unauthenticated mode.
 
 See [API Reference](docs/api.md) for dashboard routes and REST endpoints.
 
@@ -289,8 +291,16 @@ AILY_AUTH_TOKEN="your-auth-token"
 # Multi-host (comma-separated SSH targets)
 SSH_HOSTS="host1,host2"
 
+# Required for chat control (comma-separated Discord/Slack user IDs)
+AUTHORIZED_USERS="your-user-id"
+# Set true only to intentionally allow the entire configured channel
+ALLOW_ALL_USERS="false"
+
 # Thread cleanup on session kill: "archive" (default) or "delete"
 THREAD_CLEANUP="archive"
+
+# Thread name template ({session} and {host} are substituted)
+# THREAD_NAME_FORMAT="[agent] {session} - {host}"
 
 # Auto-create/archive threads on tmux session start/close (default: true)
 # TMUX_THREAD_SYNC="true"
@@ -425,7 +435,7 @@ aily dashboard logs    # 최근 출력 보기
 aily dashboard stop    # 프로세스 중지
 ```
 
-**인증:** `DASHBOARD_TOKEN`을 설정하면 로그인이 활성화됩니다. 미설정 시 랜덤 토큰이 자동 생성됩니다. 비인증 모드는 없습니다.
+**인증:** `DASHBOARD_TOKEN`을 설정하면 로그인이 활성화됩니다. 미설정 시 데이터베이스 옆의 권한 0600 `dashboard-token` 파일에 랜덤 토큰을 저장합니다. 비인증 모드는 없습니다.
 
 ## 멀티호스트 설정
 
