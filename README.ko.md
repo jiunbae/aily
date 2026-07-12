@@ -252,7 +252,7 @@ aily dashboard logs    # tail recent output
 aily dashboard stop    # stop the process
 ```
 
-**인증:** 설정에서 `DASHBOARD_TOKEN`을 설정하면 로그인이 활성화됩니다. 미설정 시 시작할 때마다 랜덤 토큰이 자동 생성됩니다 (콘솔에 출력). 모든 API 엔드포인트는 Bearer 토큰이 필요합니다 — 비인증 모드는 없습니다.
+**인증:** `DASHBOARD_TOKEN`을 설정하면 로그인이 활성화됩니다. 미설정 시 데이터베이스 옆의 권한 0600 `dashboard-token` 파일에 랜덤 토큰을 저장합니다. 모든 API 엔드포인트는 Bearer 토큰이 필요하며 비인증 모드는 없습니다.
 
 API 라우트와 REST 엔드포인트는 [API Reference](docs/api.md)를 참고하세요.
 
@@ -288,6 +288,11 @@ AILY_AUTH_TOKEN="your-auth-token"
 
 # Multi-host (comma-separated SSH targets)
 SSH_HOSTS="host1,host2"
+
+# 채팅 제어를 허용할 Discord/Slack 사용자 ID (쉼표 구분)
+AUTHORIZED_USERS="your-user-id"
+# 설정 채널 전체에 제어를 허용할 때만 true
+ALLOW_ALL_USERS="false"
 
 # Thread cleanup on session kill: "archive" (default) or "delete"
 THREAD_CLEANUP="archive"
@@ -415,6 +420,8 @@ aily bridge restart   # restart after config changes
 | `!q` | `q` |
 | `!enter` | Enter |
 | `!esc` | Escape |
+
+**접근 제어.** 브릿지는 설정된 채널(`DISCORD_CHANNEL_ID` / `SLACK_CHANNEL_ID`)과 그 스레드에서만 동작하며, 봇이 볼 수 있는 다른 채널의 메시지는 무시합니다. 해당 채널 안에서도 세션 생성·종료 및 입력 전송은 `AUTHORIZED_USERS`에 등록된 사용자만 가능합니다(채널 전체에 허용하려면 `ALLOW_ALL_USERS="true"`).
 
 ## Dashboard
 
