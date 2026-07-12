@@ -159,7 +159,10 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     elif msg_type == "fetch_history":
                         # Fetch message history and send back over WS
                         session_name = data.get("session", "")
-                        limit = min(int(data.get("limit", 50)), 200)
+                        try:
+                            limit = max(1, min(int(data.get("limit", 50)), 200))
+                        except (TypeError, ValueError):
+                            limit = 50
                         offset = max(int(data.get("offset", 0)), 0)
 
                         if session_name:

@@ -12,6 +12,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -226,7 +227,7 @@ async def handle_stop(request: web.Request) -> web.Response:
         "platform": "hook",
         "content": text,
         "role": "assistant",
-        "source_id": session_id,
+        "source_id": f"{session_id}:{hashlib.sha256(text.encode()).hexdigest()}",
         "timestamp": db.now_iso(),
     })
 

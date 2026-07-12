@@ -18,14 +18,16 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 import aiohttp
 
-from multiplexer import Multiplexer
+from multiplexer import Multiplexer, serialized_send_cmd
 from session_limit import detect_session_limit
 
 
@@ -37,6 +39,7 @@ AGENT_PREFIX = "[agent] "  # legacy fallback
 SEND_KEYS_DELAY = 0.3
 SESSION_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 _SAFE_PATH_RE = re.compile(r'^[a-zA-Z0-9_./@:~-]+$')
+_SAFE_HOST_RE = re.compile(r"^(?![-])[A-Za-z0-9._@-]+$")
 
 _SECRET_PATTERNS = re.compile(
     r'(?i)'
@@ -46,6 +49,17 @@ _SECRET_PATTERNS = re.compile(
     r'\s*[=:])\s*(?:"[^"]*"|\'[^\']*\'|\S+)',
 )
 _PEM_RE = re.compile(r'-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----')
+_STANDALONE_SECRET_RE = re.compile(
+    r'(?i)(?:'
+    r'\bsk-(?:ant-)?[a-z0-9_-]{20,}'
+    r'|\bgh[pousr]_[a-z0-9]{20,}'
+    r'|\bxox(?:b|p|a|r|s)-[a-z0-9-]{20,}'
+    r'|\bxapp-[a-z0-9-]{20,}'
+    r'|\bAKIA[0-9A-Z]{16}\b'
+    r'|\beyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}'
+    r')'
+)
+_CREDENTIAL_URL_RE = re.compile(r'(?i)(\b[a-z][a-z0-9+.-]*://[^\s:/]+:)[^\s@]+(@)')
 
 # Pre-compiled regexes for prompt detection
 _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*m')
@@ -57,6 +71,9 @@ _INFRA_SESSIONS = {"aily-bridge", "slack-bridge", "aily-dashboard"}
 
 # Shell names for output capture (skip capture for non-shell processes)
 _SHELL_NAMES = frozenset({"bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh"})
+_AGENT_PROCESS_NAMES = frozenset({
+    "claude", "codex", "gemini", "opencode", "vim", "nvim", "nano",
+})
 
 # Shortcut commands: message -> multiplexer key sequence
 _SHORTCUTS = {
@@ -69,6 +86,19 @@ _SHORTCUTS = {
 }
 
 _MAX_BACKGROUND_TASKS = 20
+_MAX_PENDING_BACKGROUND_TASKS = 100
+_CONTROL_DIR = os.path.expanduser("~/.ssh/aily-ctl")
+_SSH_CONTROL_OPTS = [
+    "-o", "ControlMaster=auto",
+    "-o", f"ControlPath={_CONTROL_DIR}/%r@%h:%p",
+    "-o", "ControlPersist=300",
+    "-o", "ConnectTimeout=5",
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "BatchMode=yes",
+]
+_SSH_FAILURE_THRESHOLD = 3
+_SSH_FAILURE_COOLDOWN = 60.0
+_control_dir_ready = False
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=20, thread_name_prefix="bridge-ssh")
 
@@ -76,6 +106,16 @@ _executor = concurrent.futures.ThreadPoolExecutor(max_workers=20, thread_name_pr
 async def run_in_executor(func, *args):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_executor, func, *args)
+
+
+def _ensure_control_dir() -> None:
+    """Create the SSH ControlMaster socket directory once."""
+    global _control_dir_ready
+    if _control_dir_ready:
+        return
+    os.makedirs(_CONTROL_DIR, mode=0o700, exist_ok=True)
+    os.chmod(_CONTROL_DIR, 0o700)
+    _control_dir_ready = True
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +134,8 @@ class BridgeState:
     claude_remote_control: bool
     dashboard_url: str
     dashboard_auth_token: str
+    authorized_users: set[str] = field(default_factory=set)
+    allow_all_users: bool = False
     # Session limit queue config
     session_queue_enabled: bool = True
     session_queue_retry_interval: int = 1800
@@ -104,6 +146,8 @@ class BridgeState:
     background_sem: asyncio.Semaphore = field(
         default_factory=lambda: asyncio.Semaphore(_MAX_BACKGROUND_TASKS)
     )
+    ssh_failures: dict[str, tuple[int, float]] = field(default_factory=dict)
+    ssh_failure_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +188,7 @@ class BridgeCore:
 
     Holds a ``BridgeState`` and a ``PlatformBridge`` reference.  All methods
     that were synchronous in the original bridges remain synchronous here;
-    callers wrap them with ``asyncio.to_thread`` as needed.
+    async callers dispatch them through the bridge SSH executor.
     """
 
     # Expose shortcuts as class attribute for platform bridges
@@ -161,17 +205,22 @@ class BridgeCore:
         return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
-    def load_env(env_path: str) -> dict[str, str]:
-        """Load env config file."""
+    def load_env(
+        env_path: str,
+        process_env: Mapping[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Load an optional config file, then overlay process environment."""
         env: dict[str, str] = {}
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    key, val = line.split("=", 1)
-                    env[key.strip()] = val.strip().strip('"').strip("'")
+        if env_path and os.path.isfile(env_path):
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        env[key.strip()] = val.strip().strip('"').strip("'")
+        env.update(os.environ if process_env is None else process_env)
         return env
 
     @staticmethod
@@ -185,6 +234,28 @@ class BridgeCore:
         return bool(SESSION_NAME_RE.match(name)) and len(name) <= 64
 
     @staticmethod
+    def _is_local_host(host: str) -> bool:
+        return host in ("localhost", "127.0.0.1", "::1")
+
+    @staticmethod
+    def _is_safe_ssh_host(host: str) -> bool:
+        return bool(_SAFE_HOST_RE.match(host))
+
+    @staticmethod
+    def _process_basename(command: str) -> str:
+        if not command.strip():
+            return ""
+        return os.path.basename(command.strip().split()[0]).lower()
+
+    @classmethod
+    def _is_bare_shell_process(cls, command: str) -> bool:
+        return cls._process_basename(command) in _SHELL_NAMES
+
+    @classmethod
+    def _is_known_interactive_process(cls, command: str) -> bool:
+        return cls._process_basename(command) in _AGENT_PROCESS_NAMES
+
+    @staticmethod
     def _sanitize_backticks(text: str) -> str:
         """Escape triple backticks in text to prevent markdown injection."""
         return text.replace('```', r'\`\`\`')
@@ -194,6 +265,8 @@ class BridgeCore:
         """Redact common secret patterns from shell output."""
         text = _SECRET_PATTERNS.sub(r'\1 [REDACTED]', text)
         text = _PEM_RE.sub('[REDACTED PEM KEY]', text)
+        text = _STANDALONE_SECRET_RE.sub('[REDACTED TOKEN]', text)
+        text = _CREDENTIAL_URL_RE.sub(r'\1[REDACTED]\2', text)
         return text
 
     @staticmethod
@@ -251,22 +324,71 @@ class BridgeCore:
 
         Returns (returncode, stdout).
         """
+        is_local = self._is_local_host(host)
+        if not is_local:
+            if not self._is_safe_ssh_host(host):
+                logging.error("[bridge] refusing unsafe SSH host value: %r", host)
+                return 1, ""
+            if not self._ssh_host_available(host):
+                return 1, ""
+            _ensure_control_dir()
+
         try:
-            if host in ("localhost", "127.0.0.1", "::1"):
+            if is_local:
                 result = subprocess.run(
                     ["bash", "-c", cmd],
                     capture_output=True, text=True, timeout=timeout,
                 )
             else:
                 result = subprocess.run(
-                    ["ssh", host, cmd],
+                    ["ssh", *_SSH_CONTROL_OPTS, host, cmd],
                     capture_output=True, text=True, timeout=timeout,
                 )
+                if result.returncode == 255:
+                    self._record_ssh_failure(host)
+                else:
+                    self._record_ssh_success(host)
             return result.returncode, result.stdout.strip()
         except subprocess.TimeoutExpired:
+            if not is_local:
+                self._record_ssh_failure(host)
             return 1, ""
         except Exception as e:
+            if not is_local:
+                self._record_ssh_failure(host)
             return 1, str(e)
+
+    def _ssh_host_available(self, host: str) -> bool:
+        with self.state.ssh_failure_lock:
+            failures, last_failure = self.state.ssh_failures.get(host, (0, 0.0))
+            if failures < _SSH_FAILURE_THRESHOLD:
+                return True
+            if time.monotonic() - last_failure >= _SSH_FAILURE_COOLDOWN:
+                return True
+            return False
+
+    def _record_ssh_success(self, host: str) -> None:
+        with self.state.ssh_failure_lock:
+            self.state.ssh_failures.pop(host, None)
+
+    def _record_ssh_failure(self, host: str) -> None:
+        with self.state.ssh_failure_lock:
+            failures, _ = self.state.ssh_failures.get(host, (0, 0.0))
+            self.state.ssh_failures[host] = (failures + 1, time.monotonic())
+
+    def _is_authorized_user(self, user_id: str | None) -> bool:
+        if self.state.authorized_users:
+            return bool(user_id in self.state.authorized_users)
+        return self.state.allow_all_users
+
+    async def _deny_unauthorized(
+        self, reply_channel: str, action: str, **reply_kwargs
+    ) -> None:
+        await self.platform.post_message(
+            reply_channel,
+            f"{action} requires authorization.",
+            **reply_kwargs,
+        )
 
     def _check_host_for_session(self, host: str, session_name: str, safe_name: str) -> str | None:
         """Check a single host for the given session. Returns host if found, else None."""
@@ -290,29 +412,35 @@ class BridgeCore:
         return None
 
     def find_session_host(self, session_name: str) -> str | None:
-        """Find which SSH host has the multiplexer session."""
+        """Synchronously find a session host without spawning nested pools."""
         safe_name = shlex.quote(session_name)
-        # Single host: no need for parallelism
-        if len(self.state.ssh_hosts) <= 1:
-            for host in self.state.ssh_hosts:
-                result = self._check_host_for_session(host, session_name, safe_name)
+        for host in self.state.ssh_hosts:
+            result = self._check_host_for_session(host, session_name, safe_name)
+            if result:
+                return result
+        return None
+
+    async def find_session_host_async(self, session_name: str) -> str | None:
+        """Find a session without creating a nested executor per lookup."""
+        safe_name = shlex.quote(session_name)
+        tasks = [
+            asyncio.create_task(
+                run_in_executor(
+                    self._check_host_for_session, host, session_name, safe_name
+                )
+            )
+            for host in self.state.ssh_hosts
+        ]
+        try:
+            for completed in asyncio.as_completed(tasks):
+                result = await completed
                 if result:
                     return result
             return None
-        # Multiple hosts: check in parallel
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(len(self.state.ssh_hosts), 10),
-            thread_name_prefix="find-host",
-        ) as pool:
-            futures = {
-                pool.submit(self._check_host_for_session, host, session_name, safe_name): host
-                for host in self.state.ssh_hosts
-            }
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                if result:
-                    return result
-        return None
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
 
     def send_keys_raw(self, host: str, session: str, keys: str) -> bool:
         """Send raw key sequences (e.g., C-c, C-d, C-z) to a session."""
@@ -324,22 +452,9 @@ class BridgeCore:
     def send_to_session(self, host: str, session: str, message: str) -> bool:
         """Send a message to a multiplexer session's Claude Code."""
         mux = self.state.mux
-        safe_session = shlex.quote(session)
-        safe_message = shlex.quote(message)
-
-        # Step 1: Type the text
-        rc, _ = self.run_ssh(host, mux.send_keys_cmd(safe_session, safe_message))
-        if rc != 0:
-            return False
-
-        # Step 2: Press Enter (separate command -- critical for Claude Code)
-        time.sleep(SEND_KEYS_DELAY)
-        rc, _ = self.run_ssh(host, mux.send_enter_cmd(safe_session))
-        if rc != 0:
-            # Clear ghost text to prevent corruption of next message
-            self.run_ssh(host, mux.send_raw_key_cmd(safe_session, "C-c"))
-            return False
-        return True
+        command = serialized_send_cmd(mux, session, message, SEND_KEYS_DELAY)
+        rc, _ = self.run_ssh(host, command)
+        return rc == 0
 
     # Backward-compatible alias
     send_to_tmux = send_to_session
@@ -403,7 +518,7 @@ class BridgeCore:
 
         # Check: did the command spawn a non-shell process?
         pane_cmd = self.get_pane_command(host, session)
-        if pane_cmd and pane_cmd.lower() not in _SHELL_NAMES:
+        if pane_cmd and not self._is_bare_shell_process(pane_cmd):
             return None
 
         last_content = ""
@@ -427,17 +542,66 @@ class BridgeCore:
 
         # Final check: ensure shell is still the foreground process
         pane_cmd = self.get_pane_command(host, session)
-        if pane_cmd and pane_cmd.lower() not in _SHELL_NAMES:
+        if pane_cmd and not self._is_bare_shell_process(pane_cmd):
             return None
 
         if not last_content:
             return ""
 
+        return self._extract_new_pane_output(pre_content, last_content)
+
+    async def capture_shell_output_async(
+        self,
+        host: str,
+        session: str,
+        pre_content: str,
+        poll_interval: float = 1.0,
+        stable_count: int = 2,
+        max_wait: float = 30.0,
+        initial_delay: float = 1.0,
+    ) -> str | None:
+        """Async output polling that occupies SSH workers only during I/O."""
+        await asyncio.sleep(initial_delay)
+
+        pane_cmd = await run_in_executor(self.get_pane_command, host, session)
+        if pane_cmd and not self._is_bare_shell_process(pane_cmd):
+            return None
+
+        last_content = ""
+        stable_hits = 0
+        deadline = time.monotonic() + max_wait
+
+        while time.monotonic() < deadline:
+            current = await run_in_executor(
+                self.capture_pane_content, host, session
+            )
+            if not current:
+                break
+            if current == last_content:
+                stable_hits += 1
+                if stable_hits >= stable_count:
+                    break
+            else:
+                stable_hits = 0
+                last_content = current
+            await asyncio.sleep(poll_interval)
+
+        pane_cmd = await run_in_executor(self.get_pane_command, host, session)
+        if pane_cmd and not self._is_bare_shell_process(pane_cmd):
+            return None
+        if not last_content:
+            return ""
+        return self._extract_new_pane_output(pre_content, last_content)
+
+    @classmethod
+    def _extract_new_pane_output(cls, pre_content: str, post_content: str) -> str:
+        """Extract newly rendered lines from two terminal pane snapshots."""
+
         # Diff: find lines in post that weren't in pre.
         # Use suffix matching to handle terminal scroll (lines shift up as
         # new output appears, so prefix matching fails).
         pre_lines = pre_content.rstrip().split('\n') if pre_content.strip() else []
-        post_lines = last_content.rstrip().split('\n') if last_content.strip() else []
+        post_lines = post_content.rstrip().split('\n') if post_content.strip() else []
 
         # Find longest common suffix between pre and post (the part of the
         # screen that hasn't changed, anchored at the bottom).
@@ -460,11 +624,11 @@ class BridgeCore:
 
         # Strip prompt/decoration lines from both ends
         while new_lines and (
-            not new_lines[-1].strip() or self._is_prompt_line(new_lines[-1])
+            not new_lines[-1].strip() or cls._is_prompt_line(new_lines[-1])
         ):
             new_lines.pop()
         while new_lines and (
-            not new_lines[0].strip() or self._is_prompt_line(new_lines[0])
+            not new_lines[0].strip() or cls._is_prompt_line(new_lines[0])
         ):
             new_lines.pop(0)
 
@@ -536,12 +700,26 @@ class BridgeCore:
             logging.warning("[dashboard] %s %s failed: %s", method, path, e)
             return None
 
-    def _track_task(self, coro) -> asyncio.Task[None]:
-        """Create a tracked background task that logs exceptions on completion."""
+    def _track_task(self, coro) -> asyncio.Task[None] | None:
+        """Create a bounded, tracked background task."""
         state = self.state
 
+        if len(state.background_tasks) >= _MAX_PENDING_BACKGROUND_TASKS:
+            close = getattr(coro, "close", None)
+            if close is not None:
+                close()
+            logging.warning(
+                "[bridge] dropping background work: pending task limit (%d) reached",
+                _MAX_PENDING_BACKGROUND_TASKS,
+            )
+            return None
+
+        started = False
+
         async def _limited():
+            nonlocal started
             async with state.background_sem:
+                started = True
                 return await coro
 
         task = asyncio.create_task(_limited())
@@ -549,11 +727,24 @@ class BridgeCore:
 
         def _on_done(t: asyncio.Task[None]):
             state.background_tasks.discard(t)
+            if not started:
+                close = getattr(coro, "close", None)
+                if close is not None:
+                    close()
             if not t.cancelled() and t.exception():
                 logging.warning("[bridge] background task failed: %s", t.exception())
 
         task.add_done_callback(_on_done)
         return task
+
+    async def shutdown(self) -> None:
+        """Cancel and reap bridge-owned background tasks before closing clients."""
+        tasks = list(self.state.background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self.state.background_tasks.difference_update(tasks)
 
     # Public alias for platform bridges
     track_task = _track_task
@@ -575,8 +766,8 @@ class BridgeCore:
         fast command output.
         """
         try:
-            output = await asyncio.to_thread(
-                self.capture_shell_output, host, session, pre_content
+            output = await self.capture_shell_output_async(
+                host, session, pre_content
             )
 
             if output is None:
@@ -686,7 +877,7 @@ class BridgeCore:
             return
         try:
             await asyncio.sleep(state.session_queue_detect_delay)
-            post_content = await asyncio.to_thread(
+            post_content = await run_in_executor(
                 self.capture_pane_content, host, session_name
             )
             if not post_content:
@@ -741,9 +932,7 @@ class BridgeCore:
 
                 for item in pending:
                     session_name = item.get("session_name", "")
-                    host = await asyncio.to_thread(
-                        self.find_session_host, session_name
-                    )
+                    host = await self.find_session_host_async(session_name)
                     if not host:
                         await self._mark_queue_item_failed(
                             item["id"], "Session no longer exists"
@@ -766,12 +955,12 @@ class BridgeCore:
                         continue
 
                     # Capture pre-content
-                    pre_content = await asyncio.to_thread(
+                    pre_content = await run_in_executor(
                         self.capture_pane_content, host, session_name
                     )
 
                     # Retry sending
-                    sent = await asyncio.to_thread(
+                    sent = await run_in_executor(
                         self.send_to_session, host, session_name,
                         item.get("user_message", ""),
                     )
@@ -797,7 +986,7 @@ class BridgeCore:
 
                     # Check if still rate limited
                     await asyncio.sleep(state.session_queue_detect_delay)
-                    post_content = await asyncio.to_thread(
+                    post_content = await run_in_executor(
                         self.capture_pane_content, host, session_name
                     )
                     error_line = (
@@ -863,6 +1052,7 @@ class BridgeCore:
         session_name: str,
         user_message: str,
         user_name: str,
+        user_id: str = "",
         source_id: str = "",
         **reply_kwargs,
     ) -> None:
@@ -874,7 +1064,13 @@ class BridgeCore:
         platform = self.platform
         state = self.state
 
-        host = await asyncio.to_thread(self.find_session_host, session_name)
+        if not self._is_authorized_user(user_id):
+            await self._deny_unauthorized(
+                channel_id, "Forwarding messages", **reply_kwargs
+            )
+            return
+
+        host = await self.find_session_host_async(session_name)
         if not host:
             await platform.post_message(
                 channel_id,
@@ -887,7 +1083,7 @@ class BridgeCore:
         # Handle shortcut commands (e.g., !c -> Ctrl+C)
         shortcut_key = _SHORTCUTS.get(user_message.lower())
         if shortcut_key:
-            sent = await asyncio.to_thread(
+            sent = await run_in_executor(
                 self.send_keys_raw, host, session_name, shortcut_key
             )
             if sent:
@@ -923,11 +1119,19 @@ class BridgeCore:
         })
 
         # Capture pane BEFORE sending -- critical for catching fast command output
-        pre_content = await asyncio.to_thread(
+        pane_cmd = await run_in_executor(self.get_pane_command, host, session_name)
+        if pane_cmd and self._is_bare_shell_process(pane_cmd):
+            await platform.post_message(
+                channel_id,
+                f"Warning: `{session_name}` appears to be at a bare shell (`{pane_cmd}`).",
+                **reply_kwargs,
+            )
+
+        pre_content = await run_in_executor(
             self.capture_pane_content, host, session_name
         )
 
-        sent = await asyncio.to_thread(
+        sent = await run_in_executor(
             self.send_to_session, host, session_name, user_message
         )
         if sent:
@@ -958,11 +1162,21 @@ class BridgeCore:
     # -- command handlers ---------------------------------------------------
 
     async def cmd_new(
-        self, reply_channel: str, raw_args: str, **reply_kwargs
+        self,
+        reply_channel: str,
+        raw_args: str,
+        user_id: str = "",
+        **reply_kwargs,
     ) -> None:
         """!new <name> [host|dir] [dir] [-- cmd] -- create session + thread."""
         platform = self.platform
         state = self.state
+
+        if not self._is_authorized_user(user_id):
+            await self._deny_unauthorized(
+                reply_channel, "Creating sessions", **reply_kwargs
+            )
+            return
 
         if not raw_args:
             await platform.post_message(
@@ -1030,7 +1244,7 @@ class BridgeCore:
             return
 
         # Check if session already exists
-        existing = await asyncio.to_thread(self.find_session_host, session_name)
+        existing = await self.find_session_host_async(session_name)
         if existing:
             await platform.post_message(
                 reply_channel,
@@ -1051,7 +1265,7 @@ class BridgeCore:
         else:
             safe_dir = shlex.quote(working_dir) if working_dir else None
         create_cmd = mux.new_session_cmd(safe_name, safe_dir)
-        rc, _ = await asyncio.to_thread(self.run_ssh, host, create_cmd)
+        rc, _ = await run_in_executor(self.run_ssh, host, create_cmd)
         if rc != 0:
             await platform.post_message(
                 reply_channel,
@@ -1065,14 +1279,14 @@ class BridgeCore:
             marker_cmd = mux.set_environment_cmd(
                 safe_name, "AILY_BRIDGE_MANAGED", "1"
             )
-            await asyncio.to_thread(self.run_ssh, host, marker_cmd)
+            await run_in_executor(self.run_ssh, host, marker_cmd)
 
         # Launch shell command or agent in session
         agent_label = ""
         if shell_cmd:
             delay = 3.0 if state.mux.name == "zellij" else 0.5
             await asyncio.sleep(delay)
-            launched = await asyncio.to_thread(
+            launched = await run_in_executor(
                 self.send_to_session, host, session_name, shell_cmd
             )
             if launched:
@@ -1087,7 +1301,7 @@ class BridgeCore:
                 # Zellij needs more time for shell to be ready after session creation
                 delay = 3.0 if state.mux.name == "zellij" else 0.5
                 await asyncio.sleep(delay)
-                launched = await asyncio.to_thread(
+                launched = await run_in_executor(
                     self.send_to_session, host, session_name, agent_cmd
                 )
                 if launched:
@@ -1122,11 +1336,21 @@ class BridgeCore:
             )
 
     async def cmd_kill(
-        self, reply_channel: str, parts: list[str], **reply_kwargs
+        self,
+        reply_channel: str,
+        parts: list[str],
+        user_id: str = "",
+        **reply_kwargs,
     ) -> None:
         """!kill <session_name> -- kill session + cleanup thread."""
         platform = self.platform
         state = self.state
+
+        if not self._is_authorized_user(user_id):
+            await self._deny_unauthorized(
+                reply_channel, "Killing sessions", **reply_kwargs
+            )
+            return
 
         if len(parts) < 2:
             await platform.post_message(
@@ -1146,11 +1370,11 @@ class BridgeCore:
 
         # Kill multiplexer session
         mux = state.mux
-        host = await asyncio.to_thread(self.find_session_host, session_name)
+        host = await self.find_session_host_async(session_name)
         session_killed = False
         if host:
             safe_name = shlex.quote(session_name)
-            rc, _ = await asyncio.to_thread(
+            rc, _ = await run_in_executor(
                 self.run_ssh, host, mux.kill_session_cmd(safe_name)
             )
             session_killed = rc == 0
@@ -1220,7 +1444,7 @@ class BridgeCore:
         # Gather sessions from all hosts
         all_sessions: dict[str, str] = {}
         for host in state.ssh_hosts:
-            rc, out = await asyncio.to_thread(
+            rc, out = await run_in_executor(
                 self.run_ssh,
                 host,
                 f"{mux.list_sessions_cmd()} 2>/dev/null || true",
@@ -1265,11 +1489,21 @@ class BridgeCore:
         )
 
     async def cmd_queue(
-        self, reply_channel: str, parts: list[str], **reply_kwargs
+        self,
+        reply_channel: str,
+        parts: list[str],
+        user_id: str = "",
+        **reply_kwargs,
     ) -> None:
         """!queue [add <session> <command> | execute] -- manage deferred command queue."""
         platform = self.platform
         subcmd = parts[1].lower() if len(parts) > 1 else ""
+
+        if subcmd in ("add", "execute") and not self._is_authorized_user(user_id):
+            await self._deny_unauthorized(
+                reply_channel, "Command queue changes", **reply_kwargs
+            )
+            return
 
         if subcmd == "add":
             if len(parts) < 4:
@@ -1360,12 +1594,22 @@ class BridgeCore:
             )
 
     async def cmd_limit_queue(
-        self, reply_channel: str, parts: list[str], **reply_kwargs
+        self,
+        reply_channel: str,
+        parts: list[str],
+        user_id: str = "",
+        **reply_kwargs,
     ) -> None:
         """!lq [clear|retry|status] -- manage session limit retry queue."""
         platform = self.platform
         platform_name = platform.platform_name
         subcmd = parts[1].lower() if len(parts) > 1 else ""
+
+        if subcmd in ("clear", "retry") and not self._is_authorized_user(user_id):
+            await self._deny_unauthorized(
+                reply_channel, "Session limit queue changes", **reply_kwargs
+            )
+            return
 
         if subcmd == "clear":
             result = await self.dashboard_api(
@@ -1504,24 +1748,42 @@ class BridgeCore:
             )
 
     async def handle_command(
-        self, reply_channel: str, text: str, **reply_kwargs
+        self,
+        reply_channel: str,
+        text: str,
+        user_id: str = "",
+        **reply_kwargs,
     ) -> None:
         """Dispatch ! commands to the appropriate handler."""
         platform = self.platform
         parts = text.split(None, 3)
         cmd = parts[0].lower() if parts else ""
 
+        if not self._is_authorized_user(user_id):
+            await self._deny_unauthorized(
+                reply_channel, "Using bridge commands", **reply_kwargs
+            )
+            return
+
         if cmd == "!new":
             raw_after_cmd = text[len("!new"):].strip()
-            await self.cmd_new(reply_channel, raw_after_cmd, **reply_kwargs)
+            await self.cmd_new(
+                reply_channel, raw_after_cmd, user_id=user_id, **reply_kwargs
+            )
         elif cmd == "!kill":
-            await self.cmd_kill(reply_channel, parts, **reply_kwargs)
+            await self.cmd_kill(
+                reply_channel, parts, user_id=user_id, **reply_kwargs
+            )
         elif cmd in ("!sessions", "!ls"):
             await self.cmd_sessions(reply_channel, **reply_kwargs)
         elif cmd == "!queue":
-            await self.cmd_queue(reply_channel, parts, **reply_kwargs)
+            await self.cmd_queue(
+                reply_channel, parts, user_id=user_id, **reply_kwargs
+            )
         elif cmd in ("!lq", "!limit-queue"):
-            await self.cmd_limit_queue(reply_channel, parts, **reply_kwargs)
+            await self.cmd_limit_queue(
+                reply_channel, parts, user_id=user_id, **reply_kwargs
+            )
         else:
             await platform.post_message(
                 reply_channel,
@@ -1570,6 +1832,25 @@ class BridgeCore:
         )
         dashboard_auth_token = os.environ.get("AILY_AUTH_TOKEN", "") or env.get(
             "AILY_AUTH_TOKEN", ""
+        )
+
+        authorized_users_raw = (
+            os.environ.get("AUTHORIZED_USERS", "")
+            or env.get("AUTHORIZED_USERS", "")
+            or os.environ.get("AILY_AUTHORIZED_USERS", "")
+            or env.get("AILY_AUTHORIZED_USERS", "")
+        )
+        authorized_users = {
+            user_id.strip()
+            for user_id in authorized_users_raw.split(",")
+            if user_id.strip()
+        }
+        allow_all_users = (
+            os.environ.get(
+                "ALLOW_ALL_USERS",
+                env.get("ALLOW_ALL_USERS", env.get("AILY_ALLOW_ALL_USERS", "false")),
+            ).lower()
+            == "true"
         )
 
         # Multiplexer backend
@@ -1621,6 +1902,8 @@ class BridgeCore:
             claude_remote_control=claude_remote_control,
             dashboard_url=dashboard_url,
             dashboard_auth_token=dashboard_auth_token,
+            authorized_users=authorized_users,
+            allow_all_users=allow_all_users,
             session_queue_enabled=session_queue_enabled,
             session_queue_retry_interval=session_queue_retry_interval,
             session_queue_max_retries=session_queue_max_retries,

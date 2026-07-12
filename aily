@@ -447,21 +447,25 @@ api_call() {
   token="$(dashboard_token)"
 
   local auth_header=""
+  local -a curl_deadline=(
+    --connect-timeout "${AILY_HTTP_CONNECT_TIMEOUT:-5}"
+    --max-time "${AILY_HTTP_MAX_TIME:-30}"
+  )
   if [[ -n "$token" ]]; then
     auth_header="Authorization: Bearer ${token}"
   fi
 
   if [[ "$method" == "GET" ]]; then
     if [[ -n "$auth_header" ]]; then
-      curl -sf -H "$auth_header" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
+      curl -sf "${curl_deadline[@]}" -H "$auth_header" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
     else
-      curl -sf -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
+      curl -sf "${curl_deadline[@]}" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
     fi
   else
     if [[ -n "$auth_header" ]]; then
-      curl -sf -X "$method" -H "$auth_header" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
+      curl -sf "${curl_deadline[@]}" -X "$method" -H "$auth_header" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
     else
-      curl -sf -X "$method" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
+      curl -sf "${curl_deadline[@]}" -X "$method" -H "Content-Type: application/json" "$url" "$@" 2>/dev/null
     fi
   fi
 }
@@ -546,8 +550,7 @@ format_thread_name() {
 # ---------------------------------------------------------------------------
 load_discord_env() {
   if [[ ! -f "$ENV_FILE" ]]; then return 1; fi
-  # shellcheck source=/dev/null
-  source "$ENV_FILE"
+  load_env
   if [[ -z "${DISCORD_BOT_TOKEN:-}" || -z "${DISCORD_CHANNEL_ID:-}" ]]; then return 1; fi
   local lib="${HOOKS_DIR}/discord-lib.sh"
   if [[ ! -f "$lib" ]]; then return 1; fi
@@ -558,8 +561,7 @@ load_discord_env() {
 
 load_slack_env() {
   if [[ ! -f "$ENV_FILE" ]]; then return 1; fi
-  # shellcheck source=/dev/null
-  source "$ENV_FILE"
+  load_env
   if [[ -z "${SLACK_BOT_TOKEN:-}" || -z "${SLACK_CHANNEL_ID:-}" ]]; then return 1; fi
   local lib="${HOOKS_DIR}/slack-lib.sh"
   if [[ ! -f "$lib" ]]; then return 1; fi
@@ -638,12 +640,15 @@ cmd_init() {
   # Pre-load existing config so unselected platforms are preserved
   local discord_token="" discord_channel=""
   local slack_token="" slack_app_token="" slack_channel=""
+  local authorized_users="" allow_all_users="false"
   if [[ -f "$ENV_FILE" ]]; then
     discord_token="$(env_get DISCORD_BOT_TOKEN "")"
     discord_channel="$(env_get DISCORD_CHANNEL_ID "")"
     slack_token="$(env_get SLACK_BOT_TOKEN "")"
     slack_app_token="$(env_get SLACK_APP_TOKEN "")"
     slack_channel="$(env_get SLACK_CHANNEL_ID "")"
+    authorized_users="$(env_get AUTHORIZED_USERS "")"
+    allow_all_users="$(env_get ALLOW_ALL_USERS "false")"
   fi
 
   if [[ "$non_interactive" == "true" ]]; then
@@ -652,6 +657,8 @@ cmd_init() {
     slack_token="${SLACK_BOT_TOKEN:-$(env_get SLACK_BOT_TOKEN "")}"
     slack_app_token="${SLACK_APP_TOKEN:-$(env_get SLACK_APP_TOKEN "")}"
     slack_channel="${SLACK_CHANNEL_ID:-$(env_get SLACK_CHANNEL_ID "")}"
+    authorized_users="${AUTHORIZED_USERS:-$(env_get AUTHORIZED_USERS "")}"
+    allow_all_users="${ALLOW_ALL_USERS:-$(env_get ALLOW_ALL_USERS "false")}"
   else
     # Determine default based on existing config
     local _plat_default=0
@@ -752,6 +759,15 @@ cmd_init() {
       fi
       echo ""
     fi
+  fi
+
+  if [[ "$non_interactive" != "true" ]]; then
+    authorized_users=$(prompt_value \
+      "Authorized Discord/Slack user IDs (comma-separated)" \
+      "$authorized_users" false)
+  fi
+  if [[ -z "$authorized_users" && "$allow_all_users" != "true" ]]; then
+    warn "Remote session control will remain disabled until AUTHORIZED_USERS is set"
   fi
 
   # -- 2. Quick-start defaults gate --
@@ -904,6 +920,8 @@ cmd_init() {
   config_content+="\n"
   config_content+="# --- General ---\n"
   config_content+="SSH_HOSTS=\"${ssh_hosts}\"\n"
+  config_content+="AUTHORIZED_USERS=\"${authorized_users}\"\n"
+  config_content+="ALLOW_ALL_USERS=\"${allow_all_users}\"\n"
   config_content+="TMUX_THREAD_SYNC=\"true\"\n"
   config_content+="THREAD_CLEANUP=\"${thread_cleanup}\"\n"
   config_content+="\n"
@@ -1791,7 +1809,7 @@ cmd_sync() {
 
   if [[ -n "$resp" ]]; then
     local count
-    count=$(echo "$resp" | jq -r '.synced_messages // .count // "unknown"' 2>/dev/null)
+    count=$(echo "$resp" | jq -r '.synced // .synced_messages // .count // "unknown"' 2>/dev/null)
     printf "${C_GREEN}OK${C_RESET}\n"
     info "Synced messages: ${count}"
   else
@@ -2041,7 +2059,6 @@ _config_show() {
   echo ""
 
   # Read and redact sensitive values
-  local secret_keys="DISCORD_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN AILY_AUTH_TOKEN TELEGRAM_BOT_TOKEN"
   while IFS= read -r line; do
     # Skip empty lines and comments — print as-is
     if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
@@ -2057,7 +2074,7 @@ _config_show() {
       val="${val#\'}"
       val="${val%\'}"
 
-      if [[ " $secret_keys " == *" $key "* && -n "$val" ]]; then
+      if [[ "$key" =~ (_TOKEN|_KEY|_SECRET|_PASSWORD|_CREDENTIAL)$ && -n "$val" ]]; then
         printf "  ${C_CYAN}%s${C_RESET}=%s\n" "$key" "$(redact "$val")"
       else
         printf "  ${C_CYAN}%s${C_RESET}=%s\n" "$key" "$val"
@@ -2077,6 +2094,14 @@ _config_set() {
   fi
   # Normalize key to uppercase
   key=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+  if [[ ! "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+    err "Invalid configuration key: ${key}"
+    exit 1
+  fi
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    err "Configuration values cannot contain newlines"
+    exit 1
+  fi
   env_set "$key" "$value"
   ok "${key} updated"
 }

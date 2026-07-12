@@ -79,3 +79,19 @@ def test_gemini_hook_parses_stdin_json():
     lines = result.stdout.splitlines()
     assert lines[0] == "/tmp/foo.jsonl"
     assert lines[1] == "/tmp/work"
+
+
+@pytest.mark.parametrize("library", ["discord-lib.sh", "slack-lib.sh"])
+def test_platform_curl_wrappers_have_deadlines(library: str):
+    text = (REPO_ROOT / "hooks" / library).read_text()
+
+    assert "--connect-timeout" in text
+    assert "--max-time" in text
+
+
+def test_cli_dashboard_requests_have_deadlines():
+    text = (REPO_ROOT / "aily").read_text()
+    api_call = text.split("api_call() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert "--connect-timeout" in api_call
+    assert "--max-time" in api_call

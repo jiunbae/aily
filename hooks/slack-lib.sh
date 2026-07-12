@@ -8,7 +8,9 @@ _SLACK_API="https://slack.com/api"
 
 # Wrapper: hides auth token from ps output by passing it via --config <(...)
 _slack_curl() {
-  curl --config <(printf 'header = "Authorization: Bearer %s"\n' "$SLACK_BOT_TOKEN") "$@"
+  curl --connect-timeout "${AILY_HTTP_CONNECT_TIMEOUT:-5}" \
+    --max-time "${AILY_HTTP_MAX_TIME:-20}" \
+    --config <(printf 'header = "Authorization: Bearer %s"\n' "$SLACK_BOT_TOKEN") "$@"
 }
 
 slack_find_thread() {

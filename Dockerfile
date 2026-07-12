@@ -33,11 +33,12 @@ RUN mkdir -p /app/data && chown app:app /app/data
 USER app
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" || exit 1
+    CMD python3 -c "import os, urllib.request; mode=os.environ.get('BRIDGE_MODE', 'dashboard'); urllib.request.urlopen('http://localhost:8080/healthz') if mode in ('dashboard', 'all') else None"
 
 EXPOSE 8080
 
 ENV PYTHONUNBUFFERED=1
 ENV BRIDGE_MODE=dashboard
+ENV DASHBOARD_HOST=0.0.0.0
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

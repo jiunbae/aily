@@ -12,7 +12,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+import hashlib
 import os
+import shlex
 
 
 class MultiplexerType(Enum):
@@ -118,6 +120,40 @@ class Multiplexer(ABC):
     def supports_detached_capture(self) -> bool:
         """Whether this multiplexer supports capturing pane content from detached sessions."""
         return True
+
+
+def serialized_send_cmd(
+    mux: Multiplexer,
+    session: str,
+    message: str,
+    delay: float = 0.3,
+) -> str:
+    """Build one cross-process, per-session serialized input command."""
+    safe_session = shlex.quote(session)
+    safe_message = shlex.quote(message)
+    lock_id = hashlib.sha256(
+        f"{mux.name}\0{session}".encode()
+    ).hexdigest()[:20]
+    send_text = mux.send_keys_cmd(safe_session, safe_message)
+    send_enter = mux.send_enter_cmd(safe_session)
+    cancel_text = mux.send_raw_key_cmd(safe_session, "C-c")
+    return (
+        'umask 077; '
+        'lock_root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/aily-send-locks"; '
+        'mkdir -p "$lock_root" || exit 70; '
+        f'lock_dir="$lock_root/{lock_id}"; attempts=0; '
+        'while ! mkdir "$lock_dir" 2>/dev/null; do '
+        'owner=$(cat "$lock_dir/pid" 2>/dev/null || true); '
+        'if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then '
+        'rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true; continue; fi; '
+        'attempts=$((attempts + 1)); [ "$attempts" -ge 200 ] && exit 75; '
+        'sleep 0.05; done; '
+        'echo "$$" > "$lock_dir/pid"; '
+        'cleanup() { rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true; }; '
+        'trap cleanup EXIT HUP INT TERM; '
+        f'{send_text} || exit $?; sleep {delay}; '
+        f'{send_enter} || {{ {cancel_text}; exit 1; }}'
+    )
 
 
 class TmuxBackend(Multiplexer):

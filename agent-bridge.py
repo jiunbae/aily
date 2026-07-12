@@ -24,6 +24,7 @@ import asyncio
 import collections
 import json
 import logging
+import random
 import sys
 from typing import Any
 
@@ -44,6 +45,21 @@ INTENT_GUILD_MESSAGES = 1 << 9
 INTENT_MESSAGE_CONTENT = 1 << 15
 
 API_BASE = "https://discord.com/api/v10"
+
+_FATAL_GATEWAY_CLOSE_REASONS = {
+    4004: "authentication failed (invalid bot token)",
+    4010: "invalid shard configuration",
+    4011: "sharding is required for this bot",
+    4012: "invalid Gateway API version",
+    4013: "invalid Gateway intents",
+    4014: "disallowed Gateway intents; enable required privileged intents",
+}
+
+
+def _gateway_ws_url(base_url: str) -> str:
+    """Build a Discord gateway URL with the protocol version parameters."""
+    separator = "&" if "?" in base_url else "?"
+    return f"{base_url}{separator}v=10&encoding=json"
 
 
 # --- Discord REST helper ---
@@ -268,7 +284,7 @@ async def handle_message(
         pass  # fall through to thread forwarding below
     elif content.startswith("!"):
         print(f"[bridge] command: {content[:80]}")
-        await core.handle_command(channel_id, content)
+        await core.handle_command(channel_id, content, user_id=author.get("id", ""))
         return
 
     # Only forward messages in [agent] threads
@@ -307,6 +323,7 @@ async def handle_message(
         session_name=session_name,
         user_message=user_message,
         user_name=user_name,
+        user_id=author.get("id", ""),
         source_id=message.get("id", ""),
     )
 
@@ -316,6 +333,7 @@ async def handle_message(
 async def gateway_connect(
     token: str, core: BridgeCore, platform: DiscordPlatform,
     announced: dict[str, bool],
+    gateway_state: dict[str, Any] | None = None,
 ):
     """Connect to Discord gateway via WebSocket and listen for messages."""
     # REST calls use the persistent session owned by main (platform.http); only
@@ -325,10 +343,21 @@ async def gateway_connect(
     # session-limit detection, retry loop) → "Session is closed" and dropped
     # output during reconnect windows.
     http = platform.http
+    if gateway_state is None:
+        gateway_state = {}
     async with aiohttp.ClientSession() as ws_session:
         # Get gateway URL
-        gw = await discord_request(http, token, "GET", "/gateway/bot")
-        ws_url = (gw.get("url", "wss://gateway.discord.gg") if isinstance(gw, dict) else "wss://gateway.discord.gg") + "?v=10&encoding=json"
+        resume_url = gateway_state.get("resume_gateway_url")
+        if resume_url:
+            ws_url = _gateway_ws_url(resume_url)
+        else:
+            gw = await discord_request(http, token, "GET", "/gateway/bot")
+            base_url = (
+                gw.get("url", "wss://gateway.discord.gg")
+                if isinstance(gw, dict)
+                else "wss://gateway.discord.gg"
+            )
+            ws_url = _gateway_ws_url(base_url)
 
         # Get bot user info
         me = await discord_request(http, token, "GET", "/users/@me")
@@ -380,8 +409,10 @@ async def gateway_connect(
             await platform.post_message(platform.channel_id, "\n".join(lines))
 
         intents = INTENT_GUILDS | INTENT_GUILD_MESSAGES | INTENT_MESSAGE_CONTENT
-        sequence = None
+        sequence = gateway_state.get("seq")
         hb_task = None
+        heartbeat_acked = asyncio.Event()
+        heartbeat_acked.set()
 
         async with ws_session.ws_connect(ws_url) as ws:
             async for msg in ws:
@@ -394,39 +425,75 @@ async def gateway_connect(
 
                     if s is not None:
                         sequence = s
+                        gateway_state["seq"] = s
 
                     # Hello -- identify and start heartbeating
                     if op == 10:
                         heartbeat_interval = d["heartbeat_interval"] / 1000
-                        await ws.send_json({
-                            "op": 2,
-                            "d": {
-                                "token": token,
-                                "intents": intents,
-                                "properties": {
-                                    "os": "linux",
-                                    "browser": "agent-bridge",
-                                    "device": "agent-bridge",
+                        if gateway_state.get("session_id") and sequence is not None:
+                            await ws.send_json({
+                                "op": 6,
+                                "d": {
+                                    "token": token,
+                                    "session_id": gateway_state["session_id"],
+                                    "seq": sequence,
                                 },
-                            },
-                        })
+                            })
+                        else:
+                            await ws.send_json({
+                                "op": 2,
+                                "d": {
+                                    "token": token,
+                                    "intents": intents,
+                                    "properties": {
+                                        "os": "linux",
+                                        "browser": "agent-bridge",
+                                        "device": "agent-bridge",
+                                    },
+                                },
+                            })
                         hb_task = asyncio.create_task(
                             heartbeat_loop(ws, heartbeat_interval,
-                                           lambda: sequence))
+                                           lambda: sequence, heartbeat_acked))
+
+                    # Discord may request an immediate heartbeat between intervals.
+                    elif op == 1:
+                        await send_heartbeat(ws, sequence, heartbeat_acked)
 
                     # Heartbeat ACK
                     elif op == 11:
-                        pass
+                        heartbeat_acked.set()
 
                     # Dispatch events
                     elif op == 0:
+                        if t == "READY" and isinstance(d, dict):
+                            gateway_state["session_id"] = d.get("session_id", "")
+                            gateway_state["resume_gateway_url"] = d.get(
+                                "resume_gateway_url",
+                                gateway_state.get("resume_gateway_url", ""),
+                            )
+                        elif t == "RESUMED":
+                            print("[bridge] Gateway session resumed")
                         if t == "MESSAGE_CREATE":
-                            core.track_task(
+                            task = core.track_task(
                                 handle_message(core, platform, bot_user_id, d))
+                            if task is None and isinstance(d, dict):
+                                await platform.post_message(
+                                    d.get("channel_id", platform.channel_id),
+                                    "Bridge is overloaded; this message was not processed.",
+                                )
 
                     # Reconnect / Invalid session
-                    elif op in (7, 9):
-                        print(f"[bridge] Gateway op {op}, reconnecting...",
+                    elif op == 7:
+                        print("[bridge] Gateway requested reconnect",
+                              file=sys.stderr)
+                        break
+                    elif op == 9:
+                        if not d:
+                            gateway_state.pop("session_id", None)
+                            gateway_state.pop("seq", None)
+                            gateway_state.pop("resume_gateway_url", None)
+                        print("[bridge] Gateway invalid session, reconnecting...",
                               file=sys.stderr)
                         break
 
@@ -452,27 +519,49 @@ async def gateway_connect(
             if ws.close_code:
                 print(f"[bridge] Gateway closed: code={ws.close_code}",
                       file=sys.stderr)
-                if ws.close_code == 4004:
-                    print("[bridge] FATAL: Invalid bot token (close code 4004). "
-                          "Exiting.", file=sys.stderr)
-                    sys.exit(1)
+                fatal_reason = _FATAL_GATEWAY_CLOSE_REASONS.get(ws.close_code)
+                if fatal_reason:
+                    print(
+                        f"[bridge] FATAL: {fatal_reason} "
+                        f"(close code {ws.close_code}). Exiting.",
+                        file=sys.stderr,
+                    )
                 if ws.close_code == 4014:
-                    print("[bridge] FATAL: Message Content Intent not enabled "
-                          "(close code 4014). Exiting.", file=sys.stderr)
                     print("[bridge] Enable it at: https://discord.com/developers/"
                           "applications -> Bot -> Privileged Intents",
                           file=sys.stderr)
+                if fatal_reason:
                     sys.exit(1)
+                if ws.close_code in (4007, 4009):
+                    gateway_state.pop("session_id", None)
+                    gateway_state.pop("seq", None)
+                    gateway_state.pop("resume_gateway_url", None)
 
 
-async def heartbeat_loop(ws, interval: float, get_sequence):
-    """Send heartbeats at the specified interval."""
+async def send_heartbeat(ws, sequence, heartbeat_acked: asyncio.Event) -> None:
+    """Send one heartbeat and mark it as awaiting acknowledgement."""
+    heartbeat_acked.clear()
+    await ws.send_json({"op": 1, "d": sequence})
+
+
+async def heartbeat_loop(
+    ws,
+    interval: float,
+    get_sequence,
+    heartbeat_acked: asyncio.Event,
+):
+    """Send heartbeats and terminate zombied connections missing an ACK."""
+    await asyncio.sleep(interval * random.random())
     while True:
-        await asyncio.sleep(interval)
+        if not heartbeat_acked.is_set():
+            logging.warning("Discord heartbeat ACK not received; reconnecting")
+            await ws.close(code=4000, message=b"heartbeat ACK timeout")
+            return
         try:
-            await ws.send_json({"op": 1, "d": get_sequence()})
+            await send_heartbeat(ws, get_sequence(), heartbeat_acked)
         except Exception:
-            break
+            return
+        await asyncio.sleep(interval)
 
 
 # --- Entry point ---
@@ -483,9 +572,10 @@ async def main():
     _xdg_config = os.environ.get("XDG_CONFIG_HOME",
                                   os.path.expanduser("~/.config"))
     _default_path = os.path.join(_xdg_config, "aily", "env")
-    env_path = os.environ.get("AGENT_BRIDGE_ENV", _default_path)
+    explicit_env_path = os.environ.get("AGENT_BRIDGE_ENV", "")
+    env_path = explicit_env_path or _default_path
 
-    if not os.path.exists(env_path):
+    if explicit_env_path and not os.path.exists(env_path):
         print(f"Config not found: {env_path}", file=sys.stderr)
         sys.exit(1)
 
@@ -548,6 +638,7 @@ async def main():
     core = BridgeCore(state, platform)
 
     announced: dict[str, bool] = {"done": False}
+    gateway_state: dict[str, Any] = {}
     reconnect_delay = 5
     max_delay = 300  # 5 minutes cap
     consecutive_failures = 0
@@ -561,7 +652,7 @@ async def main():
     try:
         while True:
             try:
-                await gateway_connect(token, core, platform, announced)
+                await gateway_connect(token, core, platform, announced, gateway_state)
                 reconnect_delay = 5  # reset on successful connection
                 consecutive_failures = 0
             except Exception as e:
@@ -581,6 +672,7 @@ async def main():
                 await retry_task
             except asyncio.CancelledError:
                 pass
+        await core.shutdown()
         await dashboard_http.close()
         await discord_http.close()
 

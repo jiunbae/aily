@@ -18,8 +18,11 @@ def main() -> None:
     config = app.get("config")
     if config and getattr(config, '_token_auto_generated', False):
         print(f"\n{'='*60}")
-        print(f"  Dashboard token (auto-generated): {config.dashboard_token[:8]}...")
-        print(f"  Set DASHBOARD_TOKEN env var for persistent auth")
+        if getattr(config, "_token_file", ""):
+            print(f"  Dashboard token initialized at: {config._token_file}")
+        else:
+            print(f"  Dashboard token (one-time): {config.dashboard_token}")
+            print("  Set DASHBOARD_TOKEN for persistent authentication")
         print(f"{'='*60}\n")
 
     web.run_app(app, host=host, port=port, shutdown_timeout=10.0)

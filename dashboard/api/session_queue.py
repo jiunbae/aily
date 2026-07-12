@@ -42,7 +42,7 @@ async def list_queue(request: web.Request) -> web.Response:
     due_only = params.get("due", "").lower() == "true"
 
     try:
-        limit = min(int(params.get("limit", "50")), 200)
+        limit = max(1, min(int(params.get("limit", "50")), 200))
     except ValueError:
         limit = 50
     try:

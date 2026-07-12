@@ -246,20 +246,27 @@ async def batch() -> AsyncIterator[None]:
             await db.insert_or_ignore(...)
         # commit happens here automatically
     """
-    async with _batch_lock:
-        depth = _batch_depth.get()
-        _batch_depth.set(depth + 1)
+    depth = _batch_depth.get()
+    if depth > 0:
+        token = _batch_depth.set(depth + 1)
         try:
             yield
-        except BaseException:
-            _batch_depth.set(depth)
-            if depth == 0:
+        finally:
+            _batch_depth.reset(token)
+        return
+
+    async with _batch_lock:
+        token = _batch_depth.set(1)
+        try:
+            try:
+                yield
+            except BaseException:
                 await get_db().rollback()
-            raise
-        else:
-            _batch_depth.set(depth)
-            if depth == 0:
+                raise
+            else:
                 await get_db().commit()
+        finally:
+            _batch_depth.reset(token)
 
 
 async def execute(sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Cursor:

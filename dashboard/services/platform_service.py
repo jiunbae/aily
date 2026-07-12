@@ -7,7 +7,6 @@ to find and manage platform threads for tmux sessions.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any
 
@@ -16,12 +15,12 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 AGENT_PREFIX = "[agent] "  # legacy fallback
-THREAD_NAME_FORMAT = os.environ.get("THREAD_NAME_FORMAT", "[agent] {session} - {host}")
-
-
-def parse_thread_name(thread_name: str) -> str | None:
+def parse_thread_name(
+    thread_name: str,
+    thread_name_format: str = "[agent] {session} - {host}",
+) -> str | None:
     """Extract session name from a thread name using the format template."""
-    fmt = re.escape(THREAD_NAME_FORMAT)
+    fmt = re.escape(thread_name_format)
     fmt = fmt.replace(re.escape("{session}"), r"([a-zA-Z0-9_-]+)")
     fmt = fmt.replace(re.escape("{host}"), r".+")
     m = re.match(f"^{fmt}$", thread_name)
@@ -50,11 +49,13 @@ class PlatformService:
         discord_channel_id: str = "",
         slack_bot_token: str = "",
         slack_channel_id: str = "",
+        thread_name_format: str = "[agent] {session} - {host}",
     ) -> None:
         self.discord_token = discord_bot_token
         self.discord_channel_id = discord_channel_id
         self.slack_token = slack_bot_token
         self.slack_channel_id = slack_channel_id
+        self.thread_name_format = thread_name_format
         self._http: aiohttp.ClientSession | None = None
 
     async def _get_http(self) -> aiohttp.ClientSession:
@@ -124,7 +125,7 @@ class PlatformService:
                         for t in data.get("threads", []):
                             name = t.get("name", "")
                             if (
-                                parse_thread_name(name) == session_name
+                                parse_thread_name(name, self.thread_name_format) == session_name
                                 and t.get("parent_id") == self.discord_channel_id
                             ):
                                 return t["id"]
@@ -137,7 +138,9 @@ class PlatformService:
                 if resp.status == 200:
                     data = await resp.json()
                     for t in data.get("threads", []):
-                        if parse_thread_name(t.get("name", "")) == session_name:
+                        if parse_thread_name(
+                            t.get("name", ""), self.thread_name_format
+                        ) == session_name:
                             return t["id"]
         except Exception:
             logger.exception("Error finding Discord thread for '%s'", session_name)
@@ -175,7 +178,9 @@ class PlatformService:
                         for msg in data.get("messages", []):
                             text = msg.get("text", "")
                             first_line = text.split("\n")[0].strip()
-                            if parse_thread_name(first_line) == session_name:
+                            if parse_thread_name(
+                                first_line, self.thread_name_format
+                            ) == session_name:
                                 return msg["ts"]
         except Exception:
             logger.exception("Error finding Slack thread for '%s'", session_name)
@@ -289,7 +294,12 @@ class PlatformService:
         return archived
 
     async def fetch_slack_thread_messages(
-        self, channel_id: str, thread_ts: str, limit: int = 200, cursor: str | None = None
+        self,
+        channel_id: str,
+        thread_ts: str,
+        limit: int = 200,
+        cursor: str | None = None,
+        oldest: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
         """Fetch messages from a Slack thread using conversations.replies.
 
@@ -298,6 +308,7 @@ class PlatformService:
             thread_ts: Parent message timestamp identifying the thread.
             limit: Max messages per page (1-200, Slack default 100).
             cursor: Pagination cursor for next page.
+            oldest: Return only replies newer than this Slack timestamp.
 
         Returns:
             Tuple of (list of Slack message dicts, next_cursor or None).
@@ -313,6 +324,9 @@ class PlatformService:
         }
         if cursor:
             params["cursor"] = cursor
+        if oldest:
+            params["oldest"] = oldest
+            params["inclusive"] = "false"
 
         try:
             http = await self._get_http()
@@ -368,7 +382,11 @@ class PlatformService:
 
         while True:
             batch, next_cursor = await self.fetch_slack_thread_messages(
-                channel_id, thread_ts, limit=200, cursor=cursor
+                channel_id,
+                thread_ts,
+                limit=200,
+                cursor=cursor,
+                oldest=after_ts,
             )
             if not batch:
                 break
